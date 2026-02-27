@@ -10,7 +10,57 @@
 //! elements, with large values zeroed and corrected separately using field
 //! arithmetic.
 
+use super::{DelayedReduction, WideMul};
 use ff::PrimeField;
+use num_traits::Zero;
+use std::ops::{Add, Sub};
+
+/// Small integer type usable in small-value sumcheck.
+///
+/// Bundles the arithmetic and widening requirements needed by the Lagrange
+/// accumulator code.
+pub trait SmallValue:
+  WideMul + Copy + Default + Zero + Add<Output = Self> + Sub<Output = Self> + Send + Sync
+{
+}
+
+impl SmallValue for i32 {}
+impl SmallValue for i64 {}
+
+/// Field that supports small-value sumcheck with value type `SV`.
+pub trait SmallValueEngine<SV: SmallValue>:
+  PrimeField
+  + SmallValueField<SV>
+  + DelayedReduction<SV>
+  + DelayedReduction<SV::Product>
+  + DelayedReduction<Self>
+  + Send
+  + Sync
+{
+}
+
+impl<F, SV> SmallValueEngine<SV> for F
+where
+  SV: SmallValue,
+  F: PrimeField
+    + SmallValueField<SV>
+    + DelayedReduction<SV>
+    + DelayedReduction<SV::Product>
+    + DelayedReduction<F>
+    + Send
+    + Sync,
+{
+}
+
+/// Trait for fields that support conversion to and from native small values.
+#[allow(dead_code)]
+pub trait SmallValueField<SmallValue>: PrimeField {
+  /// Convert a native small value to a field element.
+  fn small_to_field(value: SmallValue) -> Self;
+
+  /// Try to convert a field element to a native small value.
+  fn try_field_to_small(value: &Self) -> Option<SmallValue>;
+}
 
 /// Maximum absolute value for "small" field elements stored as i64.
 ///
@@ -18,6 +68,12 @@ use ff::PrimeField;
 /// overflow-free.
 const SMALL_VALUE_MAX: u64 = (1u64 << 62) - 1;
 const SMALL_VALUE_MIN_I64: i64 = -(SMALL_VALUE_MAX as i64);
+
+#[derive(Clone, Copy)]
+enum SignedMagnitude {
+  Positive(u128),
+  Negative(u128),
+}
 
 #[allow(dead_code)]
 pub(crate) fn i32_to_field<F: PrimeField>(value: i32) -> F {
@@ -63,27 +119,97 @@ fn lower_bytes_to_u128(bytes: &[u8], width_bytes: usize) -> u128 {
 }
 
 #[inline]
-fn try_field_to_i64<F: PrimeField>(val: &F) -> Option<i64> {
+fn try_field_to_signed_magnitude<F: PrimeField>(
+  val: &F,
+  width_bytes: usize,
+) -> Option<SignedMagnitude> {
   let repr = val.to_repr();
   let bytes = repr.as_ref();
 
-  if high_bytes_are_zero(bytes, 8) {
-    let mag = lower_bytes_to_u128(bytes, 8);
-    if mag <= i64::MAX as u128 {
-      return Some(mag as i64);
-    }
+  if high_bytes_are_zero(bytes, width_bytes) {
+    return Some(SignedMagnitude::Positive(lower_bytes_to_u128(
+      bytes,
+      width_bytes,
+    )));
   }
 
   let neg_repr = val.neg().to_repr();
   let neg_bytes = neg_repr.as_ref();
-  if high_bytes_are_zero(neg_bytes, 8) {
-    let mag = lower_bytes_to_u128(neg_bytes, 8);
-    if mag > 0 && mag <= (i64::MAX as u128) + 1 {
-      return Some(-(mag as i128) as i64);
+  if high_bytes_are_zero(neg_bytes, width_bytes) {
+    let mag = lower_bytes_to_u128(neg_bytes, width_bytes);
+    if mag > 0 {
+      return Some(SignedMagnitude::Negative(mag));
     }
   }
 
   None
+}
+
+#[inline]
+#[allow(dead_code)]
+fn try_field_to_i32<F: PrimeField>(val: &F) -> Option<i32> {
+  match try_field_to_signed_magnitude(val, 4)? {
+    SignedMagnitude::Positive(mag) if mag <= i32::MAX as u128 => Some(mag as i32),
+    SignedMagnitude::Negative(mag) if mag <= (i32::MAX as u128) + 1 => Some(-(mag as i64) as i32),
+    _ => None,
+  }
+}
+
+#[inline]
+fn try_field_to_i64<F: PrimeField>(val: &F) -> Option<i64> {
+  match try_field_to_signed_magnitude(val, 8)? {
+    SignedMagnitude::Positive(mag) if mag <= i64::MAX as u128 => Some(mag as i64),
+    SignedMagnitude::Negative(mag) if mag <= (i64::MAX as u128) + 1 => Some(-(mag as i128) as i64),
+    _ => None,
+  }
+}
+
+#[inline]
+#[allow(dead_code)]
+fn try_field_to_i128<F: PrimeField>(val: &F) -> Option<i128> {
+  match try_field_to_signed_magnitude(val, 16)? {
+    SignedMagnitude::Positive(mag) if mag <= i128::MAX as u128 => Some(mag as i128),
+    SignedMagnitude::Negative(mag) if mag <= (i128::MAX as u128) + 1 => {
+      Some(mag.wrapping_neg() as i128)
+    }
+    _ => None,
+  }
+}
+
+impl<F: PrimeField> SmallValueField<i32> for F {
+  #[inline]
+  fn small_to_field(value: i32) -> Self {
+    i32_to_field(value)
+  }
+
+  #[inline]
+  fn try_field_to_small(value: &Self) -> Option<i32> {
+    try_field_to_i32(value)
+  }
+}
+
+impl<F: PrimeField> SmallValueField<i64> for F {
+  #[inline]
+  fn small_to_field(value: i64) -> Self {
+    i64_to_field(value)
+  }
+
+  #[inline]
+  fn try_field_to_small(value: &Self) -> Option<i64> {
+    try_field_to_i64(value)
+  }
+}
+
+impl<F: PrimeField> SmallValueField<i128> for F {
+  #[inline]
+  fn small_to_field(value: i128) -> Self {
+    i128_to_field(value)
+  }
+
+  #[inline]
+  fn try_field_to_small(value: &Self) -> Option<i128> {
+    try_field_to_i128(value)
+  }
 }
 
 /// Convert field elements to i64 values, storing 0 for values outside the
