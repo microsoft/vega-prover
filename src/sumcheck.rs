@@ -1032,6 +1032,7 @@ pub(crate) mod eq_sumcheck {
     ///
     /// The first suffix tau τ[l₀] is handled via `eval_eq_left` and `bound()`,
     /// matching the Nova optimization where the first variable is tracked separately.
+    #[allow(dead_code)]
     pub fn from_pyramids(
       e_in_pyramid: Vec<Vec<E::Scalar>>,
       e_xout_pyramid: Vec<Vec<E::Scalar>>,
