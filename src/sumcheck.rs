@@ -1494,6 +1494,7 @@ pub(crate) mod eq_sumcheck {
   mod tests {
     use super::EqSumCheckInstance;
     use crate::{polys::eq::build_eq_pyramid, provider::PallasHyraxEngine};
+    use ff::Field;
 
     type E = PallasHyraxEngine;
     type F = <E as crate::traits::Engine>::Scalar;
@@ -1518,6 +1519,30 @@ pub(crate) mod eq_sumcheck {
         assert_eq!(instance.poly_eq_left, expected_left);
         assert_eq!(instance.poly_eq_right, expected_right);
       }
+    }
+
+    #[test]
+    fn test_from_pyramids_builds_eq_tau_cache_with_expected_layout() {
+      let taus: Vec<F> = (0..3).map(|i| F::from((i as u64) + 2)).collect();
+
+      let mut e_in_pyramid = build_eq_pyramid(&taus[..2]);
+      e_in_pyramid.pop();
+      let e_xout_pyramid = build_eq_pyramid(&taus[2..]);
+
+      let instance =
+        EqSumCheckInstance::<E>::from_pyramids(e_in_pyramid, e_xout_pyramid, &taus, F::ONE);
+
+      let expected = taus
+        .iter()
+        .map(|tau| {
+          let one_minus_tau = F::ONE - tau;
+          let two_tau_minus_one = *tau - one_minus_tau;
+          let eq_m1 = one_minus_tau - two_tau_minus_one;
+          (one_minus_tau, two_tau_minus_one, eq_m1)
+        })
+        .collect::<Vec<_>>();
+
+      assert_eq!(instance.eq_tau_0_slope_m1, expected);
     }
   }
 
