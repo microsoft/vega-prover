@@ -1,0 +1,35 @@
+[package]
+name = "vega-neutronnova"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Vega-branded NeutronNova folding proof system for repeated split-R1CS executions"
+documentation = "https://docs.rs/vega-neutronnova"
+readme.workspace = true
+repository.workspace = true
+license-file.workspace = true
+keywords.workspace = true
+
+[dependencies]
+vega-core.workspace = true
+bellpepper-core.workspace = true
+bincode.workspace = true
+ff.workspace = true
+once_cell.workspace = true
+rayon.workspace = true
+serde.workspace = true
+tikv-jemallocator = { workspace = true, optional = true }
+tracing.workspace = true
+
+[dev-dependencies]
+bellpepper.workspace = true
+criterion.workspace = true
+tracing-subscriber.workspace = true
+
+[features]
+default = []
+jem = ["dep:tikv-jemallocator", "vega-core/jem"]
+
+[[bench]]
+name = "sha256_neutronnova"
+harness = false

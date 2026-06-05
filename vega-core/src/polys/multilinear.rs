@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 /// Vector $Z$ indicates $Z(e)$ where $e$ ranges from $0$ to $2^m-1$.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MultilinearPolynomial<Scalar: PrimeField> {
-  pub(crate) Z: Vec<Scalar>, // evaluations of the polynomial in all the 2^num_vars Boolean inputs
+  pub Z: Vec<Scalar>, // evaluations of the polynomial in all the 2^num_vars Boolean inputs
   // Non-zero prefix lengths for each half of Z, enabling zero-skip in bind/eval.
   // When Z has 2n elements: lo_eff covers Z[0..n), hi_eff covers Z[n..2n).
   // Z[i] = 0 for lo_eff <= i < n, and Z[n+i] = 0 for hi_eff <= i < n.
@@ -176,7 +176,7 @@ impl<Scalar: PrimeField> Index<usize> for MultilinearPolynomial<Scalar> {
 /// Sparse multilinear polynomial, which means the $Z(\cdot)$ is zero at most points.
 /// In our context, sparse polynomials are non-zeros over the hypercube at locations that map to "small" integers
 /// We exploit this property to implement a time-optimal algorithm
-pub(crate) struct SparsePolynomial<Scalar: PrimeField> {
+pub struct SparsePolynomial<Scalar: PrimeField> {
   num_vars: usize,
   Z: Vec<Scalar>,
 }

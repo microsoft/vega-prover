@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 /// For a polynomial $ax^3 + bx^2 + cx + d$, coefficients are stored as `vec![d, c, b, a]`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UniPoly<Scalar: PrimeField> {
-  pub(crate) coeffs: Vec<Scalar>,
+  pub coeffs: Vec<Scalar>,
 }
 
 // ax^2 + bx + c stored as vec![c, a]

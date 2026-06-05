@@ -39,7 +39,7 @@ const SMALL_VALUE_MAX: u64 = (1u64 << 62) - 1;
 ///
 /// Returns (i64 values, positions of large values that were zeroed).
 #[inline(never)]
-pub(crate) fn to_small_vec_or_zero<F: PrimeField + FieldReductionConstants>(
+pub fn to_small_vec_or_zero<F: PrimeField + FieldReductionConstants>(
   poly: &[F],
 ) -> (Vec<i64>, Vec<usize>) {
   let mut result = Vec::with_capacity(poly.len());
@@ -93,7 +93,7 @@ pub(crate) fn to_small_vec_or_zero<F: PrimeField + FieldReductionConstants>(
 /// field (256 bits) * i128 (128 bits) = 384 bits, leaving 64 bits of
 /// headroom -- sufficient for up to 2^64 accumulations per bucket.
 #[derive(Clone, Copy)]
-pub(crate) struct SmallAccumulator {
+pub struct SmallAccumulator {
   pos: [u64; 7],
   neg: [u64; 7],
 }

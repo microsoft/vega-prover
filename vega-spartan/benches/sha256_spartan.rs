@@ -24,12 +24,12 @@ use bellpepper_core::{
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use ff::{Field, PrimeField, PrimeFieldBits};
 use sha2::{Digest, Sha256};
-use spartan2::{
+use std::{marker::PhantomData, time::Duration};
+use vega_spartan::{
   provider::T256HyraxEngine,
   spartan::SpartanSNARK,
   traits::{Engine, circuit::SpartanCircuit, snark::R1CSSNARKTrait},
 };
-use std::{marker::PhantomData, time::Duration};
 
 type E = T256HyraxEngine;
 

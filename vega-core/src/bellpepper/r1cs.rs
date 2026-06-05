@@ -287,17 +287,18 @@ pub(crate) fn add_constraint<S: PrimeField>(
 }
 
 /// A type that holds the pre-processed state for proving
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct PrecommittedState<E: Engine> {
-  pub(crate) cs: SatisfyingAssignment<E>,
-  pub(crate) shared: Vec<AllocatedNum<E::Scalar>>,
-  pub(crate) precommitted: Vec<AllocatedNum<E::Scalar>>,
-  pub(crate) comm_W_shared: Option<Commitment<E>>,
-  pub(crate) r_W_shared: Option<Blind<E>>,
-  pub(crate) comm_W_precommitted: Option<Commitment<E>>,
-  pub(crate) r_W_precommitted: Option<Blind<E>>,
-  pub(crate) W: Vec<E::Scalar>,
+  pub cs: SatisfyingAssignment<E>,
+  pub shared: Vec<AllocatedNum<E::Scalar>>,
+  pub precommitted: Vec<AllocatedNum<E::Scalar>>,
+  pub comm_W_shared: Option<Commitment<E>>,
+  pub r_W_shared: Option<Blind<E>>,
+  pub comm_W_precommitted: Option<Commitment<E>>,
+  pub r_W_precommitted: Option<Blind<E>>,
+  pub W: Vec<E::Scalar>,
 }
 
 impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
@@ -695,18 +696,19 @@ impl<E: Engine> MultiRoundSpartanShape<E> for ShapeCS<E> {
 }
 
 /// A type that holds the multi-round state for proving
+#[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct MultiRoundState<E: Engine> {
-  cs: SatisfyingAssignment<E>,
-  vars_per_round: Vec<Vec<AllocatedNum<E::Scalar>>>,
-  challenges_per_round: Vec<Vec<AllocatedNum<E::Scalar>>>,
-  challenges: Vec<Vec<E::Scalar>>,
-  comm_w_per_round: Vec<Commitment<E>>,
-  pub(crate) r_w_per_round: Vec<Blind<E>>,
-  w: Vec<E::Scalar>,
-  current_round: usize,
-  num_rounds: usize,
+  pub cs: SatisfyingAssignment<E>,
+  pub vars_per_round: Vec<Vec<AllocatedNum<E::Scalar>>>,
+  pub challenges_per_round: Vec<Vec<AllocatedNum<E::Scalar>>>,
+  pub challenges: Vec<Vec<E::Scalar>>,
+  pub comm_w_per_round: Vec<Commitment<E>>,
+  pub r_w_per_round: Vec<Blind<E>>,
+  pub w: Vec<E::Scalar>,
+  pub current_round: usize,
+  pub num_rounds: usize,
 }
 
 impl<E: Engine> MultiRoundSpartanWitness<E> for SatisfyingAssignment<E> {

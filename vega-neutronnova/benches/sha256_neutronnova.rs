@@ -25,12 +25,12 @@ use bellpepper_core::{
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use ff::Field;
-use spartan2::{
+use std::{marker::PhantomData, time::Duration};
+use vega_neutronnova::{
   neutronnova_zk::NeutronNovaZkSNARK,
   provider::T256HyraxEngine,
   traits::{Engine, circuit::SpartanCircuit},
 };
-use std::{marker::PhantomData, time::Duration};
 
 type E = T256HyraxEngine;
 

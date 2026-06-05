@@ -27,7 +27,7 @@ mod folds;
 mod sparse;
 pub(crate) use sparse::FilteredSpmv;
 pub(crate) use sparse::PrecomputedSparseMatrix;
-pub(crate) use sparse::SparseMatrix;
+pub use sparse::SparseMatrix;
 
 /// Fused evaluation of three sparse matrices at (T_x, T_y).
 /// Processes all three matrices per row to improve T_y cache reuse.
@@ -150,7 +150,7 @@ fn eq01<F: Field>(bit: u8, r: &F) -> F {
 }
 
 #[inline]
-pub(crate) fn weights_from_r<F: Field>(r_bs: &[F], n: usize) -> Vec<F> {
+pub fn weights_from_r<F: Field>(r_bs: &[F], n: usize) -> Vec<F> {
   let ell = r_bs.len();
   (0..n)
     .map(|i| {
@@ -168,12 +168,12 @@ pub(crate) fn weights_from_r<F: Field>(r_bs: &[F], n: usize) -> Vec<F> {
 /// A type that holds the shape of the R1CS matrices
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct R1CSShape<E: Engine> {
-  pub(crate) num_cons: usize,
-  pub(crate) num_vars: usize,
-  pub(crate) num_io: usize, // input/output
-  pub(crate) A: SparseMatrix<E::Scalar>,
-  pub(crate) B: SparseMatrix<E::Scalar>,
-  pub(crate) C: SparseMatrix<E::Scalar>,
+  pub num_cons: usize,
+  pub num_vars: usize,
+  pub num_io: usize, // input/output
+  pub A: SparseMatrix<E::Scalar>,
+  pub B: SparseMatrix<E::Scalar>,
+  pub C: SparseMatrix<E::Scalar>,
   #[serde(skip, default = "OnceCell::new")]
   pub(crate) digest: OnceCell<E::Scalar>,
 }
@@ -184,37 +184,37 @@ impl<E: Engine> SimpleDigestible for R1CSShape<E> {}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct R1CSWitness<E: Engine> {
-  pub(crate) is_small: bool, // whether the witness elements fit in machine words
-  pub(crate) W: Vec<E::Scalar>,
-  pub(crate) r_W: Blind<E>,
+  pub is_small: bool, // whether the witness elements fit in machine words
+  pub W: Vec<E::Scalar>,
+  pub r_W: Blind<E>,
 }
 
 /// A type that holds an R1CS instance
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct R1CSInstance<E: Engine> {
-  pub(crate) comm_W: Commitment<E>,
-  pub(crate) X: Vec<E::Scalar>,
+  pub comm_W: Commitment<E>,
+  pub X: Vec<E::Scalar>,
 }
 
 /// A type that holds a witness for a given Relaxed R1CS instance
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct RelaxedR1CSWitness<E: Engine> {
-  pub(crate) W: Vec<E::Scalar>,
-  pub(crate) r_W: Blind<E>,
-  pub(crate) E: Vec<E::Scalar>,
-  pub(crate) r_E: Blind<E>,
+  pub W: Vec<E::Scalar>,
+  pub r_W: Blind<E>,
+  pub E: Vec<E::Scalar>,
+  pub r_E: Blind<E>,
 }
 
 /// A type that holds a Relaxed R1CS instance
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct RelaxedR1CSInstance<E: Engine> {
-  pub(crate) comm_W: Commitment<E>,
-  pub(crate) comm_E: Commitment<E>,
-  pub(crate) X: Vec<E::Scalar>,
-  pub(crate) u: E::Scalar,
+  pub comm_W: Commitment<E>,
+  pub comm_E: Commitment<E>,
+  pub X: Vec<E::Scalar>,
+  pub u: E::Scalar,
 }
 
 impl<E: Engine> RelaxedR1CSWitness<E> {
@@ -741,21 +741,21 @@ impl<E: Engine> TranscriptReprTrait<E::GE> for R1CSInstance<E> {
 /// A type that holds a split R1CS shape
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitR1CSShape<E: Engine> {
-  pub(crate) num_cons: usize,
+  pub num_cons: usize,
 
-  pub(crate) num_cons_unpadded: usize, // number of constraints before padding
-  pub(crate) num_shared_unpadded: usize, // shared variables before padding
-  pub(crate) num_precommitted_unpadded: usize, // precommitted variables before padding
-  pub(crate) num_rest_unpadded: usize, // rest of the variables before padding
+  pub num_cons_unpadded: usize,   // number of constraints before padding
+  pub num_shared_unpadded: usize, // shared variables before padding
+  pub num_precommitted_unpadded: usize, // precommitted variables before padding
+  pub num_rest_unpadded: usize,   // rest of the variables before padding
 
-  pub(crate) num_shared: usize,       // shared variables
-  pub(crate) num_precommitted: usize, // precommitted variables
-  pub(crate) num_rest: usize,         // rest of the variables
-  pub(crate) num_public: usize,       // number of public variables
-  pub(crate) num_challenges: usize,   // number of public challenges
-  pub(crate) A: SparseMatrix<E::Scalar>,
-  pub(crate) B: SparseMatrix<E::Scalar>,
-  pub(crate) C: SparseMatrix<E::Scalar>,
+  pub num_shared: usize,       // shared variables
+  pub num_precommitted: usize, // precommitted variables
+  pub num_rest: usize,         // rest of the variables
+  pub num_public: usize,       // number of public variables
+  pub num_challenges: usize,   // number of public challenges
+  pub A: SparseMatrix<E::Scalar>,
+  pub B: SparseMatrix<E::Scalar>,
+  pub C: SparseMatrix<E::Scalar>,
   #[serde(skip, default = "OnceCell::new")]
   pub(crate) digest: OnceCell<E::Scalar>,
   #[serde(skip, default = "OnceCell::new")]
@@ -797,12 +797,12 @@ impl<E: Engine> crate::digest::Digestible for SplitR1CSShape<E> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct SplitR1CSInstance<E: Engine> {
-  pub(crate) comm_W_shared: Option<Commitment<E>>,
-  pub(crate) comm_W_precommitted: Option<Commitment<E>>,
-  pub(crate) comm_W_rest: Commitment<E>,
+  pub comm_W_shared: Option<Commitment<E>>,
+  pub comm_W_precommitted: Option<Commitment<E>>,
+  pub comm_W_rest: Commitment<E>,
 
-  pub(crate) public_values: Vec<E::Scalar>,
-  pub(crate) challenges: Vec<E::Scalar>,
+  pub public_values: Vec<E::Scalar>,
+  pub challenges: Vec<E::Scalar>,
 }
 
 impl<E: Engine> SplitR1CSShape<E> {
@@ -1232,11 +1232,7 @@ impl<E: Engine> SplitR1CSShape<E> {
   ///
   /// Compact variant: output length = num_vars + num_extra (not 2*num_vars).
   /// Used by SpartanZK which handles the first inner sumcheck round manually.
-  pub(crate) fn bind_and_prepare_poly_ABC(
-    &self,
-    rx: &[E::Scalar],
-    r: &E::Scalar,
-  ) -> Vec<E::Scalar> {
+  pub fn bind_and_prepare_poly_ABC(&self, rx: &[E::Scalar], r: &E::Scalar) -> Vec<E::Scalar> {
     let num_vars = self.num_shared + self.num_precommitted + self.num_rest;
     let num_extra = 1 + self.num_public + self.num_challenges;
     let out_len = num_vars + num_extra;
@@ -1247,7 +1243,7 @@ impl<E: Engine> SplitR1CSShape<E> {
   /// Used by NeutronNova which passes poly_ABC directly to batched sumcheck.
   /// Returns (poly_vec, lo_eff, hi_eff) where lo_eff/hi_eff are the non-zero
   /// prefix lengths of the lo and hi halves respectively.
-  pub(crate) fn bind_and_prepare_poly_ABC_full(
+  pub fn bind_and_prepare_poly_ABC_full(
     &self,
     rx: &[E::Scalar],
     r: &E::Scalar,
@@ -1401,19 +1397,19 @@ impl<E: Engine> SplitR1CSShape<E> {
 /// A type that holds a multi-round split R1CS shape
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SplitMultiRoundR1CSShape<E: Engine> {
-  pub(crate) num_cons: usize,
-  pub(crate) num_cons_unpadded: usize, // number of constraints before padding
+  pub num_cons: usize,
+  pub num_cons_unpadded: usize, // number of constraints before padding
 
-  pub(crate) num_rounds: usize,
-  pub(crate) num_vars_per_round_unpadded: Vec<usize>, // variables per round before padding
-  pub(crate) num_vars_per_round: Vec<usize>,          // variables per round after padding
-  pub(crate) num_challenges_per_round: Vec<usize>,    // challenges per round
-  pub(crate) num_public: usize,                       // number of public variables
-  pub(crate) commitment_width: usize,                 // width for per-round commitments
+  pub num_rounds: usize,
+  pub num_vars_per_round_unpadded: Vec<usize>, // variables per round before padding
+  pub num_vars_per_round: Vec<usize>,          // variables per round after padding
+  pub num_challenges_per_round: Vec<usize>,    // challenges per round
+  pub num_public: usize,                       // number of public variables
+  pub commitment_width: usize,                 // width for per-round commitments
 
-  pub(crate) A: SparseMatrix<E::Scalar>,
-  pub(crate) B: SparseMatrix<E::Scalar>,
-  pub(crate) C: SparseMatrix<E::Scalar>,
+  pub A: SparseMatrix<E::Scalar>,
+  pub B: SparseMatrix<E::Scalar>,
+  pub C: SparseMatrix<E::Scalar>,
   #[serde(skip, default = "OnceCell::new")]
   pub(crate) digest: OnceCell<E::Scalar>,
 }
@@ -1424,9 +1420,9 @@ impl<E: Engine> SimpleDigestible for SplitMultiRoundR1CSShape<E> {}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct SplitMultiRoundR1CSInstance<E: Engine> {
-  pub(crate) comm_w_per_round: Vec<Commitment<E>>,
-  pub(crate) public_values: Vec<E::Scalar>,
-  pub(crate) challenges_per_round: Vec<Vec<E::Scalar>>,
+  pub comm_w_per_round: Vec<Commitment<E>>,
+  pub public_values: Vec<E::Scalar>,
+  pub challenges_per_round: Vec<Vec<E::Scalar>>,
 }
 
 impl<E: Engine> SplitR1CSInstance<E> {

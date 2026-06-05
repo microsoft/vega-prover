@@ -1,0 +1,37 @@
+[package]
+name = "vega-spartan"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+description = "Vega-branded Spartan proof systems over split R1CS"
+documentation = "https://docs.rs/vega-spartan"
+readme.workspace = true
+repository.workspace = true
+license-file.workspace = true
+keywords.workspace = true
+
+[dependencies]
+vega-core.workspace = true
+bellpepper-core.workspace = true
+bincode.workspace = true
+ff.workspace = true
+once_cell.workspace = true
+rayon.workspace = true
+serde.workspace = true
+tikv-jemallocator = { workspace = true, optional = true }
+tracing.workspace = true
+
+[dev-dependencies]
+bellpepper.workspace = true
+criterion.workspace = true
+rayon.workspace = true
+sha2.workspace = true
+tracing-subscriber.workspace = true
+
+[features]
+default = []
+jem = ["dep:tikv-jemallocator", "vega-core/jem"]
+
+[[bench]]
+name = "sha256_spartan"
+harness = false

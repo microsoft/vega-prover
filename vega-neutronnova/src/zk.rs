@@ -4,16 +4,10 @@
 // See the LICENSE file in the project root for full license information.
 // Source repository: https://github.com/Microsoft/Spartan2
 
-//! Zero-knowledge circuit implementing the algebraic checks of the Spartan verifier logic.
-//!
-//! [`SpartanVerifierCircuit`] constrains the complete Spartan verification across
-//! `outer_len + inner_len + 3` rounds: outer sum-check, inner sum-check, and bridging rounds.
-//!
-//! Note: This circuit only encodes the algebraic checks of the verifier. It does **not**
-//! encode the Fiat-Shamir challenge generation, so no proof composition is performed here.
-use crate::traits::{Engine, circuit::MultiRoundCircuit};
+//! Zero-knowledge verifier circuit for Vega NeutronNova.
 use bellpepper_core::{ConstraintSystem, SynthesisError, num::AllocatedNum};
 use ff::Field;
+use vega_core::traits::{Engine, circuit::MultiRoundCircuit};
 
 /// Evaluates a polynomial using Horner's method within R1CS constraints.
 fn eval_poly_horner<E: Engine, CS: ConstraintSystem<E::Scalar>>(
@@ -225,283 +219,40 @@ fn enforce_inner_sc_final_check<E: Engine, CS: ConstraintSystem<E::Scalar>>(
   Ok(())
 }
 
-/// Circuit constraining Spartan verifier computation across multiple rounds.
-#[derive(Clone, Debug)]
-pub struct SpartanVerifierCircuit<E: Engine> {
-  pub(crate) outer_polys: Vec<[E::Scalar; 4]>,
-  pub(crate) claim_Az: E::Scalar,
-  pub(crate) claim_Bz: E::Scalar,
-  pub(crate) claim_Cz: E::Scalar,
-  pub(crate) tau_at_rx: E::Scalar,
-  pub(crate) inner_polys: Vec<[E::Scalar; 3]>,
-  pub(crate) eval_W: E::Scalar,
-  pub(crate) eval_X: E::Scalar,
-  pub(crate) mr_commitment_width: usize,
-}
-
-impl<E: Engine> SpartanVerifierCircuit<E> {
-  pub fn default(num_rounds_x: usize, num_rounds_y: usize, mr_commitment_width: usize) -> Self {
-    Self {
-      outer_polys: vec![[E::Scalar::ZERO; 4]; num_rounds_x],
-      claim_Az: E::Scalar::ZERO,
-      claim_Bz: E::Scalar::ZERO,
-      claim_Cz: E::Scalar::ZERO,
-      tau_at_rx: E::Scalar::ZERO,
-      inner_polys: vec![[E::Scalar::ZERO; 3]; num_rounds_y],
-      eval_W: E::Scalar::ZERO,
-      eval_X: E::Scalar::ZERO,
-      mr_commitment_width,
-    }
-  }
-
-  // number of outer sum-check rounds
-  fn num_outer_rounds(&self) -> usize {
-    self.outer_polys.len()
-  }
-  // number of inner sum-check rounds
-  fn num_inner_rounds(&self) -> usize {
-    self.inner_polys.len()
-  }
-
-  fn idx_outer_final(&self) -> usize {
-    self.num_outer_rounds()
-  }
-  fn idx_inner_start(&self) -> usize {
-    self.idx_outer_final() + 1
-  }
-  fn idx_inner_final(&self) -> usize {
-    self.idx_inner_start() + self.num_inner_rounds()
-  }
-  fn idx_commit_w(&self) -> usize {
-    self.idx_inner_final() + 1
-  }
-}
-
-impl<E: Engine> MultiRoundCircuit<E> for SpartanVerifierCircuit<E> {
-  fn num_challenges(&self, round_index: usize) -> Result<usize, SynthesisError> {
-    if round_index < self.idx_inner_final() {
-      Ok(1)
-    } else if round_index == self.idx_inner_final() || round_index == self.idx_commit_w() {
-      Ok(0)
-    } else {
-      Err(SynthesisError::Unsatisfiable)
-    }
-  }
-
-  fn rounds<CS: ConstraintSystem<E::Scalar>>(
-    &self,
-    cs: &mut CS,
-    round_index: usize,
-    prior_round_vars: &[Vec<AllocatedNum<E::Scalar>>],
-    prev_challenges: &[Vec<AllocatedNum<E::Scalar>>],
-    challenges: Option<&[E::Scalar]>,
-  ) -> Result<(Vec<AllocatedNum<E::Scalar>>, Vec<AllocatedNum<E::Scalar>>), SynthesisError> {
-    // outer cubic sum-check rounds
-    if round_index < self.idx_outer_final() {
-      // allocate polynomial sent in this round
-      let poly = alloc_coeffs::<E, _>(
-        cs.namespace(|| format!("outer_sc_coeffs_round_{round_index}")),
-        &self.outer_polys[round_index],
-      )?;
-
-      let claim = if round_index == 0 {
-        alloc_zero::<E, _>(cs.namespace(|| "initial_claim_zero"))
-      } else {
-        // allocate challenge r_x[round_index]
-        let r_x_idx =
-          AllocatedNum::alloc_input(cs.namespace(|| format!("r_x_{round_index}")), || {
-            Ok(challenges.map(|c| c[0]).unwrap_or(E::Scalar::ZERO))
-          })?;
-
-        eval_poly_horner::<E, _>(
-          cs.namespace(|| format!("outer_prev_eval_{round_index}")),
-          &prior_round_vars[round_index - 1],
-          &r_x_idx,
-        )
-      }?;
-
-      enforce_sc_claim::<E, _>(
-        cs.namespace(|| format!("outer_sc_claim_check {round_index}")),
-        &poly,
-        &claim,
-      )?;
-
-      Ok((poly, vec![]))
-    } else if round_index == self.idx_outer_final() {
-      // Compute claim = poly(r) from last round's coefficients and the new challenge r
-      let r = AllocatedNum::alloc_input(cs.namespace(|| format!("r_x_{round_index}")), || {
-        Ok(challenges.map(|c| c[0]).unwrap_or(E::Scalar::ZERO))
-      })?;
-      let claim = eval_poly_horner::<E, _>(
-        cs.namespace(|| "outer_final_prev_eval"),
-        &prior_round_vars[round_index - 1],
-        &r,
-      )?;
-
-      let claim_Az = AllocatedNum::alloc(cs.namespace(|| "Az_outer"), || Ok(self.claim_Az))?;
-      let claim_Bz = AllocatedNum::alloc(cs.namespace(|| "Bz_outer"), || Ok(self.claim_Bz))?;
-      let claim_Cz = AllocatedNum::alloc(cs.namespace(|| "Cz_outer"), || Ok(self.claim_Cz))?;
-      let tau_at_rx =
-        AllocatedNum::alloc(cs.namespace(|| "tau_at_rx_outer"), || Ok(self.tau_at_rx))?;
-
-      // Final outer equality: claim == tau_at_rx * (claim_Az*claim_Bz - claim_Cz)
-      enforce_outer_sc_final_check::<E, _>(
-        cs.namespace(|| "enforce_outer_final_check"),
-        &claim_Az,
-        &claim_Bz,
-        &claim_Cz,
-        &tau_at_rx,
-        &claim,
-      )?;
-
-      Ok((
-        vec![
-          claim_Az.clone(),
-          claim_Bz.clone(),
-          claim_Cz.clone(),
-          tau_at_rx.clone(),
-        ],
-        vec![],
-      ))
-    } else if round_index >= self.idx_inner_start() && round_index < self.idx_inner_final() {
-      // Inner quadratic sum-check per-round consistency
-      let idx = round_index - self.idx_inner_start();
-
-      // Allocate current round's poly
-      let poly = alloc_coeffs::<E, _>(
-        cs.namespace(|| format!("inner_round_{idx}")),
-        &self.inner_polys[idx],
-      )?;
-
-      let r = AllocatedNum::alloc_input(cs.namespace(|| format!("r {round_index}")), || {
-        Ok(challenges.map(|c| c[0]).unwrap_or(E::Scalar::ZERO))
-      })?;
-
-      let claim = if idx == 0 {
-        let r_sq = r.square(cs.namespace(|| "r_sq"))?;
-
-        let claims_outer = &prior_round_vars[self.idx_outer_final()];
-        compute_joint_claim::<E, _>(
-          cs.namespace(|| "compute_inner_joint_claim"),
-          &claims_outer[0], // claim_Az
-          &claims_outer[1], // claim_Bz
-          &claims_outer[2], // claim_Cz
-          &r,
-          &r_sq,
-        )
-      } else {
-        let prev_poly = &prior_round_vars[round_index - 1];
-        eval_poly_horner::<E, _>(
-          cs.namespace(|| format!("inner_prev_eval_{idx}")),
-          prev_poly,
-          &r,
-        )
-      }?;
-
-      // Enforce 2*c0+c1+c2 == claim
-      enforce_sc_claim::<E, _>(
-        cs.namespace(|| format!("inner_sc_claim_check {idx}")),
-        &poly,
-        &claim,
-      )?;
-
-      // Expose this round's coefficients; next round will consume them
-      Ok((poly, vec![r]))
-    } else if round_index == self.idx_inner_final() {
-      let prev_poly = &prior_round_vars[round_index - 1];
-      let r_y_idx =
-        AllocatedNum::alloc_input(cs.namespace(|| format!("r_y_{round_index}")), || {
-          Ok(challenges.map(|c| c[0]).unwrap_or(E::Scalar::ZERO))
-        })?;
-      let claim = eval_poly_horner::<E, _>(
-        cs.namespace(|| format!("inner_prev_eval_{round_index}")),
-        prev_poly,
-        &r_y_idx,
-      )?;
-
-      let eval_W = AllocatedNum::alloc(cs.namespace(|| "eval_W"), || Ok(self.eval_W))?;
-
-      let tau_at_rx = prior_round_vars[self.idx_outer_final()][3].clone();
-      tau_at_rx.inputize(cs.namespace(|| "inputize_tau_at_rx"))?;
-
-      let eval_X = AllocatedNum::alloc_input(cs.namespace(|| "eval_X"), || Ok(self.eval_X))?;
-      let r_y0 = &prev_challenges[self.idx_inner_start() + 1][0];
-
-      enforce_inner_sc_final_check::<E, _>(
-        cs.namespace(|| "enforce_inner_final_check"),
-        r_y0,
-        &eval_W,
-        &eval_X,
-        &claim,
-      )?;
-
-      Ok((vec![eval_W], vec![]))
-    } else if round_index == self.idx_commit_w() {
-      // Dedicated commit round for eval_W only (padded to commitment width)
-      let eval_W = AllocatedNum::alloc(cs.namespace(|| "eval_W_dedicated"), || Ok(self.eval_W))?;
-
-      // enforce that eval_W matches the one from prior round
-      let eval_W_prev = &prior_round_vars[round_index - 1][0];
-      cs.enforce(
-        || "eval_W_match",
-        |lc| lc + eval_W.get_variable(),
-        |lc| lc + CS::one(),
-        |lc| lc + eval_W_prev.get_variable(),
-      );
-
-      // Pad to width
-      for j in 0..self.mr_commitment_width - 1 {
-        alloc_zero::<E, _>(cs.namespace(|| format!("pad_eval_W_{j}")))?;
-      }
-      Ok((vec![eval_W], vec![]))
-    } else {
-      Err(SynthesisError::Unsatisfiable)
-    }
-  }
-
-  fn num_rounds(&self) -> usize {
-    self.idx_commit_w() + 1
-  }
-
-  fn commitment_width(&self) -> usize {
-    self.mr_commitment_width
-  }
-}
-
 /// NeutronNova verifier circuit constraining computation across multiple rounds.
 #[derive(Clone, Debug)]
 pub struct NeutronNovaVerifierCircuit<E: Engine> {
   // NeutronNova folding scheme verifier state across multiple rounds
   // NIFS cubic sum-check polynomials (4 coeffs per round)
-  pub(crate) nifs_polys: Vec<[E::Scalar; 4]>,
+  pub nifs_polys: Vec<[E::Scalar; 4]>,
   // Accumulated equality value acc_eq = \prod_t eq(r_b_t; rho_t), provided as a public input
-  pub(crate) eq_rho_at_rb: E::Scalar,
-  pub(crate) t_out_step: E::Scalar,
+  pub eq_rho_at_rb: E::Scalar,
+  pub t_out_step: E::Scalar,
 
   // Spartan sum-check proof for step and core circuits
-  pub(crate) outer_polys_step: Vec<[E::Scalar; 4]>,
-  pub(crate) outer_polys_core: Vec<[E::Scalar; 4]>,
+  pub outer_polys_step: Vec<[E::Scalar; 4]>,
+  pub outer_polys_core: Vec<[E::Scalar; 4]>,
 
-  pub(crate) claim_Az_step: E::Scalar,
-  pub(crate) claim_Bz_step: E::Scalar,
-  pub(crate) claim_Cz_step: E::Scalar,
+  pub claim_Az_step: E::Scalar,
+  pub claim_Bz_step: E::Scalar,
+  pub claim_Cz_step: E::Scalar,
 
-  pub(crate) claim_Az_core: E::Scalar,
-  pub(crate) claim_Bz_core: E::Scalar,
-  pub(crate) claim_Cz_core: E::Scalar,
+  pub claim_Az_core: E::Scalar,
+  pub claim_Bz_core: E::Scalar,
+  pub claim_Cz_core: E::Scalar,
 
   // evaluation of tau at rx
-  pub(crate) tau_at_rx: E::Scalar,
+  pub tau_at_rx: E::Scalar,
 
-  pub(crate) inner_polys_step: Vec<[E::Scalar; 3]>,
-  pub(crate) inner_polys_core: Vec<[E::Scalar; 3]>,
+  pub inner_polys_step: Vec<[E::Scalar; 3]>,
+  pub inner_polys_core: Vec<[E::Scalar; 3]>,
 
-  pub(crate) eval_W_step: E::Scalar,
-  pub(crate) eval_W_core: E::Scalar,
-  pub(crate) eval_X_step: E::Scalar,
-  pub(crate) eval_X_core: E::Scalar,
+  pub eval_W_step: E::Scalar,
+  pub eval_W_core: E::Scalar,
+  pub eval_X_step: E::Scalar,
+  pub eval_X_core: E::Scalar,
 
-  pub(crate) mr_commitment_width: usize,
+  pub mr_commitment_width: usize,
 }
 
 impl<E: Engine> NeutronNovaVerifierCircuit<E> {

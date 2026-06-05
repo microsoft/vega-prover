@@ -6,7 +6,12 @@
 
 //! This module implements the Spartan zkSNARK protocol. We provide zero-knowledge via Nova's folding scheme
 //! It provides the prover and verifier keys, as well as the zkSNARK itself.
-use crate::{
+use crate::zk::SpartanVerifierCircuit;
+use ff::Field;
+use once_cell::sync::OnceCell;
+use serde::{Deserialize, Serialize};
+use tracing::info;
+use vega_core::{
   CommitmentKey, PCS, VerifierKey,
   bellpepper::{
     r1cs::{
@@ -31,7 +36,6 @@ use crate::{
     SplitR1CSInstance, SplitR1CSShape,
   },
   start_span,
-  sumcheck::SumcheckProof,
   traits::{
     Engine,
     circuit::SpartanCircuit,
@@ -39,12 +43,7 @@ use crate::{
     snark::{DigestHelperTrait, R1CSSNARKTrait, SpartanDigest},
     transcript::TranscriptEngineTrait,
   },
-  zk::SpartanVerifierCircuit,
 };
-use ff::Field;
-use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
-use tracing::info;
 
 /// A type that represents the prover's key
 #[derive(Serialize, Deserialize)]
@@ -89,7 +88,7 @@ pub struct SpartanVerifierKey<E: Engine> {
   digest: OnceCell<SpartanDigest>,
 }
 
-impl<E: Engine> crate::digest::Digestible for SpartanVerifierKey<E> {
+impl<E: Engine> vega_core::digest::Digestible for SpartanVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
     use bincode::Options;
     let config = bincode::DefaultOptions::new()
@@ -169,7 +168,7 @@ pub struct SpartanZkSNARK<E: Engine> {
   /// NIFS proof for folding a random relaxed instance with the verifier instance
   nifs: NovaNIFS<E>,
   /// Relaxed R1CS Spartan proof of the folded instance (replaces raw folded witness)
-  relaxed_snark: crate::spartan_relaxed::RelaxedR1CSSpartanProof<E>,
+  relaxed_snark: vega_core::spartan_relaxed::RelaxedR1CSSpartanProof<E>,
 
   /// PCS evaluation argument
   eval_arg: <E::PCS as PCSEngineTrait<E>>::EvaluationArgument,
@@ -448,7 +447,7 @@ where
 
     // Outer sum-check
     let (_sc_span, sc_t) = start_span!("outer_sumcheck");
-    let r_x = SumcheckProof::<E>::prove_cubic_with_additive_term_zk(
+    let r_x = crate::zk_sumcheck::prove_cubic_with_additive_term_zk(
       num_rounds_x,
       &taus,
       &mut poly_Az,
@@ -585,7 +584,7 @@ where
     let mut poly_ABC = MultilinearPolynomial::new(poly_ABC_vec);
     let mut poly_z = MultilinearPolynomial::new(z);
 
-    let (r_y_rest, evals) = SumcheckProof::<E>::prove_quad_zk(
+    let (r_y_rest, evals) = crate::zk_sumcheck::prove_quad_zk(
       &claim_after_r0,
       num_rounds_y - 1,
       &mut poly_ABC,
@@ -667,7 +666,7 @@ where
       &mut transcript,
     )?;
     // Prove satisfiability of the folded VC instance via relaxed R1CS Spartan
-    let relaxed_snark = crate::spartan_relaxed::RelaxedR1CSSpartanProof::prove(
+    let relaxed_snark = vega_core::spartan_relaxed::RelaxedR1CSSpartanProof::prove(
       S_verifier,
       &pk.vc_ck,
       &folded_u,

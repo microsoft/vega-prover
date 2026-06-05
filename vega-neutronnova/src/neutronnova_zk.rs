@@ -9,8 +9,14 @@
 //! Since we are in the non-recursive setting, we simply fold a batch of instances into one (all at once, via multi-folding)
 //! and then use Spartan to prove that folded instance.
 //! The proof system implemented here provides zero-knowledge via Nova's folding scheme.
-use crate::start_span;
-use crate::{
+use crate::zk::NeutronNovaVerifierCircuit;
+use ff::Field;
+use once_cell::sync::OnceCell;
+use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
+use tracing::{debug, info};
+use vega_core::start_span;
+use vega_core::{
   Commitment, CommitmentKey, DEFAULT_COMMITMENT_WIDTH, VerifierKey,
   bellpepper::{
     r1cs::{
@@ -39,7 +45,6 @@ use crate::{
     R1CSInstance, R1CSShape, R1CSWitness, RelaxedR1CSInstance, SplitMultiRoundR1CSInstance,
     SplitMultiRoundR1CSShape, SplitR1CSInstance, SplitR1CSShape, weights_from_r,
   },
-  sumcheck::SumcheckProof,
   traits::{
     Engine,
     circuit::SpartanCircuit,
@@ -47,13 +52,7 @@ use crate::{
     snark::{DigestHelperTrait, SpartanDigest},
     transcript::TranscriptEngineTrait,
   },
-  zk::NeutronNovaVerifierCircuit,
 };
-use ff::Field;
-use once_cell::sync::OnceCell;
-use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
-use tracing::{debug, info};
 
 fn compute_tensor_decomp(n: usize) -> (usize, usize, usize) {
   let ell = n.next_power_of_two().log_2();
@@ -1302,7 +1301,7 @@ pub struct NeutronNovaVerifierKey<E: Engine> {
   digest: OnceCell<SpartanDigest>,
 }
 
-impl<E: Engine> crate::digest::Digestible for NeutronNovaVerifierKey<E> {
+impl<E: Engine> vega_core::digest::Digestible for NeutronNovaVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
     use bincode::Options;
     let config = bincode::DefaultOptions::new()
@@ -1381,7 +1380,7 @@ pub struct NeutronNovaZkSNARK<E: Engine> {
   U_verifier: SplitMultiRoundR1CSInstance<E>,
   nifs: NovaNIFS<E>,
   random_U: RelaxedR1CSInstance<E>,
-  relaxed_snark: crate::spartan_relaxed::RelaxedR1CSSpartanProof<E>,
+  relaxed_snark: vega_core::spartan_relaxed::RelaxedR1CSSpartanProof<E>,
 }
 
 impl<E: Engine> NeutronNovaZkSNARK<E>
@@ -1824,7 +1823,7 @@ where
     let outer_start_index = num_rounds_b + 1;
     // outer sum-check (batched)
     let (_sc_span, sc_t) = start_span!("outer_sumcheck_batched");
-    let r_x = SumcheckProof::<E>::prove_cubic_with_additive_term_batched_zk(
+    let r_x = crate::zk_sumcheck::prove_cubic_with_additive_term_batched_zk(
       num_rounds_x,
       &mut poly_tau_left,
       &poly_tau_right,
@@ -1911,7 +1910,7 @@ where
     let step_hi_eff = step_hi_eff.max(z_folded_hi);
     let core_hi_eff = core_hi_eff.max(z_core_hi);
 
-    let (r_y, evals) = SumcheckProof::<E>::prove_quad_batched_zk(
+    let (r_y, evals) = crate::zk_sumcheck::prove_quad_batched_zk(
       &[claim_inner_joint_step, claim_inner_joint_core],
       num_rounds_y,
       &mut MultilinearPolynomial::new_with_halves(poly_ABC_step, step_lo_eff, step_hi_eff),
@@ -2007,7 +2006,7 @@ where
     )?;
 
     // Prove satisfiability of the folded VC instance via relaxed R1CS Spartan
-    let relaxed_snark = crate::spartan_relaxed::RelaxedR1CSSpartanProof::prove(
+    let relaxed_snark = vega_core::spartan_relaxed::RelaxedR1CSSpartanProof::prove(
       &pk.vc_shape_regular,
       &pk.vc_ck,
       &folded_u,

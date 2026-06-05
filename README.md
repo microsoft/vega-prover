@@ -1,8 +1,17 @@
 # Spartan and NeutronNova: Fast client-side zero-knowledge proving systems
 
-A client-side zkSNARK library built on the Spartan sum-check proof
-system and NeutronNova's folding scheme. Spartan2 powers
+A client-side zkSNARK workspace built on the Spartan sum-check proof
+system and NeutronNova's folding scheme. The Vega crates power
 [Vega](https://eprint.iacr.org/2025/2094).
+
+## Workspace packages
+
+- **`vega-core`** — shared split-R1CS, polynomial, transcript, provider, and
+  Bellpepper integration code.
+- **`vega-spartan`** — Spartan variants over split R1CS, including the
+  precomputable/online witness split used for repeated executions.
+- **`vega-neutronnova`** — NeutronNova folding over repeated split-R1CS
+  executions, using Spartan for the folded instance proof.
 
 ## What this library provides
 
@@ -42,27 +51,26 @@ system and NeutronNova's folding scheme. Spartan2 powers
   [Vega](https://eprint.iacr.org/2025/2094) relies on for low-latency
   proving.
 
-- **Criterion benchmarks** — `benches/sha256_spartan.rs` and
-  `benches/sha256_neutronnova.rs` measure setup, prep_prove, prove, and
-  verify across message sizes and thread counts, and report proof
-  sizes.
+- **Criterion benchmarks** — `vega-spartan` and `vega-neutronnova` include
+  SHA-256 benchmarks that measure setup, prep_prove, prove, and verify
+  across message sizes and thread counts, and report proof sizes.
 
 ## Running benchmarks
 
-The `benches/` directory contains SHA-256 benchmarks for both protocols using [Criterion](https://github.com/bheisler/criterion.rs). Each benchmark measures setup, prep_prove, prove, and verify times across multiple iterations and thread counts, and reports proof sizes.
+The Spartan and NeutronNova crates contain SHA-256 benchmarks using [Criterion](https://github.com/bheisler/criterion.rs). Each benchmark measures setup, prep_prove, prove, and verify times across multiple iterations and thread counts, and reports proof sizes.
 
 ```bash
 # Spartan: SHA-256 over 1 KiB and 2 KiB messages
-RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_spartan
+RUSTFLAGS="-C target-cpu=native" cargo bench -p vega-spartan --bench sha256_spartan
 
 # NeutronNova: 32 SHA-256 step circuits (2048 bytes total)
-RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_neutronnova
+RUSTFLAGS="-C target-cpu=native" cargo bench -p vega-neutronnova --bench sha256_neutronnova
 ```
 
 Override thread counts with `BENCH_THREADS` (comma-separated):
 
 ```bash
-BENCH_THREADS=1,8 RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_spartan
+BENCH_THREADS=1,8 RUSTFLAGS="-C target-cpu=native" cargo bench -p vega-spartan --bench sha256_spartan
 ```
 
 ## References

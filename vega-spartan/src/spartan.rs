@@ -6,7 +6,11 @@
 
 //! This module implements the Spartan SNARK protocol.
 //! It provides the prover and verifier keys, as well as the SNARK itself.
-use crate::{
+use ff::Field;
+use once_cell::sync::OnceCell;
+use serde::{Deserialize, Serialize};
+use tracing::info;
+use vega_core::{
   Blind, CommitmentKey,
   bellpepper::{
     r1cs::{PrecommittedState, SpartanShape, SpartanWitness},
@@ -33,10 +37,6 @@ use crate::{
     transcript::TranscriptEngineTrait,
   },
 };
-use ff::Field;
-use once_cell::sync::OnceCell;
-use serde::{Deserialize, Serialize};
-use tracing::info;
 
 /// A type that represents the prover's key
 #[derive(Serialize, Deserialize)]
@@ -70,7 +70,7 @@ pub struct SpartanVerifierKey<E: Engine> {
   digest: OnceCell<SpartanDigest>,
 }
 
-impl<E: Engine> crate::digest::Digestible for SpartanVerifierKey<E> {
+impl<E: Engine> vega_core::digest::Digestible for SpartanVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
     use bincode::Options;
     let config = bincode::DefaultOptions::new()
