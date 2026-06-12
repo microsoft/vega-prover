@@ -654,9 +654,7 @@ where
     ck: &CommitmentKey<E>,
     Us: Vec<R1CSInstance<E>>,
     Ws: Vec<R1CSWitness<E>>,
-    cached_matvec: Option<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>>,
-    cached_i64: Option<Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>>,
-    large_positions: &[usize],
+    cache: Option<StepMatVecCache<E>>,
     driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
   ) -> Result<
@@ -673,6 +671,15 @@ where
   where
     E::Scalar: DelayedReduction<i128>,
   {
+    let (cached_matvec, cached_i64, large_positions_owned) = match cache {
+      Some(c) => {
+        let (matvec, i64_mirror, large_positions) = c.into_parts();
+        (Some(matvec), i64_mirror, large_positions)
+      }
+      None => (None, None, Vec::new()),
+    };
+    let large_positions: &[usize] = &large_positions_owned;
+
     // Pad inputs, absorb instances, squeeze tau/rhos (shared with the small path)
     let n = Us.len();
     let (_prepare_span, prepare_t) = start_span!("nifs_prepare_inputs");
@@ -1688,32 +1695,17 @@ pub struct NeutronNovaVerifierKey<E: Engine> {
 
 impl<E: Engine> crate::digest::Digestible for NeutronNovaVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
-    use bincode::Options;
-    let config = bincode::DefaultOptions::new()
-      .with_little_endian()
-      .with_fixint_encoding();
-    config
-      .serialize_into(&mut *w, &self.ck)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vk_ee)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    use crate::digest::bincode_write;
+    bincode_write(w, &self.ck)?;
+    bincode_write(w, &self.vk_ee)?;
     // Use fast raw-byte path for the R1CS shapes
     self.S_step.write_bytes(w)?;
     self.S_core.write_bytes(w)?;
     // Serialize remaining small fields with bincode
-    config
-      .serialize_into(&mut *w, &self.vc_shape)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_shape_regular)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_ck)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_vk)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    bincode_write(w, &self.vc_shape)?;
+    bincode_write(w, &self.vc_shape_regular)?;
+    bincode_write(w, &self.vc_ck)?;
+    bincode_write(w, &self.vc_vk)?;
     Ok(())
   }
 }
@@ -1734,22 +1726,141 @@ impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
   }
 }
 
+/// Deterministic per-step-instance Az/Bz/Cz caches consumed by the NIFS prover.
+///
+/// Invariant (established by [`StepMatVecCache::build`]): when the i64
+/// mirrors are present, they are zeroed at every index in `large_positions`
+/// (the union of positions where any instance's value exceeded i64); the
+/// NIFS prover corrects those positions with field arithmetic.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound = "")]
+pub(crate) struct StepMatVecCache<E: Engine> {
+  /// Az/Bz/Cz field vectors per cached step instance.
+  matvec: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
+  /// i64 mirrors of `matvec`, zeroed at `large_positions`; `None` when the
+  /// small-value fast path is disabled.
+  i64_mirror: Option<Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>>,
+  /// Union of positions where any instance's Az/Bz/Cz didn't fit i64.
+  large_positions: Vec<usize>,
+}
+
+impl<E: Engine> StepMatVecCache<E> {
+  /// Compute the per-instance matrix-vector products (and, when `with_i64`,
+  /// their zeroed i64 mirrors) for the given prep states and public values.
+  fn build(
+    S: &SplitR1CSShape<E>,
+    ps_step: &[PrecommittedState<E>],
+    step_public_values: &[Vec<E::Scalar>],
+    with_i64: bool,
+  ) -> Result<Self, SpartanError> {
+    if ps_step.len() != step_public_values.len() {
+      return Err(SpartanError::InvalidInputLength {
+        reason: format!(
+          "cached matvec needs {} public-value rows, got {}",
+          ps_step.len(),
+          step_public_values.len()
+        ),
+      });
+    }
+
+    let matvec = if rayon::current_num_threads() > 1 {
+      (0..ps_step.len())
+        .into_par_iter()
+        .map(|i| {
+          let z = build_z::<E>(&ps_step[i].W, &step_public_values[i]);
+          S.multiply_vec(&z)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+    } else {
+      (0..ps_step.len())
+        .map(|i| {
+          let z = build_z::<E>(&ps_step[i].W, &step_public_values[i]);
+          S.multiply_vec(&z)
+        })
+        .collect::<Result<Vec<_>, _>>()?
+    };
+
+    let (i64_mirror, large_positions) = if with_i64 {
+      let mut all_i64 = Vec::with_capacity(matvec.len());
+      let mut large_pos_set = std::collections::BTreeSet::new();
+      for (az, bz, cz) in &matvec {
+        let (az_i64, az_large) = to_small_vec_or_zero(az);
+        let (bz_i64, bz_large) = to_small_vec_or_zero(bz);
+        let (cz_i64, cz_large) = to_small_vec_or_zero(cz);
+        large_pos_set.extend(az_large);
+        large_pos_set.extend(bz_large);
+        large_pos_set.extend(cz_large);
+        all_i64.push((az_i64, bz_i64, cz_i64));
+      }
+
+      let lp: Vec<usize> = large_pos_set.into_iter().collect();
+      if !matvec.is_empty() {
+        info!(
+          n_large = lp.len(),
+          total = matvec[0].0.len(),
+          "i64_conversion_stats"
+        );
+      }
+
+      // Establish the invariant: i64 mirrors are zeroed at large positions.
+      if !lp.is_empty() {
+        for (az_i64, bz_i64, cz_i64) in &mut all_i64 {
+          for &pos in &lp {
+            az_i64[pos] = 0;
+            bz_i64[pos] = 0;
+            cz_i64[pos] = 0;
+          }
+        }
+      }
+
+      (Some(all_i64), lp)
+    } else {
+      (None, Vec::new())
+    };
+
+    Ok(Self {
+      matvec,
+      i64_mirror,
+      large_positions,
+    })
+  }
+
+  /// Deep-clone in parallel (the cached vectors can be hundreds of MB).
+  fn par_clone(&self) -> Self {
+    Self {
+      matvec: self.matvec.par_iter().cloned().collect(),
+      i64_mirror: self
+        .i64_mirror
+        .as_ref()
+        .map(|v| v.par_iter().cloned().collect()),
+      large_positions: self.large_positions.clone(),
+    }
+  }
+
+  /// Decompose into the pieces consumed by `NeutronNovaNIFS::prove`.
+  #[allow(clippy::type_complexity)]
+  fn into_parts(
+    self,
+  ) -> (
+    Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
+    Option<Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>>,
+    Vec<usize>,
+  ) {
+    (self.matvec, self.i64_mirror, self.large_positions)
+  }
+}
+
 /// A type that holds the pre-processed state for proving
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct NeutronNovaPrepZkSNARK<E: Engine> {
   ps_step: Vec<PrecommittedState<E>>,
   ps_core: PrecommittedState<E>,
-  /// Cached partial matrix-vector products for shared+precommitted columns per step circuit (deterministic).
-  cached_step_matvec: Option<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>>,
-  /// Small-value (i64) cache of Az/Bz/Cz for NIFS integer arithmetic.
-  /// Large values are stored as 0 and corrected via field arithmetic using `large_positions`.
-  cached_step_i64: Option<Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>>,
-  /// Positions where ANY instance's Az/Bz/Cz didn't fit i64 (union across all instances).
-  /// i64 vectors are zeroed at these positions; correction uses field values.
-  large_positions: Vec<usize>,
-  /// Public values used when computing cached_step_matvec, for validation in prove.
-  /// Non-empty when the matvec cache is active; prove checks that step circuits produce the same values.
+  /// Deterministic step matvec caches; `None` when the step shape has rest
+  /// witness columns or challenges (see `can_cache_step_matvec`).
+  step_cache: Option<StepMatVecCache<E>>,
+  /// Public values used when computing the cache, for validation in prove.
+  /// Non-empty when the cache is active; prove checks that step circuits produce the same values.
   cached_step_public_values: Vec<Vec<E::Scalar>>,
 }
 
@@ -2076,82 +2187,6 @@ where
     pk.S_step.num_challenges == 0 && pk.S_step.num_rest_unpadded == 0
   }
 
-  fn build_cached_step_matvec(
-    S: &SplitR1CSShape<E>,
-    ps_step: &[PrecommittedState<E>],
-    step_public_values: &[Vec<E::Scalar>],
-  ) -> Result<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>, SpartanError> {
-    if ps_step.len() != step_public_values.len() {
-      return Err(SpartanError::InvalidInputLength {
-        reason: format!(
-          "cached matvec needs {} public-value rows, got {}",
-          ps_step.len(),
-          step_public_values.len()
-        ),
-      });
-    }
-
-    if rayon::current_num_threads() > 1 {
-      (0..ps_step.len())
-        .into_par_iter()
-        .map(|i| {
-          let z = build_z::<E>(&ps_step[i].W, &step_public_values[i]);
-          S.multiply_vec(&z)
-        })
-        .collect::<Result<Vec<_>, _>>()
-    } else {
-      (0..ps_step.len())
-        .map(|i| {
-          let z = build_z::<E>(&ps_step[i].W, &step_public_values[i]);
-          S.multiply_vec(&z)
-        })
-        .collect::<Result<Vec<_>, _>>()
-    }
-  }
-
-  fn build_round0_i64_cache(
-    matvec: &[(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)],
-  ) -> (Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>, Vec<usize>) {
-    let mut all_i64 = Vec::with_capacity(matvec.len());
-    let mut large_pos_set = std::collections::BTreeSet::new();
-    for (az, bz, cz) in matvec {
-      let (az_i64, az_large) = to_small_vec_or_zero(az);
-      let (bz_i64, bz_large) = to_small_vec_or_zero(bz);
-      let (cz_i64, cz_large) = to_small_vec_or_zero(cz);
-      for pos in az_large {
-        large_pos_set.insert(pos);
-      }
-      for pos in bz_large {
-        large_pos_set.insert(pos);
-      }
-      for pos in cz_large {
-        large_pos_set.insert(pos);
-      }
-      all_i64.push((az_i64, bz_i64, cz_i64));
-    }
-
-    let lp: Vec<usize> = large_pos_set.into_iter().collect();
-    if !matvec.is_empty() {
-      info!(
-        n_large = lp.len(),
-        total = matvec[0].0.len(),
-        "i64_conversion_stats"
-      );
-    }
-
-    if !lp.is_empty() {
-      for (az_i64, bz_i64, cz_i64) in &mut all_i64 {
-        for &pos in &lp {
-          az_i64[pos] = 0;
-          bz_i64[pos] = 0;
-          cz_i64[pos] = 0;
-        }
-      }
-    }
-
-    (all_i64, lp)
-  }
-
   /// Prepares the pre-processed state for proving
   pub fn prep_prove<C1: SpartanCircuit<E>, C2: SpartanCircuit<E>>(
     pk: &NeutronNovaProverKey<E>,
@@ -2165,33 +2200,22 @@ where
       ps_core,
       cached_step_public_values,
     } = Self::prepare_prep_step_artifacts(pk, step_circuits, core_circuit, is_small)?;
-    let cached_step_matvec = if Self::can_cache_step_matvec(pk) {
-      Some(Self::build_cached_step_matvec(
+    let step_cache = if Self::can_cache_step_matvec(pk) {
+      Some(StepMatVecCache::build(
         &pk.S_step,
         &ps_step,
         &cached_step_public_values,
+        is_small,
       )?)
     } else {
       None
-    };
-    let (cached_step_i64, large_positions) = if is_small {
-      if let Some(matvec) = cached_step_matvec.as_ref() {
-        let (all_i64, large_positions) = Self::build_round0_i64_cache(matvec);
-        (Some(all_i64), large_positions)
-      } else {
-        (None, Vec::new())
-      }
-    } else {
-      (None, Vec::new())
     };
 
     info!(elapsed_ms = %prep_t.elapsed().as_millis(), "neutronnova_prep_prove");
     Ok(NeutronNovaPrepZkSNARK {
       ps_step,
       ps_core,
-      cached_step_matvec,
-      cached_step_i64,
-      large_positions,
+      step_cache,
       cached_step_public_values,
     })
   }
@@ -2361,14 +2385,9 @@ where
     let mut vc_state = SatisfyingAssignment::<E>::initialize_multiround_witness(&pk.vc_shape)?;
     let mut driver = VcDriver::new(&mut vc, &mut vc_state, &pk.vc_shape, &pk.vc_ck);
 
-    let cached_matvec = prep_snark
-      .cached_step_matvec
-      .as_ref()
-      .map(|v| v.par_iter().cloned().collect::<Vec<_>>());
-    let cached_i64 = prep_snark
-      .cached_step_i64
-      .as_ref()
-      .map(|v| v.par_iter().cloned().collect::<Vec<_>>());
+    // Deep-clone the deterministic cache for this prove (NIFS consumes it;
+    // the prep state keeps its copy for subsequent proves).
+    let step_cache = prep_snark.step_cache.as_ref().map(StepMatVecCache::par_clone);
 
     let (_nifs_span, nifs_t) = start_span!("NIFS");
     let (E_eq, Az_step, Bz_step, Cz_step, folded_W, folded_U) = NeutronNovaNIFS::<E>::prove(
@@ -2376,9 +2395,7 @@ where
       &pk.ck,
       step_instances_regular,
       step_witnesses,
-      cached_matvec,
-      cached_i64,
-      &prep_snark.large_positions,
+      step_cache,
       &mut driver,
       &mut transcript,
     )?;

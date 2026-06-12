@@ -91,28 +91,15 @@ pub struct SpartanVerifierKey<E: Engine> {
 
 impl<E: Engine> crate::digest::Digestible for SpartanVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
-    use bincode::Options;
-    let config = bincode::DefaultOptions::new()
-      .with_little_endian()
-      .with_fixint_encoding();
-    config
-      .serialize_into(&mut *w, &self.vk_ee)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    use crate::digest::bincode_write;
+    bincode_write(w, &self.vk_ee)?;
     // Use fast raw-byte path for the main shape
     self.S.write_bytes(w)?;
     // Serialize remaining small fields with bincode
-    config
-      .serialize_into(&mut *w, &self.vc_shape)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_shape_regular)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_ck)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_vk)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    bincode_write(w, &self.vc_shape)?;
+    bincode_write(w, &self.vc_shape_regular)?;
+    bincode_write(w, &self.vc_ck)?;
+    bincode_write(w, &self.vc_vk)?;
     Ok(())
   }
 }

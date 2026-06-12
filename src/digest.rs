@@ -28,6 +28,19 @@ pub trait Digestible {
 /// Their instances will be serialized to bytes then digested.
 pub trait SimpleDigestible: Serialize {}
 
+/// Serialize a value into `w` with the canonical bincode configuration used
+/// for digest computation (little-endian, fixed-int encoding).
+pub(crate) fn bincode_write<W: Sized + io::Write, T: Serialize>(
+  w: &mut W,
+  t: &T,
+) -> Result<(), io::Error> {
+  bincode::DefaultOptions::new()
+    .with_little_endian()
+    .with_fixint_encoding()
+    .serialize_into(&mut *w, t)
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
 impl<T: SimpleDigestible> Digestible for T {
   fn write_bytes<W: Sized + io::Write>(&self, byte_sink: &mut W) -> Result<(), io::Error> {
     let config = bincode::DefaultOptions::new()
