@@ -14,6 +14,7 @@
 //! - [`domain`]: Domain types (LagrangePoint, LagrangeHatPoint, LagrangeIndex)
 //! - [`basis`]: Domain eval containers, basis computation, and tensor coefficients
 //! - [`extension`]: Multilinear polynomial extension (Procedure 6)
+//! - [`extension_bound`]: Input bounds certificate for native extension
 //! - [`accumulator`]: Accumulator data structures
 //! - [`accumulator_builder`]: Accumulator construction (Procedure 9)
 //! - [`index`]: Index mapping (Definition A.5)
@@ -25,6 +26,7 @@ mod basis;
 mod csr;
 mod domain;
 pub(crate) mod extension;
+mod extension_bound;
 mod index;
 mod thread_state;
 
@@ -34,3 +36,4 @@ pub(crate) use accumulator_builder::{SPARTAN_T_DEGREE, build_accumulators_sparta
 pub(crate) use basis::{
   LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals, ReducedLagrangeDomainEvals,
 };
+pub(crate) use extension_bound::{ExtensionBoundedPoly, ExtensionSmallValue};

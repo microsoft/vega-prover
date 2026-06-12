@@ -10,15 +10,17 @@
 //! - [`build_accumulators_spartan`]: Optimized builder for Spartan's cubic relation
 
 use super::{
-  accumulator::LagrangeAccumulators, csr::Csr, domain::LagrangeIndex,
-  extension::extend_to_lagrange_domain, index::AccumulatorPrefixIndex,
+  accumulator::LagrangeAccumulators,
+  csr::Csr,
+  domain::LagrangeIndex,
+  extension::extend_to_lagrange_domain,
+  extension_bound::{ExtensionBoundedPoly, ExtensionSmallValue},
+  index::AccumulatorPrefixIndex,
   thread_state::SpartanThreadState,
 };
 use crate::{
-  big_num::{DelayedReduction, SmallValue, SmallValueEngine},
-  polys::{
-    eq::build_eq_pyramid, eq::compute_suffix_eq_pyramid, multilinear::MultilinearPolynomial,
-  },
+  big_num::{DelayedReduction, SmallValueEngine},
+  polys::{eq::build_eq_pyramid, eq::compute_suffix_eq_pyramid},
 };
 use ff::PrimeField;
 use num_traits::Zero;
@@ -90,16 +92,18 @@ pub(crate) const SPARTAN_T_DEGREE: usize = 2;
 /// - Skip binary betas: for satisfying witnesses, Az·Bz = Cz on {0,1}^n, so Az·Bz - Cz = 0
 /// - Only process betas containing ∞: these are exactly the points where the
 ///   highest-degree `Az·Bz` term can contribute after the `Cz` term drops out
-pub(crate) fn build_accumulators_spartan<F, SV>(
-  az: &MultilinearPolynomial<SV>,
-  bz: &MultilinearPolynomial<SV>,
+pub(crate) fn build_accumulators_spartan<F, SV, const LB: usize>(
+  az: &ExtensionBoundedPoly<'_, SV, SPARTAN_T_DEGREE, LB>,
+  bz: &ExtensionBoundedPoly<'_, SV, SPARTAN_T_DEGREE, LB>,
   taus: &[F],
-  l0: usize,
 ) -> (LagrangeAccumulators<F, 2>, Vec<Vec<F>>, Vec<Vec<F>>)
 where
   F: SmallValueEngine<SV>,
-  SV: SmallValue,
+  SV: ExtensionSmallValue,
 {
+  let l0 = LB;
+  let az = az.as_poly();
+  let bz = bz.as_poly();
   let base: usize = 3; // D + 1 = 2 + 1 = 3
   let l = az.Z.len().trailing_zeros() as usize;
   debug_assert_eq!(az.Z.len(), 1usize << l, "poly size must be power of 2");
@@ -327,7 +331,10 @@ pub(crate) fn build_beta_cache<const D: usize>(l0: usize) -> BetaPrefixCache {
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{lagrange_accumulator::domain::LagrangeHatPoint, provider::pasta::pallas};
+  use crate::{
+    lagrange_accumulator::domain::LagrangeHatPoint, polys::multilinear::MultilinearPolynomial,
+    provider::pasta::pallas,
+  };
   use ff::Field;
 
   type Scalar = pallas::Scalar;
@@ -340,7 +347,7 @@ mod tests {
   #[test]
   fn test_binary_beta_zero_shortcut_behavior() {
     // Use l0=1 so round 0 buckets are fed only by β of length 1 (easy to reason about).
-    let l0 = 1;
+    const L0: usize = 1;
     let l = 2;
 
     // Az = Bz = top bit x0 (most significant of 2 bits)
@@ -353,7 +360,10 @@ mod tests {
 
     let taus: Vec<Scalar> = vec![Scalar::from(3u64), Scalar::from(5u64)];
 
-    let (acc, _, _) = build_accumulators_spartan(&az, &bz, &taus, l0);
+    let az = ExtensionBoundedPoly::<_, D, L0>::new(&az).expect("Az should be extension-bounded");
+    let bz = ExtensionBoundedPoly::<_, D, L0>::new(&bz).expect("Bz should be extension-bounded");
+
+    let (acc, _, _) = build_accumulators_spartan(&az, &bz, &taus);
 
     // Only round 0 exists (v is empty). β ranges over U_d with binary {0,1} and non-binary {∞}.
     // Buckets for u = 0 should be zero (binary β), bucket for u = ∞ should be non-zero.
@@ -375,7 +385,8 @@ mod tests {
   /// Verifies that running the same computation twice produces the same output.
   #[test]
   fn test_build_accumulators_spartan_small_consistent() {
-    let l0 = 2;
+    const L0: usize = 2;
+    let l0 = L0;
 
     // Define deterministic Az, Bz over {0,1}^4 using small values
     let eval = |bits: usize| -> i32 {
@@ -400,9 +411,12 @@ mod tests {
       Scalar::from(13u64),
     ];
 
+    let az = ExtensionBoundedPoly::<_, D, L0>::new(&az).expect("Az should be extension-bounded");
+    let bz = ExtensionBoundedPoly::<_, D, L0>::new(&bz).expect("Bz should be extension-bounded");
+
     // Build accumulators twice
-    let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus, l0);
-    let (acc2, _, _) = build_accumulators_spartan(&az, &bz, &taus, l0);
+    let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus);
+    let (acc2, _, _) = build_accumulators_spartan(&az, &bz, &taus);
 
     // Compare all buckets
     for round in 0..l0 {
@@ -424,7 +438,8 @@ mod tests {
   /// Test build_accumulators_spartan with i32 witnesses using larger inputs to stress test.
   #[test]
   fn test_build_accumulators_spartan_small_larger() {
-    let l0 = 3;
+    const L0: usize = 3;
+    let l0 = L0;
     let l = 10;
     let n = 1 << l;
 
@@ -438,9 +453,12 @@ mod tests {
     // Random-looking taus
     let taus: Vec<Scalar> = (0..l).map(|i| Scalar::from((i * 7 + 3) as u64)).collect();
 
+    let az = ExtensionBoundedPoly::<_, D, L0>::new(&az).expect("Az should be extension-bounded");
+    let bz = ExtensionBoundedPoly::<_, D, L0>::new(&bz).expect("Bz should be extension-bounded");
+
     // Build accumulators twice to verify consistency
-    let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus, l0);
-    let (acc2, _, _) = build_accumulators_spartan(&az, &bz, &taus, l0);
+    let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus);
+    let (acc2, _, _) = build_accumulators_spartan(&az, &bz, &taus);
 
     for round in 0..l0 {
       let num_v = (D + 1).pow(round as u32);

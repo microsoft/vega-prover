@@ -27,11 +27,12 @@
 //! The main entry point is [`prove_cubic_small_value`], which implements
 
 use crate::{
-  big_num::{DelayedReduction, SmallValue, SmallValueEngine, SmallValueField},
+  big_num::{DelayedReduction, SmallValueEngine, SmallValueField},
   errors::SpartanError,
   lagrange_accumulator::{
-    LagrangeAccumulators, LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals,
-    ReducedLagrangeDomainEvals, SPARTAN_T_DEGREE, build_accumulators_spartan,
+    ExtensionBoundedPoly, ExtensionSmallValue, LagrangeAccumulators, LagrangeBasisFactory,
+    LagrangeCoeff, LagrangeDomainEvals, ReducedLagrangeDomainEvals, SPARTAN_T_DEGREE,
+    build_accumulators_spartan,
   },
   polys::{eq::EqPolynomial, multilinear::MultilinearPolynomial, univariate::UniPoly},
   start_span,
@@ -71,54 +72,54 @@ struct SmallValueSumCheck<Scalar: PrimeField, const D: usize> {
 /// - for evaluation points containing `∞`, only the highest-degree term matters,
 ///   so `C` does not contribute to the accumulator
 ///
-/// Generic over `SmallValue` to support both i32/i64 and i64/i128 configurations.
+/// Generic over `ExtensionSmallValue` to support both i32/i64 and i64/i128 configurations.
 ///
 /// # Type Parameters
 ///
-/// - `LB`: Number of small-value rounds (ℓ₀). The actual number of rounds used is
-///   `min(LB, num_rounds.saturating_sub(1))`, so the transition path always leaves
-///   at least one suffix variable for the standard eq-sumcheck continuation.
-///   Caller should ensure input values are bounded by roughly `SV::MAX / 3^LB`
-///   for safe Lagrange extension, since extending a Boolean prefix to
-///   `U_2 = {∞, 0, 1}` can grow magnitudes by a factor of about `3^LB`.
-///   Typical values are 3-4 for practical instances (3^4 = 81× growth factor).
-pub fn prove_cubic_small_value<E, SV, const LB: usize>(
+/// - `LB`: Number of small-value rounds. The optimized path requires
+///   `0 < LB < num_rounds`, so at least one suffix variable remains for the
+///   standard eq-sumcheck continuation.
+///
+/// `poly_A_small` and `poly_B_small` must be provided as [`ExtensionBoundedPoly`]
+/// caller assertions. Debug builds validate that assertion; release builds skip
+/// the expensive full-polynomial scan.
+pub(crate) fn prove_cubic_small_value<E, SV, const LB: usize>(
   claim: &E::Scalar,
   taus: Vec<E::Scalar>,
-  poly_A_small: &MultilinearPolynomial<SV>,
-  poly_B_small: &MultilinearPolynomial<SV>,
+  poly_A_small: ExtensionBoundedPoly<'_, SV, SPARTAN_T_DEGREE, LB>,
+  poly_B_small: ExtensionBoundedPoly<'_, SV, SPARTAN_T_DEGREE, LB>,
   poly_C_small: &MultilinearPolynomial<SV>,
   transcript: &mut E::TE,
 ) -> Result<(SumcheckProof<E>, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError>
 where
   E: Engine,
-  SV: SmallValue,
+  SV: ExtensionSmallValue,
   E::Scalar: SmallValueEngine<SV>,
 {
   let num_rounds = taus.len();
+  if LB == 0 {
+    return Err(SpartanError::SmallValueRoundsZero {
+      context: "small-value sumcheck requires LB > 0".to_string(),
+    });
+  }
+  if num_rounds <= LB {
+    return Err(SpartanError::InvalidInputLength {
+      reason: format!(
+        "small-value sumcheck requires num_rounds > LB; got num_rounds={} and LB={}",
+        num_rounds, LB
+      ),
+    });
+  }
+
+  let poly_A_small_ref = poly_A_small.as_poly();
+  let poly_B_small_ref = poly_B_small.as_poly();
   let mut r: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
   let mut polys: Vec<crate::polys::univariate::CompressedUniPoly<E::Scalar>> =
     Vec::with_capacity(num_rounds);
   let mut claim_per_round = *claim;
 
-  // Determine ℓ₀: number of small-value rounds (at most LB, but must be < num_rounds
-  // to leave at least one suffix variable for the transition phase)
-  let l0 = std::cmp::min(LB, num_rounds.saturating_sub(1));
-
-  // If l0 is 0, the small-value optimization is not applicable
-  if l0 == 0 {
-    let mut poly_a = small_poly_to_field::<E::Scalar, SV>(poly_A_small);
-    let mut poly_b = small_poly_to_field::<E::Scalar, SV>(poly_B_small);
-    let mut poly_c = small_poly_to_field::<E::Scalar, SV>(poly_C_small);
-    return SumcheckProof::prove_cubic_with_three_inputs(
-      claim,
-      taus,
-      &mut poly_a,
-      &mut poly_b,
-      &mut poly_c,
-      transcript,
-    );
-  }
+  let l0 = LB;
+  debug_assert!(l0 < num_rounds);
 
   // ===== Pre-computation Phase =====
   // Build accumulators A_i(v, u) for all i ∈ [ℓ₀] using small-value arithmetic.
@@ -127,11 +128,10 @@ where
   // Uses: small × small → intermediate (for Az·Bz products),
   // then intermediate × field (for eq weighting via DelayedReduction).
   let (accumulators, mut e_in_pyramid, e_xout_pyramid) =
-    build_accumulators_spartan(poly_A_small, poly_B_small, &taus, l0);
+    build_accumulators_spartan::<E::Scalar, SV, LB>(&poly_A_small, &poly_B_small, &taus);
 
   let mut small_value_sumcheck =
     SmallValueSumCheck::<E::Scalar, SPARTAN_T_DEGREE>::from_accumulators(accumulators);
-  let mut transition_round = l0;
 
   // ===== Small-Value Rounds (0 to ℓ₀-1) =====
   // During these rounds, we use the precomputed accumulators. Polynomials are NOT bound
@@ -149,11 +149,11 @@ where
     let li = small_value_sumcheck.eq_round_values(taus[round]);
 
     // 3. Derive t(1) from the sumcheck constraint. If ℓ_i(1)=0, the optimized
-    // path cannot recover t_i(1), so we fall back to the standard prover from
-    // this round onward.
+    // path cannot recover t_i(1).
     let Some(t1) = derive_t1(li.at_zero(), li.at_one(), claim_per_round, t0) else {
-      transition_round = round;
-      break;
+      return Err(SpartanError::InternalError {
+        reason: format!("small-value sumcheck cannot derive t(1) at round {}", round),
+      });
     };
 
     // 4. Build round polynomial s_i(X) = ℓ_i(X) · t_i(X)
@@ -184,10 +184,10 @@ where
   // unreduced accumulation.
   let (_bind_span, bind_t) = start_span!("bind_poly_vars_transition");
   let (mut poly_A, mut poly_B, mut poly_C) = bind_three_polys_batched_small_value(
-    poly_A_small,
-    poly_B_small,
+    poly_A_small_ref,
+    poly_B_small_ref,
     poly_C_small,
-    &r[..transition_round],
+    &r[..l0],
   );
   info!(
     elapsed_ms = %bind_t.elapsed().as_millis(),
@@ -195,27 +195,20 @@ where
   );
 
   // ===== Remaining Rounds (ℓ₀ to ℓ-1) =====
-  let mut eq_instance = if transition_round == l0 {
-    // Reuse the precomputed pyramids when the optimized rounds completed as planned.
-    // The first suffix tau is tracked separately in eval_eq_left, so the left pyramid
-    // passed to EqSumCheckInstance must exclude that first tau.
-    e_in_pyramid.pop();
-    eq_sumcheck::EqSumCheckInstance::<E>::from_pyramids(
-      e_in_pyramid,
-      e_xout_pyramid,
-      &taus[l0..],
-      small_value_sumcheck.eq_alpha(),
-    )
-  } else {
-    eq_sumcheck::EqSumCheckInstance::<E>::new_with_eval_eq_left(
-      &taus[transition_round..],
-      small_value_sumcheck.eq_alpha(),
-    )
-  };
+  // Reuse the precomputed pyramids when the optimized rounds completed.
+  // The first suffix tau is tracked separately in eval_eq_left, so the left pyramid
+  // passed to EqSumCheckInstance must exclude that first tau.
+  e_in_pyramid.pop();
+  let mut eq_instance = eq_sumcheck::EqSumCheckInstance::<E>::from_pyramids(
+    e_in_pyramid,
+    e_xout_pyramid,
+    &taus[l0..],
+    small_value_sumcheck.eq_alpha(),
+  );
 
   // Continue with the remaining rounds using the standard eq instance seeded with the
   // accumulated prefix eq factor from the small-value rounds.
-  for round in transition_round..num_rounds {
+  for round in l0..num_rounds {
     let (_round_span, round_t) = start_span!("sumcheck_round", round = round);
 
     let poly = {
@@ -534,7 +527,7 @@ mod tests {
   /// evaluations as EqSumCheckInstance across multiple rounds.
   fn run_smallvalue_round_test<SV>()
   where
-    SV: SmallValue + Mul<Output = SV> + TryFrom<usize>,
+    SV: ExtensionSmallValue + SmallValue + Mul<Output = SV> + TryFrom<usize>,
     <SV as TryFrom<usize>>::Error: Debug,
     F: SmallValueEngine<SV>,
   {
@@ -570,8 +563,14 @@ mod tests {
     // Claim = 0 for satisfying witness (Az·Bz = Cz)
     let mut claim = F::ZERO;
 
-    // Build accumulators using the simplified API
-    let (accs, _, _) = build_accumulators_spartan(&az_poly, &bz_poly, &taus, SMALL_VALUE_ROUNDS);
+    let az_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, SMALL_VALUE_ROUNDS>::new(&az_poly)
+      .expect("Az should be extension-bounded");
+    let bz_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, SMALL_VALUE_ROUNDS>::new(&bz_poly)
+      .expect("Bz should be extension-bounded");
+
+    // Build accumulators using the checked API
+    let (accs, _, _) =
+      build_accumulators_spartan::<F, SV, SMALL_VALUE_ROUNDS>(&az_bound, &bz_bound, &taus);
     let mut small_value = SmallValueSumCheck::from_accumulators(accs);
 
     // Full eq_instance for verification against standard sumcheck
@@ -650,7 +649,7 @@ mod tests {
   /// Uses synthetic Az, Bz values in a small range and computes Cz = Az * Bz.
   fn run_equivalence_test<SV>(num_vars: usize)
   where
-    SV: SmallValue + Mul<Output = SV> + TryFrom<i32>,
+    SV: ExtensionSmallValue + SmallValue + Mul<Output = SV> + TryFrom<i32>,
     <SV as TryFrom<i32>>::Error: Debug,
     F: SmallValueEngine<SV>,
   {
@@ -685,7 +684,7 @@ mod tests {
     bz_small: Vec<SV>,
     cz_small: Vec<SV>,
   ) where
-    SV: SmallValue + Mul<Output = SV>,
+    SV: ExtensionSmallValue + SmallValue + Mul<Output = SV>,
     F: SmallValueEngine<SV>,
   {
     let num_vars = taus.len();
@@ -721,12 +720,17 @@ mod tests {
     )
     .expect("standard prove should succeed");
 
+    let az_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&az_small_poly)
+      .expect("Az should be extension-bounded");
+    let bz_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&bz_small_poly)
+      .expect("Bz should be extension-bounded");
+
     // Run small-value method
     let (proof2, r2, evals2) = prove_cubic_small_value::<E, SV, 3>(
       &claim,
       taus.clone(),
-      &az_small_poly,
-      &bz_small_poly,
+      az_bound,
+      bz_bound,
       &cz_small_poly,
       &mut transcript2,
     )
@@ -758,29 +762,86 @@ mod tests {
 
   /// Test small-value sumcheck equivalence with synthetic polynomials.
   ///
-  /// Tests multiple sizes to ensure equivalence holds for various l0 values.
-  /// With LB=3, l0 = min(3, num_vars - 1):
-  /// - num_vars=2: l0=1, suffix_vars=1
-  /// - num_vars=3: l0=2, suffix_vars=1
+  /// Tests multiple sizes to ensure equivalence holds when the optimized path
+  /// can run exactly LB rounds and leave at least one suffix variable.
+  /// With LB=3:
   /// - num_vars=4: l0=3, suffix_vars=1
   /// - num_vars=6: l0=3, suffix_vars=3
   /// - num_vars=10: l0=3, suffix_vars=7
   #[test]
   fn test_sumcheck_equivalence_with_synthetic_i32() {
-    for num_vars in [2, 3, 4, 6, 10] {
+    for num_vars in [4, 6, 10] {
       run_equivalence_test::<i32>(num_vars);
     }
   }
 
   #[test]
   fn test_sumcheck_equivalence_with_synthetic_i64() {
-    for num_vars in [2, 3, 4, 6, 10] {
+    for num_vars in [4, 6, 10] {
       run_equivalence_test::<i64>(num_vars);
     }
   }
 
   #[test]
-  fn test_sumcheck_equivalence_when_first_tau_is_zero() {
+  fn test_small_value_sumcheck_rejects_num_rounds_lte_lb() {
+    const NUM_VARS: usize = 3;
+    let n = 1usize << NUM_VARS;
+    let az_small_poly = MultilinearPolynomial::new(vec![1i32; n]);
+    let bz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
+    let cz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
+    let az_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&az_small_poly)
+      .expect("Az should be extension-bounded");
+    let bz_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&bz_small_poly)
+      .expect("Bz should be extension-bounded");
+    let taus = vec![F::from(2u64), F::from(3u64), F::from(4u64)];
+    let mut transcript = <E as Engine>::TE::new(b"test");
+
+    let result = prove_cubic_small_value::<E, i32, 3>(
+      &F::ZERO,
+      taus,
+      az_bound,
+      bz_bound,
+      &cz_small_poly,
+      &mut transcript,
+    );
+
+    assert!(matches!(
+      result,
+      Err(SpartanError::InvalidInputLength { .. })
+    ));
+  }
+
+  #[test]
+  fn test_small_value_sumcheck_rejects_zero_lb() {
+    const NUM_VARS: usize = 1;
+    let n = 1usize << NUM_VARS;
+    let az_small_poly = MultilinearPolynomial::new(vec![1i32; n]);
+    let bz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
+    let cz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
+    let az_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 0>::new(&az_small_poly)
+      .expect("Az should be extension-bounded");
+    let bz_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 0>::new(&bz_small_poly)
+      .expect("Bz should be extension-bounded");
+    let taus = vec![F::from(2u64)];
+    let mut transcript = <E as Engine>::TE::new(b"test");
+
+    let result = prove_cubic_small_value::<E, i32, 0>(
+      &F::ZERO,
+      taus,
+      az_bound,
+      bz_bound,
+      &cz_small_poly,
+      &mut transcript,
+    );
+
+    assert!(matches!(
+      result,
+      Err(SpartanError::SmallValueRoundsZero { .. })
+    ));
+  }
+
+  #[test]
+  fn test_small_value_sumcheck_rejects_when_first_tau_is_zero() {
     const NUM_VARS: usize = 6;
     const SEED: u64 = 0xDEADBEEF;
     let mut rng = StdRng::seed_from_u64(SEED);
@@ -797,7 +858,26 @@ mod tests {
     let mut taus: Vec<F> = (0..NUM_VARS).map(|_| F::random(&mut rng)).collect();
     taus[0] = F::ZERO;
 
-    run_equivalence_test_with_taus::<i32>(taus, az_small, bz_small, cz_small);
+    let claim = F::ZERO;
+    let az_small_poly = MultilinearPolynomial::new(az_small);
+    let bz_small_poly = MultilinearPolynomial::new(bz_small);
+    let cz_small_poly = MultilinearPolynomial::new(cz_small);
+    let az_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&az_small_poly)
+      .expect("Az should be extension-bounded");
+    let bz_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&bz_small_poly)
+      .expect("Bz should be extension-bounded");
+    let mut transcript = <E as Engine>::TE::new(b"test");
+
+    let result = prove_cubic_small_value::<E, i32, 3>(
+      &claim,
+      taus,
+      az_bound,
+      bz_bound,
+      &cz_small_poly,
+      &mut transcript,
+    );
+
+    assert!(matches!(result, Err(SpartanError::InternalError { .. })));
   }
 }
 
@@ -846,6 +926,10 @@ mod perf_tests {
       let az_poly = MultilinearPolynomial::new(az_small);
       let bz_poly = MultilinearPolynomial::new(bz_small);
       let cz_poly = MultilinearPolynomial::new(cz_small);
+      let az_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&az_poly)
+        .expect("Az should be extension-bounded");
+      let bz_bound = ExtensionBoundedPoly::<_, SPARTAN_T_DEGREE, 3>::new(&bz_poly)
+        .expect("Bz should be extension-bounded");
 
       let taus: Vec<E::Scalar> = (0..num_vars).map(|_| E::Scalar::random(&mut rng)).collect();
       let mut transcript = E::TE::new(b"perf_test");
@@ -859,8 +943,8 @@ mod perf_tests {
       let (proof, _r, _evals) = prove_cubic_small_value::<E, _, 3>(
         &E::Scalar::ZERO,
         taus.clone(),
-        &az_poly,
-        &bz_poly,
+        az_bound,
+        bz_bound,
         &cz_poly,
         &mut transcript,
       )
