@@ -120,7 +120,7 @@ mod big_num_tests {
   );
   crate::test_barrett_reduction_7!(pallas_br7, crate::provider::pasta::pallas::Scalar);
   crate::test_delayed_reduction_small!(pallas_dr_small, crate::provider::pasta::pallas::Scalar);
-  crate::test_small_value_field!(pallas_svf, crate::provider::pasta::pallas::Scalar);
+  crate::test_small_value_conversion!(pallas_svc, crate::provider::pasta::pallas::Scalar);
 
   // Vesta tests
   crate::test_field_reduction_constants!(vesta_frc, crate::provider::pasta::vesta::Scalar);
@@ -134,5 +134,5 @@ mod big_num_tests {
   );
   crate::test_barrett_reduction_7!(vesta_br7, crate::provider::pasta::vesta::Scalar);
   crate::test_delayed_reduction_small!(vesta_dr_small, crate::provider::pasta::vesta::Scalar);
-  crate::test_small_value_field!(vesta_svf, crate::provider::pasta::vesta::Scalar);
+  crate::test_small_value_conversion!(vesta_svc, crate::provider::pasta::vesta::Scalar);
 }

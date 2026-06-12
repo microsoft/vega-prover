@@ -20,7 +20,7 @@ use crate::{
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
   },
-  big_num::{DelayedReduction, SmallAccumulator, small_value_field::to_small_vec_or_zero},
+  big_num::{DelayedReduction, SmallAccumulator, small_value_conversion::to_small_vec_or_zero},
   digest::DigestComputer,
   errors::SpartanError,
   math::Math,

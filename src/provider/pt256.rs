@@ -85,7 +85,7 @@ mod big_num_tests {
   );
   crate::test_barrett_reduction_7!(p256_br7, crate::provider::pt256::p256::Scalar);
   crate::test_delayed_reduction_small!(p256_dr_small, crate::provider::pt256::p256::Scalar);
-  crate::test_small_value_field!(p256_svf, crate::provider::pt256::p256::Scalar);
+  crate::test_small_value_conversion!(p256_svc, crate::provider::pt256::p256::Scalar);
 
   // T256 tests
   crate::test_field_reduction_constants!(t256_frc, crate::provider::pt256::t256::Scalar);
@@ -99,5 +99,5 @@ mod big_num_tests {
   );
   crate::test_barrett_reduction_7!(t256_br7, crate::provider::pt256::t256::Scalar);
   crate::test_delayed_reduction_small!(t256_dr_small, crate::provider::pt256::t256::Scalar);
-  crate::test_small_value_field!(t256_svf, crate::provider::pt256::t256::Scalar);
+  crate::test_small_value_conversion!(t256_svc, crate::provider::pt256::t256::Scalar);
 }

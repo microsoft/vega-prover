@@ -331,9 +331,9 @@ pub(crate) fn test_delayed_reduction_sum_impl<F: MontgomeryLimbs + PrimeField + 
 /// Tests that accumulating field × small_value products with delayed reduction
 /// produces the same result as immediate field multiplication.
 #[cfg(test)]
-pub(crate) fn test_delayed_reduction_small_impl<F, V>()
+pub(crate) fn test_delayed_reduction_small_impl<F, V>(small_to_field: fn(V) -> F)
 where
-  F: MontgomeryLimbs + PrimeField + Copy + DelayedReduction<V> + super::SmallValueField<V>,
+  F: MontgomeryLimbs + PrimeField + Copy + DelayedReduction<V>,
   V: Copy,
   rand::distributions::Standard: rand::distributions::Distribution<V>,
 {
@@ -350,7 +350,7 @@ where
     let value: V = rng.r#gen();
 
     <F as DelayedReduction<V>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
-    expected += field * F::small_to_field(value);
+    expected += field * small_to_field(value);
   }
 
   let result = <F as DelayedReduction<V>>::reduce(&acc);
@@ -371,11 +371,13 @@ where
 
   for field in fields {
     for value in values {
+      use super::small_value_conversion;
+
       let mut acc = <F as DelayedReduction<i32>>::Accumulator::default();
       <F as DelayedReduction<i32>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
 
       let result = <F as DelayedReduction<i32>>::reduce(&acc);
-      let expected = field * super::small_value_field::i64_to_field::<F>(value as i64);
+      let expected = field * small_value_conversion::i32_to_field::<F>(value);
 
       assert_eq!(
         result, expected,
@@ -387,8 +389,10 @@ where
   let mut acc = <F as DelayedReduction<i32>>::Accumulator::default();
   let mut expected = F::ZERO;
   for (field, value) in fields.into_iter().zip([i32::MIN, i32::MAX, i32::MIN]) {
+    use super::small_value_conversion;
+
     <F as DelayedReduction<i32>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
-    expected += field * super::small_value_field::i64_to_field::<F>(value as i64);
+    expected += field * small_value_conversion::i32_to_field::<F>(value);
   }
 
   let result = <F as DelayedReduction<i32>>::reduce(&acc);
@@ -402,7 +406,7 @@ where
 #[cfg(test)]
 pub(crate) fn test_delayed_reduction_i64_boundaries_impl<F>()
 where
-  F: MontgomeryLimbs + PrimeField + Copy + DelayedReduction<i64> + super::SmallValueField<i64>,
+  F: MontgomeryLimbs + PrimeField + Copy + DelayedReduction<i64>,
 {
   let fields = [F::from(1u64), F::from(7u64), F::from(u32::MAX as u64)];
   let values = [i64::MIN, i64::MAX];
@@ -413,7 +417,7 @@ where
       <F as DelayedReduction<i64>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
 
       let result = <F as DelayedReduction<i64>>::reduce(&acc);
-      let expected = field * F::small_to_field(value);
+      let expected = field * super::small_value_conversion::i64_to_field::<F>(value);
 
       assert_eq!(
         result, expected,
@@ -425,8 +429,10 @@ where
   let mut acc = <F as DelayedReduction<i64>>::Accumulator::default();
   let mut expected = F::ZERO;
   for (field, value) in fields.into_iter().zip([i64::MIN, i64::MAX, i64::MIN]) {
+    use super::small_value_conversion;
+
     <F as DelayedReduction<i64>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
-    expected += field * F::small_to_field(value);
+    expected += field * small_value_conversion::i64_to_field::<F>(value);
   }
 
   let result = <F as DelayedReduction<i64>>::reduce(&acc);
@@ -447,11 +453,13 @@ where
 
   for field in fields {
     for value in values {
+      use super::small_value_conversion;
+
       let mut acc = <F as DelayedReduction<i128>>::Accumulator::default();
       <F as DelayedReduction<i128>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
 
       let result = <F as DelayedReduction<i128>>::reduce(&acc);
-      let expected = field * super::small_value_field::i128_to_field::<F>(value);
+      let expected = field * small_value_conversion::i128_to_field::<F>(value);
 
       assert_eq!(
         result, expected,
@@ -463,8 +471,10 @@ where
   let mut acc = <F as DelayedReduction<i128>>::Accumulator::default();
   let mut expected = F::ZERO;
   for (field, value) in fields.into_iter().zip([i128::MIN, i128::MAX, i128::MIN]) {
+    use super::small_value_conversion;
+
     <F as DelayedReduction<i128>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
-    expected += field * super::small_value_field::i128_to_field::<F>(value);
+    expected += field * small_value_conversion::i128_to_field::<F>(value);
   }
 
   let result = <F as DelayedReduction<i128>>::reduce(&acc);
@@ -496,19 +506,25 @@ macro_rules! test_delayed_reduction_small {
     mod $mod_name {
       #[test]
       fn delayed_reduction_i32() {
-        $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i32>();
+        $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i32>(
+          $crate::big_num::small_value_conversion::i32_to_field::<$field>,
+        );
         $crate::big_num::delayed_reduction::test_delayed_reduction_i32_boundaries_impl::<$field>();
       }
 
       #[test]
       fn delayed_reduction_i64() {
-        $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i64>();
+        $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i64>(
+          $crate::big_num::small_value_conversion::i64_to_field::<$field>,
+        );
         $crate::big_num::delayed_reduction::test_delayed_reduction_i64_boundaries_impl::<$field>();
       }
 
       #[test]
       fn delayed_reduction_i128() {
-        $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i128>();
+        $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i128>(
+          $crate::big_num::small_value_conversion::i128_to_field::<$field>,
+        );
         $crate::big_num::delayed_reduction::test_delayed_reduction_i128_boundaries_impl::<$field>();
       }
     }
