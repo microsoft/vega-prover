@@ -15,11 +15,9 @@ use ff::{PrimeField, PrimeFieldBits};
 use sha2::{Digest, Sha256};
 use std::marker::PhantomData;
 
-#[cfg(debug_assertions)]
-use crate::gadgets::SmallBoolean;
 use crate::{
-  gadgets::{NoBatchEq, small_sha256_int_with_prefix},
-  small_constraint_system::SmallToBellpepperCS,
+  gadgets::{NoBatchEq, SmallBoolean, small_sha256_int_with_prefix},
+  small_constraint_system::{SmallConstraintSystem, SmallToBellpepperCS},
   traits::{Engine, circuit::SpartanCircuit},
 };
 
@@ -58,6 +56,25 @@ impl<Scalar: PrimeField + PrimeFieldBits> SmallSha256ChainCircuit<Scalar> {
   }
 }
 
+/// Shared synthesis body: allocate the chain input bits and run the small
+/// SHA-256 gadget `chain_length` times, returning the final digest bits.
+fn synthesize_sha256_chain_bits<CS>(
+  cs: &mut CS,
+  input: &[u8; 32],
+  chain_length: usize,
+) -> Result<Vec<SmallBoolean>, SynthesisError>
+where
+  CS: SmallConstraintSystem<i8, i32>,
+{
+  let mut current_bits = alloc_preimage_small_bits::<i8, _>(cs, input)?;
+  let mut eq = NoBatchEq::<i8, i32, _>::new(cs);
+  for chain_idx in 0..chain_length {
+    let prefix = format!("c{}_", chain_idx);
+    current_bits = small_sha256_int_with_prefix::<i8, _>(&mut eq, &current_bits, &prefix)?;
+  }
+  Ok(current_bits)
+}
+
 impl<E: Engine> SpartanCircuit<E> for SmallSha256ChainCircuit<E::Scalar>
 where
   E::Scalar: PrimeFieldBits,
@@ -79,20 +96,11 @@ where
     _: &[AllocatedNum<E::Scalar>],
   ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
     let mut small_cs = SmallToBellpepperCS::<E::Scalar, CS>::new(cs);
-    let mut current_bits = alloc_preimage_small_bits::<i8, _>(&mut small_cs, &self.input)?;
-
-    {
-      let mut eq = NoBatchEq::<i8, i32, _>::new(&mut small_cs);
-      for chain_idx in 0..self.chain_length {
-        let prefix = format!("c{}_", chain_idx);
-        current_bits = small_sha256_int_with_prefix::<i8, _>(&mut eq, &current_bits, &prefix)?;
-      }
-    }
+    let current_bits =
+      synthesize_sha256_chain_bits(&mut small_cs, &self.input, self.chain_length)?;
 
     #[cfg(debug_assertions)]
-    {
-      assert_small_bits_match_bytes(&current_bits, &self.expected_output());
-    }
+    super::assert_small_bits_match_bytes(&current_bits, &self.expected_output());
 
     expose_small_hash_bits_as_public::<i8, _>(&mut small_cs, &current_bits)?;
 
@@ -117,33 +125,7 @@ where
 impl<Scalar: PrimeField + PrimeFieldBits> Circuit<Scalar> for SmallSha256ChainCircuit<Scalar> {
   fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
     let mut small_cs = SmallToBellpepperCS::<Scalar, CS>::new(cs);
-    let mut current_bits = alloc_preimage_small_bits::<i8, _>(&mut small_cs, &self.input)?;
-
-    {
-      let mut eq = NoBatchEq::<i8, i32, _>::new(&mut small_cs);
-      for chain_idx in 0..self.chain_length {
-        let prefix = format!("c{}_", chain_idx);
-        current_bits = small_sha256_int_with_prefix::<i8, _>(&mut eq, &current_bits, &prefix)?;
-      }
-    }
-
+    let _ = synthesize_sha256_chain_bits(&mut small_cs, &self.input, self.chain_length)?;
     Ok(())
-  }
-}
-
-#[cfg(debug_assertions)]
-fn assert_small_bits_match_bytes(bits: &[SmallBoolean], expected_bytes: &[u8]) {
-  let expected_bits: Vec<bool> = expected_bytes
-    .iter()
-    .flat_map(|&byte| (0..8).rev().map(move |i| (byte >> i) & 1 == 1))
-    .collect();
-
-  assert_eq!(bits.len(), expected_bits.len());
-  for (i, (computed, expected_bit)) in bits.iter().zip(expected_bits.iter()).enumerate() {
-    assert_eq!(
-      computed.get_value(),
-      Some(*expected_bit),
-      "Hash bit {i} mismatch"
-    );
   }
 }

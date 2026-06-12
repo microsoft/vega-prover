@@ -19,7 +19,8 @@ use crate::{
   big_num::{DelayedReduction, ExtensionSmallValue, SmallValue, SmallValueField, WideMul},
   errors::SpartanError,
   lagrange_accumulator::{
-    build_accumulators_neutronnova, build_accumulators_neutronnova_from_prefix_ext_workspace,
+    LagrangeAccumulators, build_accumulators_neutronnova,
+    build_accumulators_neutronnova_from_prefix_ext_workspace,
     build_accumulators_neutronnova_preextended,
     extension::{bit_rev_prefix_table, extend_to_lagrange_domain, gather_and_extend_prefix},
   },
@@ -1214,10 +1215,6 @@ where
     let ell_b = rhos.len();
     debug_assert!(l0 > 0 && l0 <= ell_b, "l0 must be in 1..=ell_b");
 
-    let mut polys = Vec::with_capacity(l0);
-    let mut r_bs = Vec::with_capacity(l0);
-    let mut T_cur = E::Scalar::ZERO;
-    let mut acc_eq = E::Scalar::ONE;
     let num_constraints = a_layers.first().map_or(0, |layer| layer.as_ref().len());
 
     let (_acc_span, acc_t) = start_span!("build_accumulators_neutronnova");
@@ -1248,42 +1245,9 @@ where
       "nifs_build_acc"
     );
 
-    let mut small_value = SmallValueSumCheck::<E::Scalar, 2>::from_accumulators(accumulators);
     let (_first_l0_span, first_l0_t) = start_span!("nifs_first_l0_rounds", rounds = l0);
-    let mut vc_commit_total = Duration::default();
-    for (i, rho_i) in rhos.iter().take(l0).enumerate() {
-      let (_round_span, round_t) = start_span!("nifs_smallvalue_round", round = i);
-      let t_all = small_value.eval_t_all_u(i);
-      let t0 = t_all.at_zero();
-      let t_inf = t_all.at_infinity();
-      let li = small_value.eq_round_values(*rho_i);
-      let t1 = derive_t1(li.at_zero(), li.at_one(), T_cur, t0)
-        .ok_or(SpartanError::InvalidSumcheckProof)?;
-      let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
-
-      let c = &poly.coeffs;
-      vc.nifs_polys[i] = [c[0], c[1], c[2], c[3]];
-
-      let (_vc_span, vc_t) = start_span!("vc_commit");
-      let chals =
-        SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, i, transcript)?;
-      let vc_elapsed = vc_t.elapsed();
-      vc_commit_total += vc_elapsed;
-      info!(elapsed_ms = %vc_elapsed.as_millis(), round = i, "vc_commit");
-      let r_i = chals[0];
-
-      T_cur = poly.evaluate(&r_i);
-      acc_eq *= (E::Scalar::ONE - r_i) * (E::Scalar::ONE - *rho_i) + r_i * *rho_i;
-      r_bs.push(r_i);
-      polys.push(poly);
-      small_value.advance(&li, r_i);
-
-      info!(
-      elapsed_ms = %round_t.elapsed().as_millis(),
-      round = i,
-        "nifs_smallvalue_round"
-      );
-    }
+    let result =
+      run_small_value_l0_rounds(accumulators, rhos, l0, vc, vc_state, vc_shape, vc_ck, transcript)?;
     info!(
       elapsed_ms = %first_l0_t.elapsed().as_millis(),
       rounds = l0,
@@ -1295,7 +1259,7 @@ where
       "nifs_first_l0_rounds"
     );
 
-    Ok((polys, r_bs, T_cur, acc_eq, vc_commit_total))
+    Ok(result)
   }
 
   fn prove_neutronnova_small_value_sumcheck_prefix_workspace<SV>(
@@ -1331,11 +1295,6 @@ where
     let ell_b = rhos.len();
     debug_assert!(l0 > 0 && l0 <= ell_b, "l0 must be in 1..=ell_b");
 
-    let mut polys = Vec::with_capacity(l0);
-    let mut r_bs = Vec::with_capacity(l0);
-    let mut T_cur = E::Scalar::ZERO;
-    let mut acc_eq = E::Scalar::ONE;
-
     let (_acc_span, acc_t) = start_span!("build_accumulators_neutronnova_workspace");
     let accumulators = build_accumulators_neutronnova_from_prefix_ext_workspace(
       &prefix_workspace.ab_ext,
@@ -1368,42 +1327,9 @@ where
       "nifs_build_acc"
     );
 
-    let mut small_value = SmallValueSumCheck::<E::Scalar, 2>::from_accumulators(accumulators);
     let (_first_l0_span, first_l0_t) = start_span!("nifs_first_l0_rounds", rounds = l0);
-    let mut vc_commit_total = Duration::default();
-    for (i, rho_i) in rhos.iter().take(l0).enumerate() {
-      let (_round_span, round_t) = start_span!("nifs_smallvalue_round", round = i);
-      let t_all = small_value.eval_t_all_u(i);
-      let t0 = t_all.at_zero();
-      let t_inf = t_all.at_infinity();
-      let li = small_value.eq_round_values(*rho_i);
-      let t1 = derive_t1(li.at_zero(), li.at_one(), T_cur, t0)
-        .ok_or(SpartanError::InvalidSumcheckProof)?;
-      let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
-
-      let c = &poly.coeffs;
-      vc.nifs_polys[i] = [c[0], c[1], c[2], c[3]];
-
-      let (_vc_span, vc_t) = start_span!("vc_commit");
-      let chals =
-        SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, i, transcript)?;
-      let vc_elapsed = vc_t.elapsed();
-      vc_commit_total += vc_elapsed;
-      info!(elapsed_ms = %vc_elapsed.as_millis(), round = i, "vc_commit");
-      let r_i = chals[0];
-
-      T_cur = poly.evaluate(&r_i);
-      acc_eq *= (E::Scalar::ONE - r_i) * (E::Scalar::ONE - *rho_i) + r_i * *rho_i;
-      r_bs.push(r_i);
-      polys.push(poly);
-      small_value.advance(&li, r_i);
-
-      info!(
-      elapsed_ms = %round_t.elapsed().as_millis(),
-      round = i,
-        "nifs_smallvalue_round"
-      );
-    }
+    let result =
+      run_small_value_l0_rounds(accumulators, rhos, l0, vc, vc_state, vc_shape, vc_ck, transcript)?;
     info!(
       elapsed_ms = %first_l0_t.elapsed().as_millis(),
       rounds = l0,
@@ -1415,7 +1341,7 @@ where
       "nifs_first_l0_rounds"
     );
 
-    Ok((polys, r_bs, T_cur, acc_eq, vc_commit_total))
+    Ok(result)
   }
 
   fn fold_prefix_workspace_and_first_suffix_round<SV>(
@@ -3009,10 +2935,7 @@ fn compact_folded_layers_ab<E: Engine>(
 }
 
 fn compact_folded_layers<F>(layers: &mut [Vec<F>], prove_pairs: usize) {
-  for j in 0..prove_pairs {
-    layers.swap(2 * j, 4 * j);
-    layers.swap(2 * j + 1, 4 * j + 2);
-  }
+  super::compact_quads(layers, prove_pairs);
 }
 
 fn fold_scalar_pair_into<F: Field>(
@@ -3027,10 +2950,7 @@ fn fold_scalar_pair_into<F: Field>(
 }
 
 fn compact_folded_scalars<F>(values: &mut [F], prove_pairs: usize) {
-  for j in 0..prove_pairs {
-    values.swap(2 * j, 4 * j);
-    values.swap(2 * j + 1, 4 * j + 2);
-  }
+  super::compact_quads(values, prove_pairs);
 }
 
 fn fold_final_ab_pairs<E: Engine>(
@@ -3103,6 +3023,80 @@ where
       <F as DelayedReduction<SV>>::reduce(&acc)
     })
     .collect()
+}
+
+/// Run the first `l0` NIFS rounds from prebuilt Lagrange accumulators,
+/// committing each round polynomial through the verifier circuit and deriving
+/// the round challenge via Fiat-Shamir.
+///
+/// Returns the round polynomials, challenges, running claim `T_cur`, the
+/// accumulated `eq(rho, r_b)` factor, and the total time spent in
+/// verifier-circuit commitments.
+#[allow(clippy::type_complexity)]
+fn run_small_value_l0_rounds<E>(
+  accumulators: LagrangeAccumulators<E::Scalar, 2>,
+  rhos: &[E::Scalar],
+  l0: usize,
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut MultiRoundState<E>,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+) -> Result<
+  (
+    Vec<UniPoly<E::Scalar>>,
+    Vec<E::Scalar>,
+    E::Scalar,
+    E::Scalar,
+    Duration,
+  ),
+  SpartanError,
+>
+where
+  E: Engine,
+{
+  let mut polys = Vec::with_capacity(l0);
+  let mut r_bs = Vec::with_capacity(l0);
+  let mut T_cur = E::Scalar::ZERO;
+  let mut acc_eq = E::Scalar::ONE;
+  let mut small_value = SmallValueSumCheck::<E::Scalar, 2>::from_accumulators(accumulators);
+  let mut vc_commit_total = Duration::default();
+
+  for (i, rho_i) in rhos.iter().take(l0).enumerate() {
+    let (_round_span, round_t) = start_span!("nifs_smallvalue_round", round = i);
+    let t_all = small_value.eval_t_all_u(i);
+    let t0 = t_all.at_zero();
+    let t_inf = t_all.at_infinity();
+    let li = small_value.eq_round_values(*rho_i);
+    let t1 =
+      derive_t1(li.at_zero(), li.at_one(), T_cur, t0).ok_or(SpartanError::InvalidSumcheckProof)?;
+    let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
+
+    let c = &poly.coeffs;
+    vc.nifs_polys[i] = [c[0], c[1], c[2], c[3]];
+
+    let (_vc_span, vc_t) = start_span!("vc_commit");
+    let chals =
+      SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, i, transcript)?;
+    let vc_elapsed = vc_t.elapsed();
+    vc_commit_total += vc_elapsed;
+    info!(elapsed_ms = %vc_elapsed.as_millis(), round = i, "vc_commit");
+    let r_i = chals[0];
+
+    T_cur = poly.evaluate(&r_i);
+    acc_eq *= (E::Scalar::ONE - r_i) * (E::Scalar::ONE - *rho_i) + r_i * *rho_i;
+    r_bs.push(r_i);
+    polys.push(poly);
+    small_value.advance(&li, r_i);
+
+    info!(
+      elapsed_ms = %round_t.elapsed().as_millis(),
+      round = i,
+      "nifs_smallvalue_round"
+    );
+  }
+
+  Ok((polys, r_bs, T_cur, acc_eq, vc_commit_total))
 }
 
 fn finish_field_sumcheck_round<E>(

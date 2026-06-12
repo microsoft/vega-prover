@@ -81,6 +81,16 @@ fn compute_tensor_decomp(n: usize) -> (usize, usize, usize) {
   (ell, left, right)
 }
 
+/// Compact items folded in groups of 4 (results at positions 4j and 4j+2)
+/// down to positions 2j and 2j+1, for j in 0..pairs. Only swaps the items
+/// themselves (`Vec` handles or scalars), no data copies.
+pub(crate) fn compact_quads<T>(items: &mut [T], pairs: usize) {
+  for j in 0..pairs {
+    items.swap(2 * j, 4 * j);
+    items.swap(2 * j + 1, 4 * j + 2);
+  }
+}
+
 #[inline]
 fn build_z<E: Engine>(w: &[E::Scalar], x: &[E::Scalar]) -> Vec<E::Scalar> {
   let mut z = Vec::with_capacity(w.len() + 1 + x.len());
@@ -551,12 +561,8 @@ where
   /// down to positions [2j, 2j+1]. Runs serially but only does O(prove_pairs)
   /// swaps of `Vec` handles (pointer swaps, not data copies).
   fn compact_folded_layers(a: &mut [Vec<E::Scalar>], b: &mut [Vec<E::Scalar>], prove_pairs: usize) {
-    for j in 0..prove_pairs {
-      a.swap(2 * j, 4 * j);
-      a.swap(2 * j + 1, 4 * j + 2);
-      b.swap(2 * j, 4 * j);
-      b.swap(2 * j + 1, 4 * j + 2);
-    }
+    compact_quads(a, prove_pairs);
+    compact_quads(b, prove_pairs);
   }
 
   /// Like `compact_folded_layers` but also handles C layers (for non-i64 path).
@@ -566,14 +572,8 @@ where
     c: &mut [Vec<E::Scalar>],
     prove_pairs: usize,
   ) {
-    for j in 0..prove_pairs {
-      a.swap(2 * j, 4 * j);
-      a.swap(2 * j + 1, 4 * j + 2);
-      b.swap(2 * j, 4 * j);
-      b.swap(2 * j + 1, 4 * j + 2);
-      c.swap(2 * j, 4 * j);
-      c.swap(2 * j + 1, 4 * j + 2);
-    }
+    Self::compact_folded_layers(a, b, prove_pairs);
+    compact_quads(c, prove_pairs);
   }
 
   /// ZK version of NeutronNova NIFS prove. This function performs the NIFS folding
@@ -1484,7 +1484,7 @@ impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
       })
       .cloned()
       .map_err(|_| SpartanError::DigestError {
-        reason: "Unable to compute digest for SpartanVerifierKey".to_string(),
+        reason: "Unable to compute digest for NeutronNovaVerifierKey".to_string(),
       })
   }
 }

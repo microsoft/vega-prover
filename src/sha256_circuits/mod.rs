@@ -128,6 +128,29 @@ pub fn assert_bits_match_bytes(bits: &[Boolean], expected_bytes: &[u8]) {
   }
 }
 
+/// Assert that computed small-gadget bits match expected bytes (big-endian per byte).
+///
+/// Panics if there's a mismatch (debug assertion).
+#[cfg(debug_assertions)]
+pub(crate) fn assert_small_bits_match_bytes(
+  bits: &[crate::gadgets::SmallBoolean],
+  expected_bytes: &[u8],
+) {
+  let expected_bits: Vec<bool> = expected_bytes
+    .iter()
+    .flat_map(|&byte| (0..8).rev().map(move |i| (byte >> i) & 1 == 1))
+    .collect();
+
+  assert_eq!(bits.len(), expected_bits.len());
+  for (i, (computed, expected_bit)) in bits.iter().zip(expected_bits.iter()).enumerate() {
+    assert_eq!(
+      computed.get_value(),
+      Some(*expected_bit),
+      "Hash bit {i} mismatch"
+    );
+  }
+}
+
 /// Expose hash bits as public inputs with equality constraints.
 pub fn expose_hash_bits_as_public<E, CS>(
   cs: &mut CS,

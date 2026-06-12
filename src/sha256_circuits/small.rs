@@ -19,8 +19,6 @@ use crate::{
     circuit::{SmallSpartanCircuit, SpartanCircuit},
   },
 };
-use ff::Field;
-#[cfg(debug_assertions)]
 use sha2::{Digest, Sha256};
 
 /// SHA-256 circuit using the small SHA-256 gadget.
@@ -65,23 +63,11 @@ where
   ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
     // Use SmallToBellpepperCS so the field and integer paths produce the SAME shape.
     let mut small_cs = SmallToBellpepperCS::<E::Scalar, CS>::new(cs);
-    let preimage_bits = alloc_preimage_small_bits::<i8, _>(&mut small_cs, &self.preimage)?;
-    let mut eq = NoBatchEq::<i8, i32, _>::new(&mut small_cs);
-    let hash_bits = small_sha256_int::<i8, _>(&mut eq, &preimage_bits)?;
-    drop(eq);
+    let hash_bits = synthesize_sha256_bits::<i8, _>(&mut small_cs, &self.preimage)?;
 
     // Verify against native SHA-256 (debug only)
     #[cfg(debug_assertions)]
-    {
-      let hash_expected = Sha256::digest(&self.preimage);
-      for (i, bit) in hash_bits.iter().enumerate() {
-        let byte_idx = i / 8;
-        let bit_idx = 7 - (i % 8);
-        let expected = (hash_expected[byte_idx] >> bit_idx) & 1 == 1;
-        let computed = bit.get_value().unwrap_or(false);
-        assert_eq!(computed, expected, "Hash bit {i} mismatch");
-      }
-    }
+    super::assert_small_bits_match_bytes(&hash_bits, &Sha256::digest(&self.preimage));
 
     expose_small_hash_bits_as_public::<i8, _>(&mut small_cs, &hash_bits)?;
 
@@ -104,6 +90,21 @@ where
 }
 
 // ── SmallSpartanCircuit impls ─────────────────────────────────────────────
+
+/// Shared synthesis body: allocate the preimage bits and run the small
+/// SHA-256 gadget, returning the digest bits.
+fn synthesize_sha256_bits<W, CS>(
+  cs: &mut CS,
+  preimage: &[u8],
+) -> Result<Vec<SmallBoolean>, SynthesisError>
+where
+  W: Copy + From<bool>,
+  CS: SmallConstraintSystem<W, i32>,
+{
+  let preimage_bits = alloc_preimage_small_bits(cs, preimage)?;
+  let mut eq = NoBatchEq::<W, i32, _>::new(cs);
+  small_sha256_int::<W, _>(&mut eq, &preimage_bits)
+}
 
 /// Helper: allocate preimage bits as SmallBoolean variables.
 pub(crate) fn alloc_preimage_small_bits<W, CS>(
@@ -163,44 +164,38 @@ where
   Ok(())
 }
 
-/// SHA-256 circuit for the small-value compiler.
-///
-/// Uses i8 bit witnesses and i32 constraint coefficients. Shape and witness
-/// generation run this same implementation against different backends.
-impl<E: Engine> SmallSpartanCircuit<E, i8, i32> for SmallSha256Circuit<E::Scalar>
+/// SHA-256 circuit for the small-value compiler, generic over the witness
+/// value type `W` (`i8` bit witnesses or native `bool` witnesses) with i32
+/// constraint coefficients. Shape and witness generation run this same
+/// implementation against different backends.
+impl<E: Engine, W> SmallSpartanCircuit<E, W, i32> for SmallSha256Circuit<E::Scalar>
 where
   E::Scalar: PrimeFieldBits,
+  W: Copy + From<bool>,
 {
-  fn public_values(&self) -> Result<Vec<i8>, SynthesisError> {
-    use crate::sha256_circuits::hash_to_public_scalars;
-    let bits: Vec<E::Scalar> = hash_to_public_scalars(&self.preimage);
+  fn public_values(&self) -> Result<Vec<W>, SynthesisError> {
     Ok(
-      bits
+      Sha256::digest(&self.preimage)
         .iter()
-        .map(|b| if b.is_zero().into() { 0i8 } else { 1i8 })
+        .flat_map(|byte| (0..8).rev().map(move |i| W::from((byte >> i) & 1 == 1)))
         .collect(),
     )
   }
 
-  fn shared<CS: SmallConstraintSystem<i8, i32>>(
+  fn shared<CS: SmallConstraintSystem<W, i32>>(
     &self,
     _cs: &mut CS,
   ) -> Result<Vec<bellpepper_core::Variable>, SynthesisError> {
     Ok(vec![])
   }
 
-  fn precommitted<CS: SmallConstraintSystem<i8, i32>>(
+  fn precommitted<CS: SmallConstraintSystem<W, i32>>(
     &self,
     cs: &mut CS,
     _shared: &[bellpepper_core::Variable],
   ) -> Result<Vec<bellpepper_core::Variable>, SynthesisError> {
-    let preimage_bits = alloc_preimage_small_bits(cs, &self.preimage)?;
-    let mut eq = NoBatchEq::<i8, i32, _>::new(cs);
-    let hash_bits = small_sha256_int::<i8, _>(&mut eq, &preimage_bits)?;
-    drop(eq);
-
-    expose_small_hash_bits_as_public::<i8, _>(cs, &hash_bits)?;
-
+    let hash_bits = synthesize_sha256_bits::<W, _>(cs, &self.preimage)?;
+    expose_small_hash_bits_as_public::<W, _>(cs, &hash_bits)?;
     Ok(vec![])
   }
 
@@ -208,54 +203,7 @@ where
     0
   }
 
-  fn synthesize<CS: SmallConstraintSystem<i8, i32>>(
-    &self,
-    _cs: &mut CS,
-    _shared: &[bellpepper_core::Variable],
-    _precommitted: &[bellpepper_core::Variable],
-    _challenges: Option<&[E::Scalar]>,
-  ) -> Result<(), SynthesisError> {
-    Ok(())
-  }
-}
-
-impl<E: Engine> SmallSpartanCircuit<E, bool, i32> for SmallSha256Circuit<E::Scalar>
-where
-  E::Scalar: PrimeFieldBits,
-{
-  fn public_values(&self) -> Result<Vec<bool>, SynthesisError> {
-    use crate::sha256_circuits::hash_to_public_scalars;
-    let bits: Vec<E::Scalar> = hash_to_public_scalars(&self.preimage);
-    Ok(bits.iter().map(|b| !bool::from(b.is_zero())).collect())
-  }
-
-  fn shared<CS: SmallConstraintSystem<bool, i32>>(
-    &self,
-    _cs: &mut CS,
-  ) -> Result<Vec<bellpepper_core::Variable>, SynthesisError> {
-    Ok(vec![])
-  }
-
-  fn precommitted<CS: SmallConstraintSystem<bool, i32>>(
-    &self,
-    cs: &mut CS,
-    _shared: &[bellpepper_core::Variable],
-  ) -> Result<Vec<bellpepper_core::Variable>, SynthesisError> {
-    let preimage_bits = alloc_preimage_small_bits(cs, &self.preimage)?;
-    let mut eq = NoBatchEq::<bool, i32, _>::new(cs);
-    let hash_bits = small_sha256_int::<bool, _>(&mut eq, &preimage_bits)?;
-    drop(eq);
-
-    expose_small_hash_bits_as_public::<bool, _>(cs, &hash_bits)?;
-
-    Ok(vec![])
-  }
-
-  fn num_challenges(&self) -> usize {
-    0
-  }
-
-  fn synthesize<CS: SmallConstraintSystem<bool, i32>>(
+  fn synthesize<CS: SmallConstraintSystem<W, i32>>(
     &self,
     _cs: &mut CS,
     _shared: &[bellpepper_core::Variable],
@@ -269,9 +217,7 @@ where
 impl<Scalar: PrimeField + PrimeFieldBits> Circuit<Scalar> for SmallSha256Circuit<Scalar> {
   fn synthesize<CS: ConstraintSystem<Scalar>>(self, cs: &mut CS) -> Result<(), SynthesisError> {
     let mut small_cs = SmallToBellpepperCS::<Scalar, CS>::new(cs);
-    let preimage_bits = alloc_preimage_small_bits::<i8, _>(&mut small_cs, &self.preimage)?;
-    let mut eq = NoBatchEq::<i8, i32, _>::new(&mut small_cs);
-    let _ = small_sha256_int::<i8, _>(&mut eq, &preimage_bits)?;
+    let _ = synthesize_sha256_bits::<i8, _>(&mut small_cs, &self.preimage)?;
     Ok(())
   }
 }

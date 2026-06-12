@@ -59,11 +59,17 @@ pub trait SmallCoeff:
   fn is_positive(&self) -> bool;
 }
 
+/// Convert a signed machine integer to a field element (sign-aware).
+#[inline(always)]
+fn signed_to_field<F: ff::PrimeField>(v: i64) -> F {
+  let value = F::from(v.unsigned_abs());
+  if v < 0 { -value } else { value }
+}
+
 impl SmallCoeff for i8 {
   #[inline(always)]
   fn to_field<F: ff::PrimeField>(self) -> F {
-    let value = F::from(self.unsigned_abs() as u64);
-    if self < 0 { -value } else { value }
+    signed_to_field(self as i64)
   }
 
   #[inline(always)]
@@ -91,8 +97,7 @@ impl SmallCoeff for i8 {
 impl SmallCoeff for i32 {
   #[inline(always)]
   fn to_field<F: ff::PrimeField>(self) -> F {
-    let value = F::from(self.unsigned_abs() as u64);
-    if self < 0 { -value } else { value }
+    signed_to_field(self as i64)
   }
 
   #[inline(always)]
