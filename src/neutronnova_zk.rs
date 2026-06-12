@@ -149,7 +149,9 @@ pub(crate) fn compact_quads<T>(items: &mut [T], pairs: usize) {
 /// Fold `lo[k] += r·(hi[k] − lo[k])` elementwise.
 #[inline(always)]
 fn fold_in_place<F: Field>(lo: &mut [F], hi: &[F], r: &F) {
-  lo.iter_mut().zip(hi.iter()).for_each(|(l, h)| *l += *r * (*h - *l));
+  lo.iter_mut()
+    .zip(hi.iter())
+    .for_each(|(l, h)| *l += *r * (*h - *l));
 }
 
 /// Fold a chunk's leading layer pair in place: `chunk[0] ← fold(chunk[0], chunk[1])`.
@@ -2387,7 +2389,10 @@ where
 
     // Deep-clone the deterministic cache for this prove (NIFS consumes it;
     // the prep state keeps its copy for subsequent proves).
-    let step_cache = prep_snark.step_cache.as_ref().map(StepMatVecCache::par_clone);
+    let step_cache = prep_snark
+      .step_cache
+      .as_ref()
+      .map(StepMatVecCache::par_clone);
 
     let (_nifs_span, nifs_t) = start_span!("NIFS");
     let (E_eq, Az_step, Bz_step, Cz_step, folded_W, folded_U) = NeutronNovaNIFS::<E>::prove(
@@ -2450,7 +2455,6 @@ where
     info!(elapsed_ms = %prove_t.elapsed().as_millis(), "neutronnova_prove");
     Ok((result, prep_snark))
   }
-
 
   /// Verifies the NeutronNovaZkSNARK and returns the public IO from the instances
   pub fn verify(
@@ -2908,21 +2912,20 @@ mod tests {
       _: &[Variable],
     ) -> Result<Vec<Variable>, SynthesisError> {
       let bit = SmallBit::alloc(cs, Some(self.bit))?;
-      let public = cs.alloc_input(|| "public zero", || Ok(false))?;
+      let public = cs.alloc_input(|| Ok(false))?;
+      // public is zero
       cs.enforce(
-        || "public is zero",
         SmallLinearCombination::from_variable(public, 1i32),
         SmallLinearCombination::one(1i32),
         SmallLinearCombination::zero(),
       );
+      // two dummy zero constraints (padding)
       cs.enforce(
-        || "dummy zero 0",
         SmallLinearCombination::zero(),
         SmallLinearCombination::one(1i32),
         SmallLinearCombination::zero(),
       );
       cs.enforce(
-        || "dummy zero 1",
         SmallLinearCombination::zero(),
         SmallLinearCombination::one(1i32),
         SmallLinearCombination::zero(),
@@ -2963,21 +2966,20 @@ mod tests {
       _: &[Variable],
     ) -> Result<Vec<Variable>, SynthesisError> {
       let bit = SmallBit::alloc(cs, Some(self.bit))?;
-      let public = cs.alloc_input(|| "public zero", || Ok(0i8))?;
+      let public = cs.alloc_input(|| Ok(0i8))?;
+      // public is zero
       cs.enforce(
-        || "public is zero",
         SmallLinearCombination::from_variable(public, 1i32),
         SmallLinearCombination::one(1i32),
         SmallLinearCombination::zero(),
       );
+      // two dummy zero constraints (padding)
       cs.enforce(
-        || "dummy zero 0",
         SmallLinearCombination::zero(),
         SmallLinearCombination::one(1i32),
         SmallLinearCombination::zero(),
       );
       cs.enforce(
-        || "dummy zero 1",
         SmallLinearCombination::zero(),
         SmallLinearCombination::one(1i32),
         SmallLinearCombination::zero(),

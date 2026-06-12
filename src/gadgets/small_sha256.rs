@@ -62,8 +62,8 @@ where
   let r2 = x.rotr(2);
   let r13 = x.rotr(13);
   let r22 = x.rotr(22);
-  let tmp = r2.xor(cs.namespace(|| "s0_r2_xor_r13"), &r13)?;
-  tmp.xor(cs.namespace(|| "s0_xor_r22"), &r22)
+  let tmp = r2.xor(&mut cs, &r13)?;
+  tmp.xor(&mut cs, &r22)
 }
 
 /// Σ1(x) = ROTR^6(x) ⊕ ROTR^11(x) ⊕ ROTR^25(x)
@@ -75,8 +75,8 @@ where
   let r6 = x.rotr(6);
   let r11 = x.rotr(11);
   let r25 = x.rotr(25);
-  let tmp = r6.xor(cs.namespace(|| "s1_r6_xor_r11"), &r11)?;
-  tmp.xor(cs.namespace(|| "s1_xor_r25"), &r25)
+  let tmp = r6.xor(&mut cs, &r11)?;
+  tmp.xor(&mut cs, &r25)
 }
 
 /// σ0(x) = ROTR^7(x) ⊕ ROTR^18(x) ⊕ SHR^3(x)
@@ -88,8 +88,8 @@ where
   let r7 = x.rotr(7);
   let r18 = x.rotr(18);
   let s3 = x.shr(3);
-  let tmp = r7.xor(cs.namespace(|| "s0_r7_xor_r18"), &r18)?;
-  tmp.xor(cs.namespace(|| "s0_xor_s3"), &s3)
+  let tmp = r7.xor(&mut cs, &r18)?;
+  tmp.xor(&mut cs, &s3)
 }
 
 /// σ1(x) = ROTR^17(x) ⊕ ROTR^19(x) ⊕ SHR^10(x)
@@ -101,8 +101,8 @@ where
   let r17 = x.rotr(17);
   let r19 = x.rotr(19);
   let s10 = x.shr(10);
-  let tmp = r17.xor(cs.namespace(|| "s1_r17_xor_r19"), &r19)?;
-  tmp.xor(cs.namespace(|| "s1_xor_s10"), &s10)
+  let tmp = r17.xor(&mut cs, &r19)?;
+  tmp.xor(&mut cs, &s10)
 }
 
 /// SHA-256 compression function.
@@ -110,8 +110,6 @@ fn sha256_compression<W, M>(
   cs: &mut M,
   h: &mut [SmallUInt32; 8],
   w: &[SmallUInt32; 16],
-  block_idx: usize,
-  prefix: &str,
 ) -> Result<(), SynthesisError>
 where
   W: Sha256Witness,
@@ -122,14 +120,8 @@ where
   w_expanded.extend_from_slice(w);
 
   for i in 16..64 {
-    let s1 = small_sigma_1::<W, _>(
-      cs.namespace(|| format!("{prefix}b{block_idx}_w{i}_s1")),
-      &w_expanded[i - 2],
-    )?;
-    let s0 = small_sigma_0::<W, _>(
-      cs.namespace(|| format!("{prefix}b{block_idx}_w{i}_s0")),
-      &w_expanded[i - 15],
-    )?;
+    let s1 = small_sigma_1::<W, _>(&mut *cs, &w_expanded[i - 2])?;
+    let s0 = small_sigma_0::<W, _>(&mut *cs, &w_expanded[i - 15])?;
     let wi = cs.addmany(&[
       s1,
       w_expanded[i - 7].clone(),
@@ -151,29 +143,13 @@ where
   );
 
   for i in 0..64 {
-    let sigma1 = big_sigma_1::<W, _>(
-      cs.namespace(|| format!("{prefix}b{block_idx}_r{i}_sigma1")),
-      &e,
-    )?;
-    let ch = SmallUInt32::sha256_ch::<W, i32, _>(
-      cs.namespace(|| format!("{prefix}b{block_idx}_r{i}_ch")),
-      &e,
-      &f,
-      &g,
-    )?;
+    let sigma1 = big_sigma_1::<W, _>(&mut *cs, &e)?;
+    let ch = SmallUInt32::sha256_ch::<W, i32, _>(&mut *cs, &e, &f, &g)?;
     let k = SmallUInt32::constant(ROUND_CONSTANTS[i]);
     let t1 = cs.addmany(&[h_var.clone(), sigma1, ch, k, w_expanded[i].clone()])?;
 
-    let sigma0 = big_sigma_0::<W, _>(
-      cs.namespace(|| format!("{prefix}b{block_idx}_r{i}_sigma0")),
-      &a,
-    )?;
-    let maj = SmallUInt32::sha256_maj::<W, i32, _>(
-      cs.namespace(|| format!("{prefix}b{block_idx}_r{i}_maj")),
-      &a,
-      &b,
-      &c,
-    )?;
+    let sigma0 = big_sigma_0::<W, _>(&mut *cs, &a)?;
+    let maj = SmallUInt32::sha256_maj::<W, i32, _>(&mut *cs, &a, &b, &c)?;
 
     h_var = g;
     g = f;
@@ -212,19 +188,6 @@ where
   W: Sha256Witness,
   M: SmallMultiEq<W, i32>,
 {
-  small_sha256_int_with_prefix(cs, input, "")
-}
-
-/// Compute SHA-256 with a prefix for variable names (pure-integer path).
-pub fn small_sha256_int_with_prefix<W, M>(
-  cs: &mut M,
-  input: &[SmallBoolean],
-  prefix: &str,
-) -> Result<Vec<SmallBoolean>, SynthesisError>
-where
-  W: Sha256Witness,
-  M: SmallMultiEq<W, i32>,
-{
   let padded = sha256_padding(input);
 
   assert!(padded.len().is_multiple_of(512));
@@ -242,7 +205,7 @@ where
       *w_item = SmallUInt32::from_bits_be(&word_bits);
     }
 
-    sha256_compression::<W, _>(cs, &mut h, &w, block_idx, prefix)?;
+    sha256_compression::<W, _>(cs, &mut h, &w)?;
   }
 
   let mut output = Vec::with_capacity(256);
@@ -266,20 +229,6 @@ where
   W: Sha256Witness,
   M: SmallMultiEq<W, i32>,
 {
-  small_sha256_compression_function_int_with_prefix(cs, input_bits, current_hash, "")
-}
-
-/// Run one SHA-256 compression block with the small-value gadget and name prefix.
-pub fn small_sha256_compression_function_int_with_prefix<W, M>(
-  cs: &mut M,
-  input_bits: &[SmallBoolean],
-  current_hash: &[SmallUInt32],
-  prefix: &str,
-) -> Result<Vec<SmallUInt32>, SynthesisError>
-where
-  W: Sha256Witness,
-  M: SmallMultiEq<W, i32>,
-{
   assert_eq!(input_bits.len(), 512);
   assert_eq!(current_hash.len(), 8);
 
@@ -290,7 +239,7 @@ where
     *w_item = SmallUInt32::from_bits_be(&word_bits);
   }
 
-  sha256_compression::<W, _>(cs, &mut h, &w, 0, prefix)?;
+  sha256_compression::<W, _>(cs, &mut h, &w)?;
 
   Ok(h.to_vec())
 }
@@ -375,11 +324,7 @@ mod tests {
 
     // 8 allocated bit inputs → should produce constraints
     let input: Vec<SmallBoolean> = (0..8)
-      .map(|i| {
-        SmallBoolean::Is(
-          SmallBit::alloc(&mut eq.namespace(|| format!("in{i}")), Some(false)).unwrap(),
-        )
-      })
+      .map(|_| SmallBoolean::Is(SmallBit::alloc(&mut eq, Some(false)).unwrap()))
       .collect();
     let hash_bits = small_sha256_int::<i8, _>(&mut eq, &input).unwrap();
     assert_eq!(hash_bits.len(), 256);
@@ -436,14 +381,7 @@ mod tests {
       let input_bits = block
         .iter()
         .flat_map(|byte| (0..8).rev().map(move |i| (byte >> i) & 1u8 == 1u8))
-        .enumerate()
-        .map(|(i, bit)| {
-          SmallBit::alloc(
-            &mut eq.namespace(|| format!("shape block bit {i}")),
-            Some(bit),
-          )
-          .map(SmallBoolean::Is)
-        })
+        .map(|bit| SmallBit::alloc(&mut eq, Some(bit)).map(SmallBoolean::Is))
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
       let _ = small_sha256_compression_function_int::<bool, _>(&mut eq, &input_bits, &current_hash)
@@ -457,14 +395,7 @@ mod tests {
       let input_bits = block
         .iter()
         .flat_map(|byte| (0..8).rev().map(move |i| (byte >> i) & 1u8 == 1u8))
-        .enumerate()
-        .map(|(i, bit)| {
-          SmallBit::alloc(
-            &mut eq.namespace(|| format!("witness block bit {i}")),
-            Some(bit),
-          )
-          .map(SmallBoolean::Is)
-        })
+        .map(|bit| SmallBit::alloc(&mut eq, Some(bit)).map(SmallBoolean::Is))
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
       let _ = small_sha256_compression_function_int::<bool, _>(&mut eq, &input_bits, &current_hash)

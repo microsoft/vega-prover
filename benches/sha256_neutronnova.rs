@@ -310,13 +310,13 @@ fn run_small_sha256_compression<CS: SmallConstraintSystem<bool, i32>>(
 fn inputize_small_zero<CS: SmallConstraintSystem<bool, i32>>(
   cs: &mut CS,
 ) -> Result<(), SynthesisError> {
-  let x = cs.alloc(|| "x", || Ok(false))?;
-  let x_public = cs.alloc_input(|| "inputize x", || Ok(false))?;
+  let x = cs.alloc(|| Ok(false))?;
+  let x_public = cs.alloc_input(|| Ok(false))?;
   if !cs.is_witness_generator() {
     let mut diff = SmallLinearCombination::from_variable(x, 1i32);
     diff.add_term(x_public, -1i32);
+    // x equals public input
     cs.enforce(
-      || "x equals public input",
       diff,
       SmallLinearCombination::one(1i32),
       SmallLinearCombination::zero(),
@@ -328,16 +328,11 @@ fn inputize_small_zero<CS: SmallConstraintSystem<bool, i32>>(
 fn alloc_small_block_bits<CS: SmallConstraintSystem<bool, i32>>(
   cs: &mut CS,
   block: &[u8; BLOCK_BYTES],
-  label: &'static str,
 ) -> Result<Vec<SmallBoolean>, SynthesisError> {
   block
     .iter()
     .flat_map(|byte| (0..8).rev().map(move |i| (byte >> i) & 1u8 == 1u8))
-    .enumerate()
-    .map(|(i, b)| {
-      SmallBit::alloc(&mut cs.namespace(|| format!("{label} bit {i}")), Some(b))
-        .map(SmallBoolean::Is)
-    })
+    .map(|b| SmallBit::alloc(&mut *cs, Some(b)).map(SmallBoolean::Is))
     .collect()
 }
 
@@ -359,7 +354,7 @@ impl<Eng: Engine> SmallSpartanCircuit<Eng, bool, i32> for SmallSha256StepCircuit
     _: &[Variable],
   ) -> Result<Vec<Variable>, SynthesisError> {
     let alloc_bits_t = Instant::now();
-    let input_bits = alloc_small_block_bits(cs, &self.block, "block")?;
+    let input_bits = alloc_small_block_bits(cs, &self.block)?;
     info!(
       elapsed_ms = %alloc_bits_t.elapsed().as_millis(),
       "bench_small_alloc_block_bits"
@@ -415,7 +410,7 @@ impl<Eng: Engine> SmallSpartanCircuit<Eng, bool, i32> for SmallSha256CoreCircuit
   ) -> Result<Vec<Variable>, SynthesisError> {
     let block = [0u8; BLOCK_BYTES];
     let alloc_bits_t = Instant::now();
-    let input_bits = alloc_small_block_bits(cs, &block, "core")?;
+    let input_bits = alloc_small_block_bits(cs, &block)?;
     info!(
       elapsed_ms = %alloc_bits_t.elapsed().as_millis(),
       "bench_small_alloc_block_bits"

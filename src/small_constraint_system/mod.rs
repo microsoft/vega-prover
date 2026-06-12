@@ -15,10 +15,7 @@
 pub mod bridge;
 pub mod circuit;
 
-use std::{
-  marker::PhantomData,
-  ops::{Add, AddAssign, Neg, Sub},
-};
+use std::ops::{Add, AddAssign, Neg, Sub};
 
 pub use crate::r1cs::SparseMatrix;
 pub use bridge::SmallToBellpepperCS;
@@ -160,48 +157,28 @@ impl<C: Copy> SmallLinearCombination<C> {
 
 /// A constraint system over small integer witnesses and coefficients.
 ///
-/// Mirrors bellpepper's `ConstraintSystem<Scalar>` but without any field arithmetic.
-/// Used for the pure-integer proving path.
+/// A deliberately slim counterpart to bellpepper's `ConstraintSystem<Scalar>`:
+/// no field arithmetic, and no annotation/namespace machinery (no backend
+/// consumes names — small shapes are purely structural). Used for the
+/// pure-integer proving path.
 pub trait SmallConstraintSystem<W, C>: Sized {
-  /// The root constraint system type (for namespace delegation).
-  type Root: SmallConstraintSystem<W, C>;
-
   /// Allocate an auxiliary variable.
-  fn alloc<A, AR, F>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>;
 
   /// Allocate an input variable.
-  fn alloc_input<A, AR, F>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>;
 
   /// Enforce a constraint: a(x) × b(x) = c(x).
-  fn enforce<A, AR>(
+  fn enforce(
     &mut self,
-    annotation: A,
     a: SmallLinearCombination<C>,
     b: SmallLinearCombination<C>,
     c: SmallLinearCombination<C>,
-  ) where
-    A: FnOnce() -> AR,
-    AR: Into<String>;
-
-  /// Push a namespace scope for variable naming.
-  fn push_namespace<NR, N>(&mut self, name_fn: N)
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR;
-
-  /// Pop the current namespace scope.
-  fn pop_namespace(&mut self);
-
-  /// Get a mutable reference to the root constraint system.
-  fn get_root(&mut self) -> &mut Self::Root;
+  );
 
   /// Whether this backend is only producing witness assignments.
   ///
@@ -210,89 +187,36 @@ pub trait SmallConstraintSystem<W, C>: Sized {
   fn is_witness_generator(&self) -> bool {
     false
   }
-
-  /// Enter a named namespace (auto-pops on drop).
-  fn namespace<NR, N>(&mut self, name_fn: N) -> SmallNamespace<'_, W, C, Self::Root>
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR,
-  {
-    self.get_root().push_namespace(name_fn);
-    SmallNamespace {
-      inner: self.get_root(),
-      _marker: PhantomData,
-    }
-  }
 }
 
-// ── SmallNamespace ─────────────────────────────────────────────────────────
-
-/// A scoped namespace within a SmallConstraintSystem.
-pub struct SmallNamespace<'a, W, C, CS: SmallConstraintSystem<W, C>> {
-  pub(crate) inner: &'a mut CS,
-  pub(crate) _marker: PhantomData<(W, C)>,
-}
-
-impl<W, C, CS: SmallConstraintSystem<W, C>> SmallConstraintSystem<W, C>
-  for SmallNamespace<'_, W, C, CS>
-{
-  type Root = CS::Root;
-
-  fn alloc<A, AR, F>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+/// Forwarding impl so by-value-generic gadget helpers (`mut cs: CS`) can be
+/// called with `&mut cs` at the call site, mirroring bellpepper's pattern.
+impl<W, C, CS: SmallConstraintSystem<W, C>> SmallConstraintSystem<W, C> for &mut CS {
+  fn alloc<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
-    self.inner.alloc(annotation, f)
+    (**self).alloc(f)
   }
 
-  fn alloc_input<A, AR, F>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
-    self.inner.alloc_input(annotation, f)
+    (**self).alloc_input(f)
   }
 
-  fn enforce<A, AR>(
+  fn enforce(
     &mut self,
-    annotation: A,
     a: SmallLinearCombination<C>,
     b: SmallLinearCombination<C>,
     c: SmallLinearCombination<C>,
-  ) where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
-    self.inner.enforce(annotation, a, b, c);
-  }
-
-  fn push_namespace<NR, N>(&mut self, name_fn: N)
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR,
-  {
-    self.inner.push_namespace(name_fn);
-  }
-
-  fn pop_namespace(&mut self) {
-    self.inner.pop_namespace();
-  }
-
-  fn get_root(&mut self) -> &mut Self::Root {
-    self.inner.get_root()
+  ) {
+    (**self).enforce(a, b, c);
   }
 
   fn is_witness_generator(&self) -> bool {
-    self.inner.is_witness_generator()
-  }
-}
-
-impl<W, C, CS: SmallConstraintSystem<W, C>> Drop for SmallNamespace<'_, W, C, CS> {
-  fn drop(&mut self) {
-    self.inner.pop_namespace();
+    (**self).is_witness_generator()
   }
 }
 
@@ -320,12 +244,8 @@ impl<V: From<bool>> SmallSatisfyingAssignment<V> {
 }
 
 impl<W, C> SmallConstraintSystem<W, C> for SmallSatisfyingAssignment<W> {
-  type Root = Self;
-
-  fn alloc<A, AR, F>(&mut self, _annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
     let val = f()?;
@@ -335,10 +255,8 @@ impl<W, C> SmallConstraintSystem<W, C> for SmallSatisfyingAssignment<W> {
     )))
   }
 
-  fn alloc_input<A, AR, F>(&mut self, _annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
     let val = f()?;
@@ -348,30 +266,13 @@ impl<W, C> SmallConstraintSystem<W, C> for SmallSatisfyingAssignment<W> {
     )))
   }
 
-  fn enforce<A, AR>(
+  fn enforce(
     &mut self,
-    _annotation: A,
     _a: SmallLinearCombination<C>,
     _b: SmallLinearCombination<C>,
     _c: SmallLinearCombination<C>,
-  ) where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
+  ) {
     // No-op: witness generation only, constraints not checked here
-  }
-
-  fn push_namespace<NR, N>(&mut self, _name_fn: N)
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR,
-  {
-  }
-
-  fn pop_namespace(&mut self) {}
-
-  fn get_root(&mut self) -> &mut Self::Root {
-    self
   }
 
   fn is_witness_generator(&self) -> bool {
@@ -537,12 +438,8 @@ impl<C: SmallCoeff> SmallShapeCS<C> {
 }
 
 impl<W, C: SmallCoeff> SmallConstraintSystem<W, C> for SmallShapeCS<C> {
-  type Root = Self;
-
-  fn alloc<A, AR, F>(&mut self, _annotation: A, _f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F>(&mut self, _f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
     let idx = self.num_aux;
@@ -550,10 +447,8 @@ impl<W, C: SmallCoeff> SmallConstraintSystem<W, C> for SmallShapeCS<C> {
     Ok(Variable::new_unchecked(Index::Aux(idx)))
   }
 
-  fn alloc_input<A, AR, F>(&mut self, _annotation: A, _f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F>(&mut self, _f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
     let idx = self.num_inputs;
@@ -561,30 +456,13 @@ impl<W, C: SmallCoeff> SmallConstraintSystem<W, C> for SmallShapeCS<C> {
     Ok(Variable::new_unchecked(Index::Input(idx)))
   }
 
-  fn enforce<A, AR>(
+  fn enforce(
     &mut self,
-    _annotation: A,
     a: SmallLinearCombination<C>,
     b: SmallLinearCombination<C>,
     c: SmallLinearCombination<C>,
-  ) where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
+  ) {
     self.constraints.push((a, b, c));
-  }
-
-  fn push_namespace<NR, N>(&mut self, _name_fn: N)
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR,
-  {
-  }
-
-  fn pop_namespace(&mut self) {}
-
-  fn get_root(&mut self) -> &mut Self::Root {
-    self
   }
 }
 
@@ -640,9 +518,9 @@ mod tests {
   }
 
   fn synthesize_split_api<CS: SmallConstraintSystem<i8, i32>>(cs: &mut CS) {
-    let bit = cs.alloc(|| "bit", || Ok(1i8)).unwrap();
+    let bit = cs.alloc(|| Ok(1i8)).unwrap();
+    // bit == 1
     cs.enforce(
-      || "bit_is_one",
       SmallLinearCombination::from_variable(bit, 1i32),
       SmallLinearCombination::one(1i32),
       SmallLinearCombination::one(1i32),

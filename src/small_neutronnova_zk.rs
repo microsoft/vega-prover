@@ -10,7 +10,6 @@ use super::{
   NeutronNovaNIFS, NeutronNovaNIFSOutput, NeutronNovaSmallProverKey, NeutronNovaZkSNARK,
   compute_tensor_decomp, fold_final_layer_pairs, fold_layer_pair_into, suffix_weight_full,
 };
-use crate::{bellpepper::r1cs::VcDriver, zk::NeutronRoundSchedule};
 use crate::{
   CommitmentKey, DEFAULT_COMMITMENT_WIDTH, PCS,
   bellpepper::{
@@ -27,14 +26,9 @@ use crate::{
   },
   math::Math,
   polys::{
-    eq::EqPolynomial,
-    multilinear::MultilinearPolynomial,
-    power::PowPolynomial,
-    univariate::UniPoly,
+    eq::EqPolynomial, multilinear::MultilinearPolynomial, power::PowPolynomial, univariate::UniPoly,
   },
-  r1cs::{
-    R1CSInstance, R1CSValue, R1CSWitness, SplitR1CSInstance, SplitR1CSShape, weights_from_r,
-  },
+  r1cs::{R1CSInstance, R1CSValue, R1CSWitness, SplitR1CSInstance, SplitR1CSShape, weights_from_r},
   small_constraint_system::{SmallCoeff, SmallSatisfyingAssignment},
   small_sumcheck::{SmallValueSumCheck, build_univariate_round_polynomial, derive_t1},
   start_span,
@@ -46,6 +40,7 @@ use crate::{
   },
   zk::NeutronNovaVerifierCircuit,
 };
+use crate::{bellpepper::r1cs::VcDriver, zk::NeutronRoundSchedule};
 use ff::Field;
 use num_traits::Zero;
 use rayon::prelude::*;
@@ -974,8 +969,7 @@ where
     );
 
     let (_first_l0_span, first_l0_t) = start_span!("nifs_first_l0_rounds", rounds = l0);
-    let result =
-      run_small_value_l0_rounds(accumulators, rhos, l0, driver, transcript)?;
+    let result = run_small_value_l0_rounds(accumulators, rhos, l0, driver, transcript)?;
     info!(
       elapsed_ms = %first_l0_t.elapsed().as_millis(),
       rounds = l0,
@@ -1053,8 +1047,7 @@ where
     );
 
     let (_first_l0_span, first_l0_t) = start_span!("nifs_first_l0_rounds", rounds = l0);
-    let result =
-      run_small_value_l0_rounds(accumulators, rhos, l0, driver, transcript)?;
+    let result = run_small_value_l0_rounds(accumulators, rhos, l0, driver, transcript)?;
     info!(
       elapsed_ms = %first_l0_t.elapsed().as_millis(),
       rounds = l0,
@@ -2702,8 +2695,7 @@ where
     driver.vc.nifs_polys[i] = [c[0], c[1], c[2], c[3]];
 
     let (_vc_span, vc_t) = start_span!("vc_commit");
-    let chals =
-      driver.commit_round(i, transcript)?;
+    let chals = driver.commit_round(i, transcript)?;
     let vc_elapsed = vc_t.elapsed();
     vc_commit_total += vc_elapsed;
     info!(elapsed_ms = %vc_elapsed.as_millis(), round = i, "vc_commit");
@@ -2758,8 +2750,7 @@ where
   driver.vc.nifs_polys[round] = [coeffs[0], coeffs[1], coeffs[2], coeffs[3]];
 
   let (_vc_span, vc_t) = start_span!("nifs_vc_commit_round", round = round);
-  let chals =
-    driver.commit_round(round, transcript)?;
+  let chals = driver.commit_round(round, transcript)?;
   let vc_elapsed = vc_t.elapsed();
   info!(
     elapsed_ms = %vc_elapsed.as_millis(),

@@ -21,9 +21,7 @@
 //! `NoBatchEq` keeps coefficients bounded at 2^18 (max from limbed addition).
 
 use super::{addmany, small_uint32::SmallUInt32};
-use crate::small_constraint_system::{
-  SmallConstraintSystem, SmallLinearCombination, SmallNamespace,
-};
+use crate::small_constraint_system::{SmallConstraintSystem, SmallLinearCombination};
 use bellpepper_core::SynthesisError;
 
 // ============================================================================
@@ -52,8 +50,6 @@ pub trait SmallMultiEq<W, C>: SmallConstraintSystem<W, C> {
 /// addition (max coefficient 2^18, fits i32) for multi-operand addition.
 pub struct NoBatchEq<'a, W, C, CS: SmallConstraintSystem<W, C>> {
   pub(crate) cs: &'a mut CS,
-  ops: usize,
-  addmany_count: usize,
   _marker: std::marker::PhantomData<(W, C)>,
 }
 
@@ -62,8 +58,6 @@ impl<'a, W, C, CS: SmallConstraintSystem<W, C>> NoBatchEq<'a, W, C, CS> {
   pub fn new(cs: &'a mut CS) -> Self {
     NoBatchEq {
       cs,
-      ops: 0,
-      addmany_count: 0,
       _marker: std::marker::PhantomData,
     }
   }
@@ -81,23 +75,19 @@ impl<W: Copy + From<bool>, CS: SmallConstraintSystem<W, i32>> SmallMultiEq<W, i3
     rhs: &SmallLinearCombination<i32>,
   ) {
     if self.cs.is_witness_generator() {
-      self.ops += 1;
       return;
     }
 
-    let ops = self.ops;
     // Enforce: lhs - rhs = 0, expressed as (lhs - rhs) * ONE = 0
     let mut diff = lhs.clone();
     for (var, coeff) in &rhs.terms {
       diff.add_term(*var, -*coeff);
     }
     self.cs.enforce(
-      || format!("eq {ops}"),
       diff,
       SmallLinearCombination::one(1i32), // b = 1 * ONE
       SmallLinearCombination::zero(),    // c = 0
     );
-    self.ops += 1;
   }
 
   fn addmany(&mut self, operands: &[SmallUInt32]) -> Result<SmallUInt32, SynthesisError> {
@@ -108,91 +98,38 @@ impl<W: Copy + From<bool>, CS: SmallConstraintSystem<W, i32>> SmallMultiEq<W, i3
       return Ok(SmallUInt32::constant(sum));
     }
 
-    let count = self.addmany_count;
-    self.addmany_count += 1;
-    self.cs.push_namespace(|| format!("add{count}"));
-
-    let result = addmany::limbed::<W, _>(self, operands);
-
-    self.cs.pop_namespace();
-    result
+    addmany::limbed::<W, _>(self, operands)
   }
 }
 
 impl<W: Copy, C, CS: SmallConstraintSystem<W, C>> SmallConstraintSystem<W, C>
   for NoBatchEq<'_, W, C, CS>
 {
-  type Root = CS::Root;
-
-  fn alloc<A, AR, F>(
-    &mut self,
-    annotation: A,
-    f: F,
-  ) -> Result<bellpepper_core::Variable, SynthesisError>
+  fn alloc<F>(&mut self, f: F) -> Result<bellpepper_core::Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
-    self.cs.alloc(annotation, f)
+    self.cs.alloc(f)
   }
 
-  fn alloc_input<A, AR, F>(
-    &mut self,
-    annotation: A,
-    f: F,
-  ) -> Result<bellpepper_core::Variable, SynthesisError>
+  fn alloc_input<F>(&mut self, f: F) -> Result<bellpepper_core::Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
-    self.cs.alloc_input(annotation, f)
+    self.cs.alloc_input(f)
   }
 
-  fn enforce<A, AR>(
+  fn enforce(
     &mut self,
-    annotation: A,
     a: SmallLinearCombination<C>,
     b: SmallLinearCombination<C>,
     c: SmallLinearCombination<C>,
-  ) where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
-    self.cs.enforce(annotation, a, b, c);
-  }
-
-  fn push_namespace<NR, N>(&mut self, name_fn: N)
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR,
-  {
-    self.cs.push_namespace(name_fn);
-  }
-
-  fn pop_namespace(&mut self) {
-    self.cs.pop_namespace();
-  }
-
-  fn get_root(&mut self) -> &mut Self::Root {
-    self.cs.get_root()
+  ) {
+    self.cs.enforce(a, b, c);
   }
 
   fn is_witness_generator(&self) -> bool {
     self.cs.is_witness_generator()
-  }
-
-  fn namespace<NR, N>(&mut self, name_fn: N) -> SmallNamespace<'_, W, C, Self::Root>
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR,
-  {
-    self.get_root().push_namespace(name_fn);
-    SmallNamespace {
-      inner: self.get_root(),
-      _marker: std::marker::PhantomData,
-    }
   }
 }
 
@@ -236,8 +173,8 @@ mod tests {
   fn test_no_batch_eq_basic() {
     let mut cs = SmallShapeCS::<i32>::new();
 
-    let a = cs.alloc(|| "a", || Ok(0i8)).unwrap();
-    let b = cs.alloc(|| "b", || Ok(0i8)).unwrap();
+    let a = cs.alloc(|| Ok(0i8)).unwrap();
+    let b = cs.alloc(|| Ok(0i8)).unwrap();
 
     {
       let mut eq = NoBatchEq::<i8, i32, _>::new(&mut cs);

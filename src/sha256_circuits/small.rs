@@ -116,13 +116,10 @@ where
   CS: SmallConstraintSystem<W, i32>,
 {
   let mut bits = Vec::with_capacity(preimage.len() * 8);
-  for (byte_idx, &byte) in preimage.iter().enumerate() {
+  for &byte in preimage.iter() {
     for bit_idx in (0..8).rev() {
       let val = (byte >> bit_idx) & 1 == 1;
-      let bit = crate::gadgets::small_boolean::SmallBit::alloc(
-        &mut cs.namespace(|| format!("preimage_byte{byte_idx}_bit{bit_idx}")),
-        Some(val),
-      )?;
+      let bit = crate::gadgets::small_boolean::SmallBit::alloc(&mut *cs, Some(val))?;
       bits.push(SmallBoolean::Is(bit));
     }
   }
@@ -139,22 +136,19 @@ where
   W: Copy + From<bool>,
   CS: SmallConstraintSystem<W, i32>,
 {
-  for (i, bit) in hash_bits.iter().enumerate() {
-    let public = cs.alloc_input(
-      || format!("hash_bit_{i}"),
-      || {
-        bit
-          .get_value()
-          .map(W::from)
-          .ok_or(SynthesisError::AssignmentMissing)
-      },
-    )?;
+  for bit in hash_bits.iter() {
+    let public = cs.alloc_input(|| {
+      bit
+        .get_value()
+        .map(W::from)
+        .ok_or(SynthesisError::AssignmentMissing)
+    })?;
 
     let mut diff = bit.lc::<i32>();
     diff.add_term(public, -1i32);
 
+    // hash_bit_public_binding: bit - public == 0
     cs.enforce(
-      || format!("hash_bit_public_binding_{i}"),
       diff,
       SmallLinearCombination::one(1i32),
       SmallLinearCombination::zero(),

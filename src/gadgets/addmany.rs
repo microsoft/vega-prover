@@ -61,31 +61,22 @@ where
     let mut bits = [const { SmallBoolean::Constant(false) }; 32];
 
     for (i, slot) in bits.iter_mut().enumerate().take(16) {
-      let bit = SmallBit::alloc(
-        &mut cs.namespace(|| format!("lo{i}")),
-        lo_sum.map(|v| (v >> i) & 1 == 1),
-      )?;
+      let bit = SmallBit::alloc(&mut *cs, lo_sum.map(|v| (v >> i) & 1 == 1))?;
       *slot = SmallBoolean::Is(bit);
     }
 
     for i in 0..num_carry_bits {
-      let _ = SmallBit::alloc(
-        &mut cs.namespace(|| format!("c{i}")),
-        lo_sum.map(|v| (v >> (16 + i)) & 1 == 1),
-      )?;
+      let _ = SmallBit::alloc(&mut *cs, lo_sum.map(|v| (v >> (16 + i)) & 1 == 1))?;
     }
 
     for i in 0..16 {
-      let bit = SmallBit::alloc(
-        &mut cs.namespace(|| format!("hi{i}")),
-        hi_sum_with_carry.map(|v| (v >> i) & 1 == 1),
-      )?;
+      let bit = SmallBit::alloc(&mut *cs, hi_sum_with_carry.map(|v| (v >> i) & 1 == 1))?;
       bits[16 + i] = SmallBoolean::Is(bit);
     }
 
     for i in 0..num_carry_bits {
       let _ = SmallBit::alloc(
-        &mut cs.namespace(|| format!("o{i}")),
+        &mut *cs,
         hi_sum_with_carry.map(|v| (v >> (16 + i)) & 1 == 1),
       )?;
     }
@@ -114,10 +105,7 @@ where
 
   let mut coeff: i32 = 1;
   for (i, slot) in bits.iter_mut().enumerate().take(16) {
-    let bit = SmallBit::alloc(
-      &mut cs.namespace(|| format!("lo{i}")),
-      lo_sum.map(|v| (v >> i) & 1 == 1),
-    )?;
+    let bit = SmallBit::alloc(&mut *cs, lo_sum.map(|v| (v >> i) & 1 == 1))?;
     lo_result_lc.add_term(bit.get_variable(), coeff);
     *slot = SmallBoolean::Is(bit);
     coeff *= 2;
@@ -125,10 +113,7 @@ where
 
   // Allocate carry bits from lo_sum (bits 16+)
   for i in 0..num_carry_bits {
-    let bit = SmallBit::alloc(
-      &mut cs.namespace(|| format!("c{i}")),
-      lo_sum.map(|v| (v >> (16 + i)) & 1 == 1),
-    )?;
+    let bit = SmallBit::alloc(&mut *cs, lo_sum.map(|v| (v >> (16 + i)) & 1 == 1))?;
     lo_result_lc.add_term(bit.get_variable(), coeff);
     carry_bits.push(bit);
     coeff *= 2;
@@ -161,10 +146,7 @@ where
   let mut hi_result_lc = SmallLinearCombination::zero();
   let mut coeff: i32 = 1;
   for i in 0..16 {
-    let bit = SmallBit::alloc(
-      &mut cs.namespace(|| format!("hi{i}")),
-      hi_sum_with_carry.map(|v| (v >> i) & 1 == 1),
-    )?;
+    let bit = SmallBit::alloc(&mut *cs, hi_sum_with_carry.map(|v| (v >> i) & 1 == 1))?;
     hi_result_lc.add_term(bit.get_variable(), coeff);
     bits[16 + i] = SmallBoolean::Is(bit);
     coeff *= 2;
@@ -173,7 +155,7 @@ where
   // Allocate overflow bits from hi_sum_with_carry (bits 16+, discarded)
   for i in 0..num_carry_bits {
     let bit = SmallBit::alloc(
-      &mut cs.namespace(|| format!("o{i}")),
+      &mut *cs,
       hi_sum_with_carry.map(|v| (v >> (16 + i)) & 1 == 1),
     )?;
     hi_result_lc.add_term(bit.get_variable(), coeff);

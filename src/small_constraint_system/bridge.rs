@@ -25,6 +25,11 @@ use crate::small_constraint_system::{SmallCoeff, SmallConstraintSystem, SmallLin
 /// Constraints are recorded as proper bellpepper constraints with `Scalar` coefficients.
 pub struct SmallToBellpepperCS<'a, Scalar: PrimeField, CS: ConstraintSystem<Scalar>> {
   pub(crate) cs: &'a mut CS,
+  /// Counter for generated annotation names. The small-CS path carries no
+  /// annotations, but bellpepper backends like `TestConstraintSystem` require
+  /// unique names, so we synthesize `sv{n}` lazily (production backends never
+  /// evaluate the annotation closures).
+  next_id: usize,
   _marker: PhantomData<Scalar>,
 }
 
@@ -33,8 +38,15 @@ impl<'a, Scalar: PrimeField, CS: ConstraintSystem<Scalar>> SmallToBellpepperCS<'
   pub fn new(cs: &'a mut CS) -> Self {
     SmallToBellpepperCS {
       cs,
+      next_id: 0,
       _marker: PhantomData,
     }
+  }
+
+  fn next_name(&mut self) -> usize {
+    let id = self.next_id;
+    self.next_id += 1;
+    id
   }
 
   /// Convert a `SmallLinearCombination<C>` to a bellpepper `LinearCombination<Scalar>`.
@@ -53,62 +65,47 @@ impl<'a, Scalar: PrimeField, CS: ConstraintSystem<Scalar>> SmallToBellpepperCS<'
 impl<W: SmallCoeff, C: SmallCoeff, Scalar: PrimeField, CS: ConstraintSystem<Scalar>>
   SmallConstraintSystem<W, C> for SmallToBellpepperCS<'_, Scalar, CS>
 {
-  type Root = Self;
-
-  fn alloc<A, AR, F>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
-    self.cs.alloc(annotation, || {
-      let val = f()?;
-      Ok(val.to_field())
-    })
+    let id = self.next_name();
+    self.cs.alloc(
+      || format!("sv{id}"),
+      || {
+        let val = f()?;
+        Ok(val.to_field())
+      },
+    )
   }
 
-  fn alloc_input<A, AR, F>(&mut self, annotation: A, f: F) -> Result<Variable, SynthesisError>
+  fn alloc_input<F>(&mut self, f: F) -> Result<Variable, SynthesisError>
   where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
     F: FnOnce() -> Result<W, SynthesisError>,
   {
-    self.cs.alloc_input(annotation, || {
-      let val = f()?;
-      Ok(val.to_field())
-    })
+    let id = self.next_name();
+    self.cs.alloc_input(
+      || format!("sv{id}"),
+      || {
+        let val = f()?;
+        Ok(val.to_field())
+      },
+    )
   }
 
-  fn enforce<A, AR>(
+  fn enforce(
     &mut self,
-    annotation: A,
     a: SmallLinearCombination<C>,
     b: SmallLinearCombination<C>,
     c: SmallLinearCombination<C>,
-  ) where
-    A: FnOnce() -> AR,
-    AR: Into<String>,
-  {
+  ) {
+    let id = self.next_name();
     let lc_a = Self::to_lc(&a);
     let lc_b = Self::to_lc(&b);
     let lc_c = Self::to_lc(&c);
-    self.cs.enforce(annotation, |_| lc_a, |_| lc_b, |_| lc_c);
-  }
-
-  fn push_namespace<NR, N>(&mut self, name_fn: N)
-  where
-    NR: Into<String>,
-    N: FnOnce() -> NR,
-  {
-    self.cs.get_root().push_namespace(name_fn);
-  }
-
-  fn pop_namespace(&mut self) {
-    self.cs.get_root().pop_namespace();
-  }
-
-  fn get_root(&mut self) -> &mut Self::Root {
     self
+      .cs
+      .enforce(|| format!("sc{id}"), |_| lc_a, |_| lc_b, |_| lc_c);
   }
 
   fn is_witness_generator(&self) -> bool {

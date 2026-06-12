@@ -39,10 +39,7 @@ impl SmallBit {
     C: Copy + From<bool> + NegOne,
     CS: SmallConstraintSystem<W, C>,
   {
-    let var = cs.alloc(
-      || "bit",
-      || value.map(W::from).ok_or(SynthesisError::AssignmentMissing),
-    )?;
+    let var = cs.alloc(|| value.map(W::from).ok_or(SynthesisError::AssignmentMissing))?;
 
     if !cs.is_witness_generator() {
       // Enforce: bit * (1 - bit) = 0
@@ -50,7 +47,6 @@ impl SmallBit {
       // b = 1 * ONE - 1 * bit  (i.e. 1 - bit)
       // c = 0
       cs.enforce(
-        || "bit_boolean",
         SmallLinearCombination::from_variable(var, C::from(true)),
         boolean_not_lc(var, C::from(true)),
         SmallLinearCombination::zero(),
@@ -209,7 +205,7 @@ impl SmallBoolean {
         }
         lc_c.add_term(result_bit.variable, C::neg(C::from(true))); // - result
 
-        cs.enforce(|| "xor", lc_2a, b_lc, lc_c);
+        cs.enforce(lc_2a, b_lc, lc_c);
         Ok(SmallBoolean::Is(result_bit))
       }
     }
@@ -240,7 +236,7 @@ impl SmallBoolean {
         let lc_b: SmallLinearCombination<C> = b.lc();
         let lc_c = SmallLinearCombination::from_variable(result_bit.variable, C::from(true));
 
-        cs.enforce(|| "and", lc_a, lc_b, lc_c);
+        cs.enforce(lc_a, lc_b, lc_c);
         Ok(SmallBoolean::Is(result_bit))
       }
     }
@@ -293,7 +289,7 @@ impl SmallBoolean {
           lc_result_minus_c.add_term(*var, C::neg(*coeff));
         }
 
-        cs.enforce(|| "sha256_ch", a_lc, lc_b_minus_c, lc_result_minus_c);
+        cs.enforce(a_lc, lc_b_minus_c, lc_result_minus_c);
         Ok(SmallBoolean::Is(result_bit))
       }
     }
@@ -324,7 +320,7 @@ impl SmallBoolean {
         Ok(SmallBoolean::constant((av & bv) ^ (av & cv) ^ (bv & cv)))
       }
       _ => {
-        let bc = SmallBoolean::and(cs.namespace(|| "bc").inner, b, c)?;
+        let bc = SmallBoolean::and(&mut *cs, b, c)?;
         let result_bit = SmallBit::alloc(cs, result_val)?;
         if cs.is_witness_generator() {
           return Ok(SmallBoolean::Is(result_bit));
@@ -348,12 +344,7 @@ impl SmallBoolean {
         let mut lc_bc_minus_result = bc_lc;
         lc_bc_minus_result.add_term(result_bit.variable, C::neg(C::from(true)));
 
-        cs.enforce(
-          || "sha256_maj",
-          lc_2bc_minus_b_minus_c,
-          a_lc,
-          lc_bc_minus_result,
-        );
+        cs.enforce(lc_2bc_minus_b_minus_c, a_lc, lc_bc_minus_result);
         Ok(SmallBoolean::Is(result_bit))
       }
     }
@@ -425,12 +416,10 @@ mod tests {
 
   fn alloc_bit<CS: SmallConstraintSystem<i8, i32>>(
     cs: &mut CS,
-    name: &'static str,
+    _name: &'static str,
     value: bool,
   ) -> SmallBoolean {
-    SmallBoolean::Is(
-      SmallBit::alloc::<i8, i32, _>(&mut cs.namespace(|| name), Some(value)).unwrap(),
-    )
+    SmallBoolean::Is(SmallBit::alloc::<i8, i32, _>(&mut *cs, Some(value)).unwrap())
   }
 
   #[test]

@@ -94,10 +94,7 @@ impl SmallUInt32 {
   {
     let mut bits = [const { SmallBoolean::Constant(false) }; 32];
     for (i, slot) in bits.iter_mut().enumerate() {
-      *slot = SmallBoolean::Is(SmallBit::alloc(
-        &mut cs.namespace(|| format!("b{i}")),
-        value.map(|v| (v >> i) & 1 == 1),
-      )?);
+      *slot = SmallBoolean::Is(SmallBit::alloc(&mut cs, value.map(|v| (v >> i) & 1 == 1))?);
     }
     Ok(SmallUInt32 { bits, value })
   }
@@ -137,12 +134,8 @@ impl SmallUInt32 {
     CS: SmallConstraintSystem<W, C>,
   {
     let mut bits = [const { SmallBoolean::Constant(false) }; 32];
-    for (i, (slot, (a, b))) in bits
-      .iter_mut()
-      .zip(self.bits.iter().zip(other.bits.iter()))
-      .enumerate()
-    {
-      *slot = SmallBoolean::xor(cs.namespace(|| format!("b{i}")).inner, a, b)?;
+    for (slot, (a, b)) in bits.iter_mut().zip(self.bits.iter().zip(other.bits.iter())) {
+      *slot = SmallBoolean::xor(&mut cs, a, b)?;
     }
 
     Ok(SmallUInt32 {
@@ -164,12 +157,11 @@ impl SmallUInt32 {
     CS: SmallConstraintSystem<W, C>,
   {
     let mut bits = [const { SmallBoolean::Constant(false) }; 32];
-    for (i, (slot, ((a_bit, b_bit), c_bit))) in bits
+    for (slot, ((a_bit, b_bit), c_bit)) in bits
       .iter_mut()
       .zip(a.bits.iter().zip(b.bits.iter()).zip(c.bits.iter()))
-      .enumerate()
     {
-      *slot = SmallBoolean::sha256_ch(cs.namespace(|| format!("b{i}")).inner, a_bit, b_bit, c_bit)?;
+      *slot = SmallBoolean::sha256_ch(&mut cs, a_bit, b_bit, c_bit)?;
     }
 
     Ok(SmallUInt32 {
@@ -195,13 +187,11 @@ impl SmallUInt32 {
     CS: SmallConstraintSystem<W, C>,
   {
     let mut bits = [const { SmallBoolean::Constant(false) }; 32];
-    for (i, (slot, ((a_bit, b_bit), c_bit))) in bits
+    for (slot, ((a_bit, b_bit), c_bit)) in bits
       .iter_mut()
       .zip(a.bits.iter().zip(b.bits.iter()).zip(c.bits.iter()))
-      .enumerate()
     {
-      *slot =
-        SmallBoolean::sha256_maj(cs.namespace(|| format!("b{i}")).inner, a_bit, b_bit, c_bit)?;
+      *slot = SmallBoolean::sha256_maj(&mut cs, a_bit, b_bit, c_bit)?;
     }
 
     Ok(SmallUInt32 {

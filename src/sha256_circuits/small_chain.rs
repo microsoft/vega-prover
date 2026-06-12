@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::marker::PhantomData;
 
 use crate::{
-  gadgets::{NoBatchEq, SmallBoolean, small_sha256_int_with_prefix},
+  gadgets::{NoBatchEq, SmallBoolean, small_sha256_int},
   small_constraint_system::{SmallConstraintSystem, SmallToBellpepperCS},
   traits::{Engine, circuit::SpartanCircuit},
 };
@@ -68,9 +68,8 @@ where
 {
   let mut current_bits = alloc_preimage_small_bits::<i8, _>(cs, input)?;
   let mut eq = NoBatchEq::<i8, i32, _>::new(cs);
-  for chain_idx in 0..chain_length {
-    let prefix = format!("c{}_", chain_idx);
-    current_bits = small_sha256_int_with_prefix::<i8, _>(&mut eq, &current_bits, &prefix)?;
+  for _ in 0..chain_length {
+    current_bits = small_sha256_int::<i8, _>(&mut eq, &current_bits)?;
   }
   Ok(current_bits)
 }
@@ -96,8 +95,7 @@ where
     _: &[AllocatedNum<E::Scalar>],
   ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
     let mut small_cs = SmallToBellpepperCS::<E::Scalar, CS>::new(cs);
-    let current_bits =
-      synthesize_sha256_chain_bits(&mut small_cs, &self.input, self.chain_length)?;
+    let current_bits = synthesize_sha256_chain_bits(&mut small_cs, &self.input, self.chain_length)?;
 
     #[cfg(debug_assertions)]
     super::assert_small_bits_match_bytes(&current_bits, &self.expected_output());
