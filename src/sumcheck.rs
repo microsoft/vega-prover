@@ -11,18 +11,13 @@
 //! needing to compute the sum directly.
 
 use crate::{
-  CommitmentKey,
-  bellpepper::{
-    r1cs::{MultiRoundSpartanWitness, MultiRoundState},
-    solver::SatisfyingAssignment,
-  },
+  bellpepper::r1cs::VcDriver,
   big_num::DelayedReduction,
   errors::SpartanError,
   polys::{
     multilinear::MultilinearPolynomial,
     univariate::{CompressedUniPoly, UniPoly},
   },
-  r1cs::SplitMultiRoundR1CSShape,
   start_span,
   traits::{Engine, transcript::TranscriptEngineTrait},
   zk::{NeutronNovaVerifierCircuit, SpartanVerifierCircuit},
@@ -584,10 +579,7 @@ impl<E: Engine> SumcheckProof<E> {
     poly_Az: &mut MultilinearPolynomial<E::Scalar>,
     poly_Bz: &mut MultilinearPolynomial<E::Scalar>,
     poly_Cz: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut SpartanVerifierCircuit<E>,
-    state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, SpartanVerifierCircuit<E>>,
     transcript: &mut E::TE,
   ) -> Result<Vec<E::Scalar>, SpartanError> {
     let mut r_x: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
@@ -609,7 +601,7 @@ impl<E: Engine> SumcheckProof<E> {
       };
       let evals = vec![eval0, claim_outer_round - eval0, eval2, eval3];
       let poly = UniPoly::from_evals(&evals)?;
-      verifier_circuit.outer_polys[i] = [
+      driver.vc.outer_polys[i] = [
         poly.coeffs[0],
         poly.coeffs[1],
         poly.coeffs[2],
@@ -617,14 +609,7 @@ impl<E: Engine> SumcheckProof<E> {
       ];
 
       // -------- transcript / witness handling --------
-      let chals = SatisfyingAssignment::<E>::process_round(
-        state,
-        vc_shape,
-        vc_ck,
-        verifier_circuit,
-        i,
-        transcript,
-      )?;
+      let chals = driver.commit_round(i, transcript)?;
       r_x.push(chals[0]);
 
       // -------- advance claim and bind polys --------
@@ -654,10 +639,7 @@ impl<E: Engine> SumcheckProof<E> {
     num_rounds: usize,
     poly_ABC: &mut MultilinearPolynomial<E::Scalar>,
     poly_z: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut SpartanVerifierCircuit<E>,
-    state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, SpartanVerifierCircuit<E>>,
     transcript: &mut E::TE,
     start_round: usize,
     inner_poly_offset: usize,
@@ -674,18 +656,11 @@ impl<E: Engine> SumcheckProof<E> {
       let evals = vec![eval0, claim_current_round - eval0, eval2];
       let poly = UniPoly::from_evals(&evals)?;
 
-      verifier_circuit.inner_polys[inner_poly_offset + j] =
+      driver.vc.inner_polys[inner_poly_offset + j] =
         [poly.coeffs[0], poly.coeffs[1], poly.coeffs[2]];
 
       // -------- transcript / witness handling --------
-      let chals = SatisfyingAssignment::<E>::process_round(
-        state,
-        vc_shape,
-        vc_ck,
-        verifier_circuit,
-        start_round + j,
-        transcript,
-      )?;
+      let chals = driver.commit_round(start_round + j, transcript)?;
       r_y.push(chals[0]);
 
       // -------- bind polys --------
@@ -712,10 +687,7 @@ impl<E: Engine> SumcheckProof<E> {
     poly_A_1: &mut MultilinearPolynomial<E::Scalar>,
     poly_B_0: &mut MultilinearPolynomial<E::Scalar>,
     poly_B_1: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut NeutronNovaVerifierCircuit<E>,
-    state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
     start_round: usize,
   ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
@@ -745,18 +717,11 @@ impl<E: Engine> SumcheckProof<E> {
       let poly_c = UniPoly::from_evals(&evals_c)?;
       let coeffs_core = [poly_c.coeffs[0], poly_c.coeffs[1], poly_c.coeffs[2]];
 
-      verifier_circuit.inner_polys_step[j] = coeffs_step;
-      verifier_circuit.inner_polys_core[j] = coeffs_core;
+      driver.vc.inner_polys_step[j] = coeffs_step;
+      driver.vc.inner_polys_core[j] = coeffs_core;
 
       // -------- transcript / witness handling --------
-      let chals = SatisfyingAssignment::<E>::process_round(
-        state,
-        vc_shape,
-        vc_ck,
-        verifier_circuit,
-        start_round + j,
-        transcript,
-      )?;
+      let chals = driver.commit_round(start_round + j, transcript)?;
       let r_j = chals[0];
       r_y.push(r_j);
 
@@ -799,10 +764,7 @@ impl<E: Engine> SumcheckProof<E> {
     poly_B_core: &mut MultilinearPolynomial<E::Scalar>,
     poly_C_step: &mut MultilinearPolynomial<E::Scalar>,
     poly_C_core: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut NeutronNovaVerifierCircuit<E>,
-    state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
     start_round: usize,
   ) -> Result<Vec<E::Scalar>, SpartanError> {
@@ -811,7 +773,7 @@ impl<E: Engine> SumcheckProof<E> {
 
     let mut r_x: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
 
-    let mut claim_step = verifier_circuit.t_out_step;
+    let mut claim_step = driver.vc.t_out_step;
     let mut claim_core = E::Scalar::ZERO;
 
     for i in 0..num_rounds {
@@ -861,18 +823,11 @@ impl<E: Engine> SumcheckProof<E> {
         poly_c.coeffs[3],
       ];
 
-      verifier_circuit.outer_polys_step[i] = coeffs_step;
-      verifier_circuit.outer_polys_core[i] = coeffs_core;
+      driver.vc.outer_polys_step[i] = coeffs_step;
+      driver.vc.outer_polys_core[i] = coeffs_core;
 
       // -------- transcript / witness handling --------
-      let chals = SatisfyingAssignment::<E>::process_round(
-        state,
-        vc_shape,
-        vc_ck,
-        verifier_circuit,
-        start_round + i,
-        transcript,
-      )?;
+      let chals = driver.commit_round(start_round + i, transcript)?;
       let r_i = chals[0];
       r_x.push(r_i);
 

@@ -768,6 +768,60 @@ pub struct MultiRoundState<E: Engine> {
   num_rounds: usize,
 }
 
+/// Bundles the verifier-circuit witness machinery that travels together
+/// through the ZK proving flow: the circuit being filled in, the multi-round
+/// witness state, and the shape/key needed to commit each round.
+///
+/// `commit_round` is the single place where a round's wires are committed and
+/// the round challenges are squeezed, enforcing the commit-then-squeeze
+/// discipline at one call site. The transcript is passed per call because
+/// callers also use it between rounds (e.g. to squeeze non-round challenges).
+pub(crate) struct VcDriver<'a, E: Engine, C> {
+  pub(crate) vc: &'a mut C,
+  pub(crate) state: &'a mut MultiRoundState<E>,
+  pub(crate) shape: &'a SplitMultiRoundR1CSShape<E>,
+  pub(crate) ck: &'a CommitmentKey<E>,
+}
+
+impl<'a, E: Engine, C: MultiRoundCircuit<E>> VcDriver<'a, E, C> {
+  pub(crate) fn new(
+    vc: &'a mut C,
+    state: &'a mut MultiRoundState<E>,
+    shape: &'a SplitMultiRoundR1CSShape<E>,
+    ck: &'a CommitmentKey<E>,
+  ) -> Self {
+    Self {
+      vc,
+      state,
+      shape,
+      ck,
+    }
+  }
+
+  /// Commit this round's witness variables and squeeze the round challenges.
+  pub(crate) fn commit_round(
+    &mut self,
+    round_index: usize,
+    transcript: &mut E::TE,
+  ) -> Result<Vec<E::Scalar>, SpartanError> {
+    SatisfyingAssignment::<E>::process_round(
+      self.state,
+      self.shape,
+      self.ck,
+      self.vc,
+      round_index,
+      transcript,
+    )
+  }
+
+  /// Finalize the multi-round witness into an instance/witness pair.
+  pub(crate) fn finalize(
+    &mut self,
+  ) -> Result<(SplitMultiRoundR1CSInstance<E>, R1CSWitness<E>), SpartanError> {
+    SatisfyingAssignment::<E>::finalize_multiround_witness(self.state, self.shape)
+  }
+}
+
 impl<E: Engine> MultiRoundSpartanWitness<E> for SatisfyingAssignment<E> {
   type MultiRoundState = MultiRoundState<E>;
 

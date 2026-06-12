@@ -11,7 +11,7 @@ use crate::{
   bellpepper::{
     r1cs::{
       MultiRoundSpartanShape, MultiRoundSpartanWitness, PrecommittedState, SpartanShape,
-      SpartanWitness,
+      SpartanWitness, VcDriver,
     },
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
@@ -39,7 +39,7 @@ use crate::{
     snark::{DigestHelperTrait, R1CSSNARKTrait, SpartanDigest},
     transcript::TranscriptEngineTrait,
   },
-  zk::SpartanVerifierCircuit,
+  zk::{SpartanRoundSchedule, SpartanVerifierCircuit},
 };
 use ff::Field;
 use once_cell::sync::OnceCell;
@@ -457,12 +457,14 @@ where
     let mut poly_Cz = MultilinearPolynomial::new(scratch_cz);
     info!(elapsed_ms = %mp_t.elapsed().as_millis(), "prepare_multilinear_polys");
     // Initialize multi-round verifier circuit (will be filled as we go)
+    let sched = SpartanRoundSchedule::new(num_rounds_x, num_rounds_y);
     let mut verifier_circuit = SpartanVerifierCircuit::<E>::default(
       num_rounds_x,
       num_rounds_y,
       pk.vc_shape.commitment_width,
     );
     let mut state = SatisfyingAssignment::<E>::initialize_multiround_witness(&pk.vc_shape)?;
+    let mut driver = VcDriver::new(&mut verifier_circuit, &mut state, &pk.vc_shape, &pk.vc_ck);
 
     // Outer sum-check
     let (_sc_span, sc_t) = start_span!("outer_sumcheck");
@@ -472,32 +474,22 @@ where
       &mut poly_Az,
       &mut poly_Bz,
       &mut poly_Cz,
-      &mut verifier_circuit,
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
+      &mut driver,
       &mut transcript,
     )?;
     info!(elapsed_ms = %sc_t.elapsed().as_millis(), "outer_sumcheck");
     // Outer final round data
-    verifier_circuit.claim_Az = poly_Az[0];
-    verifier_circuit.claim_Bz = poly_Bz[0];
-    verifier_circuit.claim_Cz = poly_Cz[0];
+    driver.vc.claim_Az = poly_Az[0];
+    driver.vc.claim_Bz = poly_Bz[0];
+    driver.vc.claim_Cz = poly_Cz[0];
     // Recover scratch buffers (bound down to 1 element, but allocation preserved)
     let scratch_az = poly_Az.into_vec();
     let scratch_bz = poly_Bz.into_vec();
     let scratch_cz = poly_Cz.into_vec();
-    verifier_circuit.tau_at_rx = EqPolynomial::new(taus).evaluate(&r_x);
+    driver.vc.tau_at_rx = EqPolynomial::new(taus).evaluate(&r_x);
 
     // Process the "outer final" round in the circuit and capture challenge
-    let chals = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      num_rounds_x,
-      &mut transcript,
-    )?;
+    let chals = driver.commit_round(sched.outer_final(), &mut transcript)?;
     let r = chals[0];
 
     // Merged: compute eq(r_x), bind row variables, and prepare poly_ABC in a single pipeline
@@ -514,7 +506,7 @@ where
     // Inner sum-check
     let (_sc2_span, sc2_t) = start_span!("inner_sumcheck");
     let claim_inner_joint =
-      verifier_circuit.claim_Az + r * verifier_circuit.claim_Bz + r * r * verifier_circuit.claim_Cz;
+      driver.vc.claim_Az + r * driver.vc.claim_Bz + r * r * driver.vc.claim_Cz;
 
     // --- Manual first round of inner sumcheck ---
     // The "virtual" polynomial pair is:
@@ -562,21 +554,14 @@ where
     let evals = vec![eval0, claim_inner_joint - eval0, eval2];
     let inner_r0_poly = UniPoly::from_evals(&evals)?;
 
-    verifier_circuit.inner_polys[0] = [
+    driver.vc.inner_polys[0] = [
       inner_r0_poly.coeffs[0],
       inner_r0_poly.coeffs[1],
       inner_r0_poly.coeffs[2],
     ];
 
     // Process round 0 of inner sumcheck through verifier circuit
-    let chals_inner_r0 = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      num_rounds_x + 1,
-      &mut transcript,
-    )?;
+    let chals_inner_r0 = driver.commit_round(sched.inner(0), &mut transcript)?;
     let r0_inner = chals_inner_r0[0];
     let claim_after_r0 = inner_r0_poly.evaluate(&r0_inner);
 
@@ -608,12 +593,9 @@ where
       num_rounds_y - 1,
       &mut poly_ABC,
       &mut poly_z,
-      &mut verifier_circuit,
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
+      &mut driver,
       &mut transcript,
-      num_rounds_x + 2,
+      sched.inner(1),
       1,
     )?;
 
@@ -642,32 +624,17 @@ where
 
     // Process the inner-final equality round
     // Set verifier circuit public values before processing inner-final round
-    verifier_circuit.eval_W = eval_W;
-    verifier_circuit.eval_X = eval_X;
-    _ = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      (num_rounds_x + 1) + num_rounds_y,
-      &mut transcript,
-    )?;
+    driver.vc.eval_W = eval_W;
+    driver.vc.eval_X = eval_X;
+    _ = driver.commit_round(sched.inner_final(), &mut transcript)?;
 
     // Process the dedicated commit-only round for eval_W
-    let eval_w_commit_round = num_rounds_x + 1 + num_rounds_y + 1;
-    let _ = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      eval_w_commit_round,
-      &mut transcript,
-    )?;
+    let eval_w_commit_round = sched.eval_w_commit();
+    let _ = driver.commit_round(eval_w_commit_round, &mut transcript)?;
 
     // Finalize multi-round witness and construct NIFS proof
     let (_nifs_span, nifs_t) = start_span!("finalize_and_nifs");
-    let (U_verifier, W_verifier) =
-      SatisfyingAssignment::<E>::finalize_multiround_witness(&mut state, &pk.vc_shape)?;
+    let (U_verifier, W_verifier) = driver.finalize()?;
     // Use the instance as produced by witness finalization; its public values
     // are exactly those absorbed during round 0 by the prover.
     let U_verifier_regular = U_verifier.to_regular_instance()?;
@@ -706,7 +673,7 @@ where
       &r_W,
       &r_y[1..],
       &U_verifier.comm_w_per_round[eval_w_commit_round],
-      &state.r_w_per_round[eval_w_commit_round],
+      &driver.state.r_w_per_round[eval_w_commit_round],
     )?;
     info!(elapsed_ms = %pcs_t.elapsed().as_millis(), "pcs_prove");
 
@@ -763,11 +730,12 @@ where
     let num_vars = vk.S.num_shared + vk.S.num_precommitted + vk.S.num_rest;
     let num_rounds_x = vk.S.num_cons.log_2();
     let num_rounds_y = num_vars.log_2() + 1;
+    let sched = SpartanRoundSchedule::new(num_rounds_x, num_rounds_y);
 
     let U_verifier_regular = self.U_verifier.to_regular_instance()?;
 
-    let num_public_values = 3usize;
-    let num_challenges = num_rounds_x + 1 + num_rounds_y;
+    let num_public_values = SpartanRoundSchedule::NUM_PUBLIC_VALUES;
+    let num_challenges = sched.num_challenges();
 
     if U_verifier_regular.X.len() != num_challenges + num_public_values {
       return Err(SpartanError::ProofVerifyError {
@@ -834,7 +802,7 @@ where
     // Continue with PCS verification on the same transcript
     // Use the commitment from the dedicated eval_W commit-only last round
     let (_pcs_verify_span, pcs_verify_t) = start_span!("pcs_verify");
-    let eval_w_commit_round = num_rounds_x + 1 + num_rounds_y + 1;
+    let eval_w_commit_round = sched.eval_w_commit();
     E::PCS::verify(
       &vk.vk_ee,
       &vk.vc_ck,

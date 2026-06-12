@@ -7,9 +7,10 @@
 //! Small-value accumulator path for NeutronNova's ZK folding scheme.
 
 use super::{
-  MultiRoundState, NeutronNovaNIFS, NeutronNovaNIFSOutput, NeutronNovaSmallProverKey,
-  NeutronNovaZkSNARK, compute_tensor_decomp, suffix_weight_full,
+  NeutronNovaNIFS, NeutronNovaNIFSOutput, NeutronNovaSmallProverKey, NeutronNovaZkSNARK,
+  compute_tensor_decomp, fold_final_layer_pairs, fold_layer_pair_into, suffix_weight_full,
 };
+use crate::{bellpepper::r1cs::VcDriver, zk::NeutronRoundSchedule};
 use crate::{
   CommitmentKey, DEFAULT_COMMITMENT_WIDTH, PCS,
   bellpepper::{
@@ -25,21 +26,18 @@ use crate::{
     extension::{bit_rev_prefix_table, extend_to_lagrange_domain, gather_and_extend_prefix},
   },
   math::Math,
-  nifs::NovaNIFS,
   polys::{
     eq::EqPolynomial,
-    multilinear::{MultilinearPolynomial, SparsePolynomial},
+    multilinear::MultilinearPolynomial,
     power::PowPolynomial,
     univariate::UniPoly,
   },
   r1cs::{
-    R1CSInstance, R1CSValue, R1CSWitness, SplitMultiRoundR1CSShape, SplitR1CSInstance,
-    SplitR1CSShape, weights_from_r,
+    R1CSInstance, R1CSValue, R1CSWitness, SplitR1CSInstance, SplitR1CSShape, weights_from_r,
   },
   small_constraint_system::{SmallCoeff, SmallSatisfyingAssignment},
   small_sumcheck::{SmallValueSumCheck, build_univariate_round_polynomial, derive_t1},
   start_span,
-  sumcheck::SumcheckProof,
   traits::{
     Engine,
     circuit::SmallSpartanCircuit,
@@ -152,34 +150,7 @@ where
   X: R1CSValue<E> + Serialize + for<'de> Deserialize<'de>,
   W: R1CSValue<E> + Serialize + for<'de> Deserialize<'de>,
 {
-  let n = Us.len();
-  let n_padded = n.next_power_of_two();
-  let ell_b = n_padded.log_2();
-
-  info!(
-    "NeutronNova NIFS prove for {} instances and padded to {} instances",
-    Us.len(),
-    n_padded
-  );
-
-  let mut Us = Us.to_vec();
-  let mut Ws = Ws.to_vec();
-  if Us.len() < n_padded {
-    Us.extend(vec![Us[0].clone(); n_padded - n]);
-    Ws.extend(vec![Ws[0].clone(); n_padded - n]);
-  }
-
-  for U in Us.iter() {
-    transcript.absorb(b"U", U);
-  }
-  transcript.absorb(b"T", &E::Scalar::ZERO);
-
-  let tau = transcript.squeeze(b"tau")?;
-  let rhos = (0..ell_b)
-    .map(|_| transcript.squeeze(b"rho"))
-    .collect::<Result<Vec<_>, _>>()?;
-
-  Ok((Us, Ws, ell_b, tau, rhos))
+  super::prepare_nifs_inputs(Us.to_vec(), Ws.to_vec(), transcript)
 }
 
 #[inline]
@@ -839,6 +810,7 @@ where
     let num_rounds_x = field_pk.S_step.num_cons.log_2();
     let num_rounds_y = num_vars.log_2() + 1;
 
+    let sched = NeutronRoundSchedule::new(num_rounds_b, num_rounds_x, num_rounds_y);
     let mut vc = NeutronNovaVerifierCircuit::<E>::default(
       num_rounds_b,
       num_rounds_x,
@@ -847,6 +819,7 @@ where
     );
     let mut vc_state =
       SatisfyingAssignment::<E>::initialize_multiround_witness(&field_pk.vc_shape)?;
+    let mut driver = VcDriver::new(&mut vc, &mut vc_state, &field_pk.vc_shape, &field_pk.vc_ck);
 
     let (_nifs_span, nifs_t) = start_span!("NIFS");
     let (E_eq, Az_step, Bz_step, Cz_step, folded_W, folded_U) =
@@ -858,32 +831,20 @@ where
         &prep_snark.small_abc,
         prep_snark.prefix_workspace.as_ref(),
         prep_snark.extended_mle_evals.as_ref(),
-        &mut vc,
-        &mut vc_state,
-        &field_pk.vc_shape,
-        &field_pk.vc_ck,
+        &mut driver,
         &mut transcript,
         l0,
       )?;
     info!(elapsed_ms = %nifs_t.elapsed().as_millis(), "NIFS");
 
-    let (_tensor_span, tensor_t) = start_span!("compute_tensor_and_poly_tau");
-    let (_ell, left, _right) = compute_tensor_decomp(field_pk.S_step.num_cons);
-    let mut E1 = E_eq;
-    let E2 = E1.split_off(left);
-
-    let mut poly_tau_left = MultilinearPolynomial::new(E1);
-    let poly_tau_right = MultilinearPolynomial::new(E2);
-    info!(elapsed_ms = %tensor_t.elapsed().as_millis(), "compute_tensor_and_poly_tau");
-
     let (_mp_span, mp_t) = start_span!("prepare_multilinear_polys");
-    let (mut poly_Az_step, mut poly_Bz_step, mut poly_Cz_step) = (
+    let step_polys = (
       multilinear_with_effective_halves(Az_step),
       multilinear_with_effective_halves(Bz_step),
       multilinear_with_effective_halves(Cz_step),
     );
 
-    let (mut poly_Az_core, mut poly_Bz_core, mut poly_Cz_core) = {
+    let core_polys = {
       let (_core_span, core_t) = start_span!("compute_small_core_polys");
       let z = build_z_small(&core_witness.W, &core_instance.public_values);
       let (Az, Bz, Cz) = pk.S_core_small.multiply_vec_small(&z)?;
@@ -916,264 +877,30 @@ where
           .collect(),
       )
     };
-
     info!(elapsed_ms = %mp_t.elapsed().as_millis(), "prepare_multilinear_polys");
-    let outer_start_index = num_rounds_b + 1;
-    let (_sc_span, sc_t) = start_span!("outer_sumcheck_batched");
-    let r_x = SumcheckProof::<E>::prove_cubic_with_additive_term_batched_zk(
-      num_rounds_x,
-      &mut poly_tau_left,
-      &poly_tau_right,
-      &mut poly_Az_step,
-      &mut poly_Az_core,
-      &mut poly_Bz_step,
-      &mut poly_Bz_core,
-      &mut poly_Cz_step,
-      &mut poly_Cz_core,
-      &mut vc,
-      &mut vc_state,
-      &field_pk.vc_shape,
-      &field_pk.vc_ck,
-      &mut transcript,
-      outer_start_index,
-    )?;
-    info!(elapsed_ms = %sc_t.elapsed().as_millis(), "outer_sumcheck_batched");
-    vc.claim_Az_step = poly_Az_step[0];
-    vc.claim_Bz_step = poly_Bz_step[0];
-    vc.claim_Cz_step = poly_Cz_step[0];
-    vc.claim_Az_core = poly_Az_core[0];
-    vc.claim_Bz_core = poly_Bz_core[0];
-    vc.claim_Cz_core = poly_Cz_core[0];
-    vc.tau_at_rx = poly_tau_left[0];
-
-    let chals = SatisfyingAssignment::<E>::process_round(
-      &mut vc_state,
-      &field_pk.vc_shape,
-      &field_pk.vc_ck,
-      &vc,
-      outer_start_index + num_rounds_x,
-      &mut transcript,
-    )?;
-    let r = chals[0];
-
-    let claim_inner_joint_step = vc.claim_Az_step + r * vc.claim_Bz_step + r * r * vc.claim_Cz_step;
-    let claim_inner_joint_core = vc.claim_Az_core + r * vc.claim_Bz_core + r * r * vc.claim_Cz_core;
-
-    let (_eval_rx_span, eval_rx_t) = start_span!("compute_eval_rx");
-    let evals_rx = EqPolynomial::evals_from_points(&r_x);
-    info!(
-      elapsed_ms = %eval_rx_t.elapsed().as_millis(),
-      num_rounds_x,
-      r_x_len = r_x.len(),
-      evals_rx_len = evals_rx.len(),
-      "compute_eval_rx"
-    );
-
-    let (_sparse_span, sparse_t) = start_span!("compute_eval_table_sparse");
-    let (poly_ABC_step, step_lo_eff, step_hi_eff) = field_pk
-      .S_step
-      .bind_and_prepare_poly_ABC_full(&evals_rx, &r);
-    let (poly_ABC_core, core_lo_eff, core_hi_eff) = field_pk
-      .S_core
-      .bind_and_prepare_poly_ABC_full(&evals_rx, &r);
-    info!(
-      elapsed_ms = %sparse_t.elapsed().as_millis(),
-      evals_rx_len = evals_rx.len(),
-      step_poly_len = poly_ABC_step.len(),
-      core_poly_len = poly_ABC_core.len(),
-      step_lo_eff,
-      step_hi_eff,
-      core_lo_eff,
-      core_hi_eff,
-      "compute_eval_table_sparse"
-    );
-
-    let (_sc2_span, sc2_t) = start_span!("inner_sumcheck_batched");
-    let (z_folded_vec, z_folded_lo, z_folded_hi) = {
-      let mut v = vec![E::Scalar::ZERO; num_vars * 2];
-      let w_len = folded_W.W.len();
-      v[..w_len].copy_from_slice(&folded_W.W);
-      v[w_len] = E::Scalar::ONE;
-      let x_len = folded_U.X.len();
-      v[w_len + 1..w_len + 1 + x_len].copy_from_slice(&folded_U.X);
-      let last_nz = w_len + 1 + x_len;
-      (v, last_nz.min(num_vars), last_nz.saturating_sub(num_vars))
-    };
-    let (z_core_vec, z_core_lo, z_core_hi) = {
-      let mut v = vec![E::Scalar::ZERO; num_vars * 2];
-      let w_len = core_witness_field.len();
-      v[..w_len].copy_from_slice(core_witness_field.as_ref());
-      v[w_len] = E::Scalar::ONE;
-      let x_len = core_instance_regular.X.len();
-      v[w_len + 1..w_len + 1 + x_len].copy_from_slice(&core_instance_regular.X);
-      let last_nz = w_len + 1 + x_len;
-      (v, last_nz.min(num_vars), last_nz.saturating_sub(num_vars))
-    };
-
-    let step_hi_eff = step_hi_eff.max(z_folded_hi);
-    let core_hi_eff = core_hi_eff.max(z_core_hi);
-
-    let (r_y, evals) = SumcheckProof::<E>::prove_quad_batched_zk(
-      &[claim_inner_joint_step, claim_inner_joint_core],
-      num_rounds_y,
-      &mut MultilinearPolynomial::new_with_halves(poly_ABC_step, step_lo_eff, step_hi_eff),
-      &mut MultilinearPolynomial::new_with_halves(poly_ABC_core, core_lo_eff, core_hi_eff),
-      &mut MultilinearPolynomial::new_with_halves(z_folded_vec, z_folded_lo, z_folded_hi),
-      &mut MultilinearPolynomial::new_with_halves(z_core_vec, z_core_lo, z_core_hi),
-      &mut vc,
-      &mut vc_state,
-      &field_pk.vc_shape,
-      &field_pk.vc_ck,
-      &mut transcript,
-      outer_start_index + num_rounds_x + 1,
-    )?;
-    info!(elapsed_ms = %sc2_t.elapsed().as_millis(), "inner_sumcheck_batched");
-
-    let eval_Z_step = evals[2];
-    let eval_Z_core = evals[3];
-
-    let eval_X_step = {
-      let X = vec![E::Scalar::ONE]
-        .into_iter()
-        .chain(folded_U.X.iter().cloned())
-        .collect::<Vec<E::Scalar>>();
-      let num_vars_log2 = usize::try_from(num_vars.ilog2()).unwrap();
-      SparsePolynomial::new(num_vars_log2, X).evaluate(&r_y[1..])
-    };
-    let eval_X_core = {
-      let X = vec![E::Scalar::ONE]
-        .into_iter()
-        .chain(core_instance_regular.X.iter().cloned())
-        .collect::<Vec<E::Scalar>>();
-      let num_vars_log2 = usize::try_from(num_vars.ilog2()).unwrap();
-      SparsePolynomial::new(num_vars_log2, X).evaluate(&r_y[1..])
-    };
-    let inv: Option<E::Scalar> = (E::Scalar::ONE - r_y[0]).invert().into();
-    let one_minus_ry0_inv = inv.ok_or(SpartanError::DivisionByZero)?;
-    let eval_W_step = (eval_Z_step - r_y[0] * eval_X_step) * one_minus_ry0_inv;
-    let eval_W_core = (eval_Z_core - r_y[0] * eval_X_core) * one_minus_ry0_inv;
-
-    vc.eval_W_step = eval_W_step;
-    vc.eval_W_core = eval_W_core;
-    vc.eval_X_step = eval_X_step;
-    vc.eval_X_core = eval_X_core;
-
-    let _ = SatisfyingAssignment::<E>::process_round(
-      &mut vc_state,
-      &field_pk.vc_shape,
-      &field_pk.vc_ck,
-      &vc,
-      outer_start_index + num_rounds_x + 1 + num_rounds_y,
-      &mut transcript,
-    )?;
-
-    let eval_w_step_commit_round = outer_start_index + num_rounds_x + 1 + num_rounds_y + 1;
-    let _ = SatisfyingAssignment::<E>::process_round(
-      &mut vc_state,
-      &field_pk.vc_shape,
-      &field_pk.vc_ck,
-      &vc,
-      eval_w_step_commit_round,
-      &mut transcript,
-    )?;
-
-    let _ = SatisfyingAssignment::<E>::process_round(
-      &mut vc_state,
-      &field_pk.vc_shape,
-      &field_pk.vc_ck,
-      &vc,
-      eval_w_step_commit_round + 1,
-      &mut transcript,
-    )?;
-
-    let (U_verifier, W_verifier) =
-      SatisfyingAssignment::<E>::finalize_multiround_witness(&mut vc_state, &field_pk.vc_shape)?;
-
-    let U_verifier_regular = U_verifier.to_regular_instance()?;
-
-    let (random_U, random_W) = field_pk
-      .vc_shape_regular
-      .sample_random_instance_witness(&field_pk.vc_ck)?;
-    let (nifs, folded_W_verifier, folded_u, folded_X) = NovaNIFS::<E>::prove(
-      &field_pk.vc_ck,
-      &field_pk.vc_shape_regular,
-      &random_U,
-      &random_W,
-      &U_verifier_regular,
-      &W_verifier,
-      &mut transcript,
-    )?;
-
-    let relaxed_snark = crate::spartan_relaxed::RelaxedR1CSSpartanProof::prove(
-      &field_pk.vc_shape_regular,
-      &field_pk.vc_ck,
-      &folded_u,
-      &folded_X,
-      &folded_W_verifier,
-      &mut transcript,
-    )?;
-    let comm_eval_W_step = U_verifier.comm_w_per_round[eval_w_step_commit_round].clone();
-    let blind_eval_W_step = vc_state.r_w_per_round[eval_w_step_commit_round].clone();
-
-    let comm_eval_W_core = U_verifier.comm_w_per_round[eval_w_step_commit_round + 1].clone();
-    let blind_eval_W_core = vc_state.r_w_per_round[eval_w_step_commit_round + 1].clone();
-
-    let c_eval = transcript.squeeze(b"c_eval")?;
-
-    let (_fold_eval_span, fold_eval_t) = start_span!("fold_evaluation_claims");
-    let comm = <E::PCS as FoldingEngineTrait<E>>::fold_commitments(
-      &[folded_U.comm_W, core_instance_regular.comm_W],
-      &[E::Scalar::ONE, c_eval],
-    )?;
-    let blind = <E::PCS as FoldingEngineTrait<E>>::fold_blinds(
-      &[folded_W.r_W.clone(), core_witness.r_W.clone()],
-      &[E::Scalar::ONE, c_eval],
-    )?;
-    let W = folded_W
-      .W
-      .par_iter()
-      .zip(core_witness_field.par_iter())
-      .map(|(w1, w2)| *w1 + c_eval * *w2)
-      .collect::<Vec<_>>();
-    let comm_eval = <E::PCS as FoldingEngineTrait<E>>::fold_commitments(
-      &[comm_eval_W_step, comm_eval_W_core],
-      &[E::Scalar::ONE, c_eval],
-    )?;
-    let blind_eval = <E::PCS as FoldingEngineTrait<E>>::fold_blinds(
-      &[blind_eval_W_step, blind_eval_W_core],
-      &[E::Scalar::ONE, c_eval],
-    )?;
-    info!(elapsed_ms = %fold_eval_t.elapsed().as_millis(), "fold_evaluation_claims");
-
-    let (_eval_arg_span, eval_arg_t) = start_span!("prove_eval_arg");
-    let eval_arg = E::PCS::prove(
-      &field_pk.ck,
-      &field_pk.vc_ck,
-      &mut transcript,
-      &comm,
-      &W,
-      &blind,
-      &r_y[1..],
-      &comm_eval,
-      &blind_eval,
-    )?;
-    info!(elapsed_ms = %eval_arg_t.elapsed().as_millis(), "prove_eval_arg");
 
     let step_instances = step_instances
       .into_iter()
       .map(|u| u.to_field_split_instance())
-      .collect();
+      .collect::<Vec<_>>();
     let core_instance = core_instance.to_field_split_instance();
-    let snark = NeutronNovaZkSNARK {
-      comm_W_shared: core_instance.comm_W_shared.clone(),
+
+    let snark = super::finish_zk_proof(
+      field_pk,
+      &sched,
+      &mut driver,
+      &mut transcript,
+      E_eq,
+      step_polys,
+      core_polys,
+      folded_W,
+      folded_U,
+      core_witness_field.as_ref(),
+      &core_witness.r_W,
+      core_instance_regular,
       step_instances,
       core_instance,
-      eval_arg,
-      U_verifier,
-      nifs,
-      random_U,
-      relaxed_snark,
-    };
+    )?;
 
     info!(elapsed_ms = %prove_t.elapsed().as_millis(), "neutronnova_prove_small");
     Ok((snark, prep_snark))
@@ -1193,10 +920,7 @@ where
     right: usize,
     rhos: &[E::Scalar],
     l0: usize,
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
   ) -> Result<
     (
@@ -1251,7 +975,7 @@ where
 
     let (_first_l0_span, first_l0_t) = start_span!("nifs_first_l0_rounds", rounds = l0);
     let result =
-      run_small_value_l0_rounds(accumulators, rhos, l0, vc, vc_state, vc_shape, vc_ck, transcript)?;
+      run_small_value_l0_rounds(accumulators, rhos, l0, driver, transcript)?;
     info!(
       elapsed_ms = %first_l0_t.elapsed().as_millis(),
       rounds = l0,
@@ -1272,10 +996,7 @@ where
     left: usize,
     right: usize,
     rhos: &[E::Scalar],
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
   ) -> Result<
     (
@@ -1333,7 +1054,7 @@ where
 
     let (_first_l0_span, first_l0_t) = start_span!("nifs_first_l0_rounds", rounds = l0);
     let result =
-      run_small_value_l0_rounds(accumulators, rhos, l0, vc, vc_state, vc_shape, vc_ck, transcript)?;
+      run_small_value_l0_rounds(accumulators, rhos, l0, driver, transcript)?;
     info!(
       elapsed_ms = %first_l0_t.elapsed().as_millis(),
       rounds = l0,
@@ -1669,10 +1390,7 @@ where
     Ws: &[R1CSWitness<E, W>],
     small_abc: &SmallAbc<SV>,
     extended_mle_evals: &ExtendedPrefixMleEvals<SV>,
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
   ) -> Result<NeutronNovaNIFSOutput<E>, SpartanError>
   where
@@ -1738,10 +1456,7 @@ where
         right,
         &rhos,
         ell_b,
-        vc,
-        vc_state,
-        vc_shape,
-        vc_ck,
+        driver,
         transcript,
       )?;
     info!(
@@ -1787,7 +1502,7 @@ where
     );
 
     let (folded_W, folded_U, final_vc_elapsed) = fold_and_update_vc_field::<E, X, W>(
-      S, ck, &r_bs, T_cur, acc_eq, &Us, &Ws, ell_b, vc, vc_state, vc_shape, vc_ck, transcript,
+      S, ck, &r_bs, T_cur, acc_eq, &Us, &Ws, ell_b, driver, transcript,
     )?;
     vc_commit_total += final_vc_elapsed;
     info!(
@@ -1819,10 +1534,7 @@ where
     Ws: &[R1CSWitness<E, W>],
     small_abc: &SmallAbc<SV>,
     cached_prefix_workspace: Option<&PrefixWorkspace<SV>>,
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
     l0: usize,
   ) -> Result<NeutronNovaNIFSOutput<E>, SpartanError>
@@ -1897,10 +1609,7 @@ where
         left,
         right,
         &rhos,
-        vc,
-        vc_state,
-        vc_shape,
-        vc_ck,
+        driver,
         transcript,
       )?;
     info!(
@@ -1956,10 +1665,7 @@ where
           &mut r_bs,
           &mut T_cur,
           &mut acc_eq,
-          vc,
-          vc_state,
-          vc_shape,
-          vc_ck,
+          driver,
           transcript,
         )?;
         vc_commit_total += vc_elapsed;
@@ -2079,10 +1785,7 @@ where
             &mut r_bs,
             &mut T_cur,
             &mut acc_eq,
-            vc,
-            vc_state,
-            vc_shape,
-            vc_ck,
+            driver,
             transcript,
           )?;
           vc_commit_total += vc_elapsed;
@@ -2147,7 +1850,7 @@ where
     );
 
     let (folded_W, folded_U, final_vc_elapsed) = fold_and_update_vc_field::<E, X, W>(
-      S, ck, &r_bs, T_cur, acc_eq, &Us, &Ws, ell_b, vc, vc_state, vc_shape, vc_ck, transcript,
+      S, ck, &r_bs, T_cur, acc_eq, &Us, &Ws, ell_b, driver, transcript,
     )?;
     vc_commit_total += final_vc_elapsed;
     info!(
@@ -2182,10 +1885,7 @@ where
     small_abc: &SmallAbc<SV>,
     prefix_workspace: Option<&PrefixWorkspace<SV>>,
     extended_mle_evals: Option<&ExtendedPrefixMleEvals<SV>>,
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut MultiRoundState<E>,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
+    driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
     transcript: &mut E::TE,
     l0: usize,
   ) -> Result<NeutronNovaNIFSOutput<E>, SpartanError>
@@ -2222,10 +1922,7 @@ where
         &Ws,
         small_abc,
         prefix_workspace,
-        vc,
-        vc_state,
-        vc_shape,
-        vc_ck,
+        driver,
         transcript,
         l0,
       )
@@ -2238,10 +1935,7 @@ where
           &Ws,
           small_abc,
           extended_mle_evals,
-          vc,
-          vc_state,
-          vc_shape,
-          vc_ck,
+          driver,
           transcript,
         ),
         None => Err(SpartanError::InvalidInputLength {
@@ -2515,37 +2209,11 @@ where
   E::PCS: FoldingEngineTrait<E>,
 {
   for chunk in [&mut *a_chunk, &mut *b_chunk] {
-    {
-      let (lo, hi) = chunk.split_at_mut(1);
-      lo[0]
-        .iter_mut()
-        .zip(hi[0].iter())
-        .for_each(|(l, h)| *l += prev_r_b * (*h - *l));
-    }
-    {
-      let (lo, hi) = chunk.split_at_mut(3);
-      lo[2]
-        .iter_mut()
-        .zip(hi[0].iter())
-        .for_each(|(l, h)| *l += prev_r_b * (*h - *l));
-    }
+    super::fold_quad_chunk(chunk, &prev_r_b);
   }
 
   if let Some(c_layer_chunk) = c_layer_chunk {
-    {
-      let (lo, hi) = c_layer_chunk.split_at_mut(1);
-      lo[0]
-        .iter_mut()
-        .zip(hi[0].iter())
-        .for_each(|(l, h)| *l += prev_r_b * (*h - *l));
-    }
-    {
-      let (lo, hi) = c_layer_chunk.split_at_mut(3);
-      lo[2]
-        .iter_mut()
-        .zip(hi[0].iter())
-        .for_each(|(l, h)| *l += prev_r_b * (*h - *l));
-    }
+    super::fold_quad_chunk(c_layer_chunk, &prev_r_b);
   }
 
   {
@@ -2900,23 +2568,6 @@ mod tests {
   }
 }
 
-fn fold_layer_pair_into<F: Field>(
-  layers: &mut [Vec<F>],
-  src_even: usize,
-  src_odd: usize,
-  dest: usize,
-  r: F,
-) {
-  let even = std::mem::take(&mut layers[src_even]);
-  let odd = &layers[src_odd];
-  let mut folded = even;
-  folded
-    .iter_mut()
-    .zip(odd.iter())
-    .for_each(|(lo, hi)| *lo += r * (*hi - *lo));
-  layers[dest] = folded;
-}
-
 fn fold_ab_pair_into<E: Engine>(
   a_layers: &mut [Vec<E::Scalar>],
   b_layers: &mut [Vec<E::Scalar>],
@@ -2967,32 +2618,6 @@ fn fold_final_ab_pairs<E: Engine>(
   fold_final_layer_pairs(b_layers, pairs, r);
 }
 
-fn fold_final_layer_pairs<F>(layers: &mut [Vec<F>], pairs: usize, r: F)
-where
-  F: Field + Send + Sync,
-{
-  if pairs == 1 {
-    let (lo, hi) = layers.split_at_mut(1);
-    lo[0]
-      .par_iter_mut()
-      .zip(hi[0].par_iter())
-      .for_each(|(l, h)| *l += r * (*h - *l));
-    return;
-  }
-
-  layers[..2 * pairs].par_chunks_mut(2).for_each(|chunk| {
-    let (lo, hi) = chunk.split_at_mut(1);
-    lo[0]
-      .iter_mut()
-      .zip(hi[0].iter())
-      .for_each(|(l, h)| *l += r * (*h - *l));
-  });
-
-  for i in 0..pairs {
-    layers.swap(i, 2 * i);
-  }
-}
-
 fn fold_prefix_workspace_final_table<F, SV>(
   weights: &[F],
   table: &[SV],
@@ -3041,10 +2666,7 @@ fn run_small_value_l0_rounds<E>(
   accumulators: LagrangeAccumulators<E::Scalar, 2>,
   rhos: &[E::Scalar],
   l0: usize,
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut MultiRoundState<E>,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
+  driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
   transcript: &mut E::TE,
 ) -> Result<
   (
@@ -3077,11 +2699,11 @@ where
     let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
 
     let c = &poly.coeffs;
-    vc.nifs_polys[i] = [c[0], c[1], c[2], c[3]];
+    driver.vc.nifs_polys[i] = [c[0], c[1], c[2], c[3]];
 
     let (_vc_span, vc_t) = start_span!("vc_commit");
     let chals =
-      SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, i, transcript)?;
+      driver.commit_round(i, transcript)?;
     let vc_elapsed = vc_t.elapsed();
     vc_commit_total += vc_elapsed;
     info!(elapsed_ms = %vc_elapsed.as_millis(), round = i, "vc_commit");
@@ -3111,10 +2733,7 @@ fn finish_field_sumcheck_round<E>(
   r_bs: &mut Vec<E::Scalar>,
   t_cur: &mut E::Scalar,
   acc_eq: &mut E::Scalar,
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut MultiRoundState<E>,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
+  driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
   transcript: &mut E::TE,
 ) -> Result<(E::Scalar, Duration), SpartanError>
 where
@@ -3136,11 +2755,11 @@ where
     coeffs: vec![new_d, new_c, new_b, new_a],
   };
   let coeffs = &poly_t.coeffs;
-  vc.nifs_polys[round] = [coeffs[0], coeffs[1], coeffs[2], coeffs[3]];
+  driver.vc.nifs_polys[round] = [coeffs[0], coeffs[1], coeffs[2], coeffs[3]];
 
   let (_vc_span, vc_t) = start_span!("nifs_vc_commit_round", round = round);
   let chals =
-    SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, round, transcript)?;
+    driver.commit_round(round, transcript)?;
   let vc_elapsed = vc_t.elapsed();
   info!(
     elapsed_ms = %vc_elapsed.as_millis(),
@@ -3164,10 +2783,7 @@ fn fold_and_update_vc_field<E, X, W>(
   Us: &[R1CSInstance<E, X>],
   Ws: &[R1CSWitness<E, W>],
   ell_b: usize,
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut MultiRoundState<E>,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
+  driver: &mut VcDriver<'_, E, NeutronNovaVerifierCircuit<E>>,
   transcript: &mut E::TE,
 ) -> Result<(R1CSWitness<E>, R1CSInstance<E>, Duration), SpartanError>
 where
@@ -3181,10 +2797,10 @@ where
       .invert()
       .into_option()
       .ok_or(SpartanError::DivisionByZero)?;
-  vc.t_out_step = T_out;
-  vc.eq_rho_at_rb = acc_eq;
+  driver.vc.t_out_step = T_out;
+  driver.vc.eq_rho_at_rb = acc_eq;
   let (_vc_span, vc_t) = start_span!("nifs_vc_commit_final", round = ell_b);
-  SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, ell_b, transcript)?;
+  driver.commit_round(ell_b, transcript)?;
   let vc_elapsed = vc_t.elapsed();
   info!(
     elapsed_ms = %vc_elapsed.as_millis(),
