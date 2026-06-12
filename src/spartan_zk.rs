@@ -308,10 +308,16 @@ where
       .map(|_| transcript.squeeze(b"challenge"))
       .collect::<Result<Vec<E::Scalar>, SpartanError>>()?;
 
-    // Reset cs to prep-state size so synthesize appends to the right position
+    // Reset cs to prep-state size so synthesize appends to the right position.
+    // Inputs allocated during the shared/precommitted phases are preserved;
+    // only synthesize-phase inputs are regenerated.
     let prep_aux_len = pk.S.num_shared_unpadded + pk.S.num_precommitted_unpadded;
     prep_snark.ps.cs.aux_assignment.truncate(prep_aux_len);
-    prep_snark.ps.cs.input_assignment.truncate(1);
+    prep_snark
+      .ps
+      .cs
+      .input_assignment
+      .truncate(1 + prep_snark.ps.num_prep_inputs);
 
     // Synthesize rest-witness with real challenges
     circuit
@@ -366,7 +372,19 @@ where
     transcript.absorb(b"comm_W_rest", &comm_W_rest);
 
     // Build instance and witness
-    let public_values_vec = prep_snark.ps.cs.input_assignment[1..1 + pk.S.num_public].to_vec();
+    let public_values_vec = prep_snark
+      .ps
+      .cs
+      .input_assignment
+      .get(1..1 + pk.S.num_public)
+      .map(|v| v.to_vec())
+      .ok_or_else(|| SpartanError::SynthesisError {
+        reason: format!(
+          "Circuit inputized {} public values, expected {}",
+          prep_snark.ps.cs.input_assignment.len().saturating_sub(1),
+          pk.S.num_public
+        ),
+      })?;
     let U = SplitR1CSInstance::<E>::new(
       &pk.S,
       prep_snark.ps.comm_W_shared.clone(),
@@ -927,6 +945,115 @@ mod tests {
     type E2 = crate::provider::T256HyraxEngine;
     type S2 = SpartanZkSNARK<E2>;
     test_zksnark_with::<E2, S2>();
+  }
+
+  /// A circuit that inputizes its public IO during the precommitted phase
+  /// while also allocating rest variables in synthesize. Exercises the
+  /// preservation of prep-phase inputs across re-synthesis.
+  #[derive(Clone, Debug, Default)]
+  struct PrecommittedIoCircuit {}
+
+  impl<E: Engine> SpartanCircuit<E> for PrecommittedIoCircuit {
+    fn public_values(&self) -> Result<Vec<E::Scalar>, SynthesisError> {
+      Ok(vec![E::Scalar::from(49u64)])
+    }
+
+    fn shared<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      _: &mut CS,
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      Ok(vec![])
+    }
+
+    fn precommitted<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      cs: &mut CS,
+      _: &[AllocatedNum<E::Scalar>],
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      let a = AllocatedNum::alloc(cs.namespace(|| "a"), || Ok(E::Scalar::from(7u64)))?;
+      let a_sq = a.square(cs.namespace(|| "a_sq"))?;
+      // Public IO inputized here, not in synthesize
+      a_sq.inputize(cs.namespace(|| "output"))?;
+      Ok(vec![a, a_sq])
+    }
+
+    fn num_challenges(&self) -> usize {
+      0
+    }
+
+    fn synthesize<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      cs: &mut CS,
+      _: &[AllocatedNum<E::Scalar>],
+      precommitted: &[AllocatedNum<E::Scalar>],
+      _: Option<&[E::Scalar]>,
+    ) -> Result<(), SynthesisError> {
+      // Rest-segment variable, so prove() takes the re-synthesis path
+      let a = &precommitted[0];
+      let b = AllocatedNum::alloc(cs.namespace(|| "b"), || {
+        a.get_value().ok_or(SynthesisError::AssignmentMissing)
+      })?;
+      cs.enforce(
+        || "b = a",
+        |lc| lc + b.get_variable(),
+        |lc| lc + CS::one(),
+        |lc| lc + a.get_variable(),
+      );
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn test_public_values_inputized_in_precommitted_phase() {
+    type E = crate::provider::PallasHyraxEngine;
+
+    let circuit = PrecommittedIoCircuit::default();
+    let (pk, vk) = SpartanZkSNARK::<E>::setup(circuit.clone()).unwrap();
+    let prep_snark = SpartanZkSNARK::<E>::prep_prove(&pk, circuit.clone(), false).unwrap();
+    let (snark, _) = SpartanZkSNARK::<E>::prove(&pk, circuit, prep_snark, false).unwrap();
+    let io = snark.verify(&vk).unwrap();
+    assert_eq!(io, vec![<E as Engine>::Scalar::from(49u64)]);
+  }
+
+  /// Malformed (e.g. deserialized) proofs with wrong-length vectors must be
+  /// rejected with an error, not panic the verifier.
+  #[test]
+  fn test_verify_rejects_malformed_proof_lengths() {
+    type E = crate::provider::PallasHyraxEngine;
+
+    let circuit = CubicCircuit::default();
+    let (pk, vk) = SpartanZkSNARK::<E>::setup(circuit.clone()).unwrap();
+    let prep_snark = SpartanZkSNARK::<E>::prep_prove(&pk, circuit.clone(), false).unwrap();
+    let (mut snark, _) = SpartanZkSNARK::<E>::prove(&pk, circuit, prep_snark, false).unwrap();
+
+    // sanity: the honest proof verifies
+    assert!(snark.verify(&vk).is_ok());
+
+    // truncated per-round commitments
+    let comm = snark.U_verifier.comm_w_per_round.pop().unwrap();
+    assert!(snark.verify(&vk).is_err());
+    snark.U_verifier.comm_w_per_round.push(comm);
+
+    // truncated per-round challenges
+    let chals = snark.U_verifier.challenges_per_round.pop().unwrap();
+    assert!(snark.verify(&vk).is_err());
+    snark.U_verifier.challenges_per_round.push(chals);
+
+    // wrong-length public values on the multi-round verifier instance
+    snark
+      .U_verifier
+      .public_values
+      .push(<E as Engine>::Scalar::ZERO);
+    assert!(snark.verify(&vk).is_err());
+    let _ = snark.U_verifier.public_values.pop();
+
+    // wrong-length public values on the original split instance
+    snark.U.public_values.push(<E as Engine>::Scalar::ZERO);
+    assert!(snark.verify(&vk).is_err());
+    let _ = snark.U.public_values.pop();
+
+    // proof is intact again after undoing all mutations
+    assert!(snark.verify(&vk).is_ok());
   }
 
   fn test_zksnark_with<E: Engine, S: R1CSSNARKTrait<E>>() {

@@ -307,6 +307,12 @@ pub struct PrecommittedState<
   pub(crate) comm_W_precommitted: Option<Commitment<E>>,
   pub(crate) r_W_precommitted: Option<Blind<E>>,
   pub(crate) W: Vec<W>,
+  /// Number of public inputs allocated during the shared/precommitted phases
+  /// (excluding the constant at index 0). Re-synthesis before each prove must
+  /// preserve these entries of `cs.input_assignment` — only inputs allocated
+  /// during `synthesize` are truncated and regenerated.
+  #[serde(default)]
+  pub(crate) num_prep_inputs: usize,
 }
 
 /// Precommitted state for native small-value witness generation.
@@ -337,6 +343,7 @@ impl<E: Engine> SatisfyingAssignment<E> {
         [S.num_shared_unpadded..S.num_shared_unpadded + S.num_precommitted_unpadded],
     );
     ps.precommitted = precommitted;
+    ps.num_prep_inputs = ps.cs.input_assignment.len().saturating_sub(1);
     info!(elapsed_ms = %synth_t.elapsed().as_millis(), "precommitted_witness_synthesize");
     Ok(())
   }
@@ -413,6 +420,7 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
     };
     info!(elapsed_ms = %commit_t.elapsed().as_millis(), "commit_witness_shared");
 
+    let num_prep_inputs = cs.input_assignment.len().saturating_sub(1);
     Ok(PrecommittedState {
       cs,
       shared,
@@ -422,6 +430,7 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
       comm_W_precommitted: None,
       r_W_precommitted: None,
       W,
+      num_prep_inputs,
     })
   }
 
@@ -471,10 +480,11 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
     let skip_synthesize = S.num_rest_unpadded == 0 && challenges.is_empty();
     if !skip_synthesize {
       // Reset cs to prep-state size before re-synthesis so aux_assignment indices are correct
-      // (without this, 2nd+ prove calls accumulate stale entries)
+      // (without this, 2nd+ prove calls accumulate stale entries). Inputs allocated during the
+      // shared/precommitted phases are preserved; only synthesize-phase inputs are regenerated.
       let prep_aux_len = S.num_shared_unpadded + S.num_precommitted_unpadded;
       ps.cs.aux_assignment.truncate(prep_aux_len);
-      ps.cs.input_assignment.truncate(1);
+      ps.cs.input_assignment.truncate(1 + ps.num_prep_inputs);
 
       circuit
         .synthesize(&mut ps.cs, &ps.shared, &ps.precommitted, Some(&challenges))
@@ -526,7 +536,17 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
           reason: format!("Circuit does not provide public IO: {e}"),
         })?
     } else {
-      ps.cs.input_assignment[1..].to_vec()[..S.num_public].to_vec()
+      ps.cs
+        .input_assignment
+        .get(1..1 + S.num_public)
+        .map(|v| v.to_vec())
+        .ok_or_else(|| SpartanError::SynthesisError {
+          reason: format!(
+            "Circuit inputized {} public values, expected {}",
+            ps.cs.input_assignment.len().saturating_sub(1),
+            S.num_public
+          ),
+        })?
     };
     let U = SplitR1CSInstance::<E>::new(
       S,

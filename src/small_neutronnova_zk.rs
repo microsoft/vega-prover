@@ -225,6 +225,7 @@ where
     (None, None)
   };
 
+  let num_prep_inputs = cs.input_assignment.len().saturating_sub(1);
   Ok(SmallPrecommittedState {
     cs,
     shared,
@@ -234,6 +235,7 @@ where
     comm_W_precommitted: None,
     r_W_precommitted: None,
     W: W_vec,
+    num_prep_inputs,
   })
 }
 
@@ -270,6 +272,7 @@ where
   );
 
   ps.precommitted = precommitted;
+  ps.num_prep_inputs = ps.cs.input_assignment.len().saturating_sub(1);
   Ok(())
 }
 
@@ -338,7 +341,8 @@ where
   if !skip_synthesize {
     let prep_aux_len = S.num_shared_unpadded + S.num_precommitted_unpadded;
     ps.cs.aux_assignment.truncate(prep_aux_len);
-    ps.cs.input_assignment.truncate(1);
+    // Preserve inputs allocated during the shared/precommitted phases.
+    ps.cs.input_assignment.truncate(1 + ps.num_prep_inputs);
     circuit
       .synthesize(&mut ps.cs, &ps.shared, &ps.precommitted, None)
       .map_err(|e| SpartanError::SynthesisError {
@@ -3193,7 +3197,10 @@ where
 
   let full_dim = S.num_shared + S.num_precommitted + S.num_rest;
   let effective_len = S.num_shared + S.num_precommitted;
-  let use_truncated_fold = effective_len > 0 && effective_len < full_dim;
+  // Truncated fold is only valid when no rest witness is allocated
+  // (the rest region is then padding zeros, so its fold is zero too).
+  let use_truncated_fold =
+    S.num_rest_unpadded == 0 && effective_len > 0 && effective_len < full_dim;
 
   let (_fold_span, fold_t) = start_span!("fold_witnesses");
   let folded_W = if use_truncated_fold {

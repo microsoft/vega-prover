@@ -1338,12 +1338,14 @@ where
     let _ =
       SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, ell_b, transcript)?;
 
-    // Truncate witness W vectors to skip zero rest portion before folding.
-    // The rest portion (indices effective_len..) is all zero for step circuits,
-    // so the folded result there is also zero. We resize back after folding.
+    // Truncate witness W vectors to skip the zero rest portion before folding.
+    // This is only valid when the step circuits allocate no rest witness
+    // (num_rest_unpadded == 0): then the rest region is padding zeros, so the
+    // folded result there is also zero and we can resize back after folding.
+    // Circuits WITH rest variables must take the full fold below.
     // Only apply when shared+precommitted > 0 (otherwise truncation would zero everything).
     let effective_len = S.num_shared + S.num_precommitted;
-    let use_truncated_fold = effective_len > 0;
+    let use_truncated_fold = S.num_rest_unpadded == 0 && effective_len > 0;
     if use_truncated_fold {
       for w in Ws.iter_mut() {
         w.W.truncate(effective_len);
@@ -2795,6 +2797,85 @@ mod tests {
     _p: PhantomData<E>,
   }
 
+  /// A circuit with BOTH precommitted variables and rest variables, to
+  /// exercise the (precommitted > 0, rest > 0) witness-fold path.
+  #[derive(Clone, Debug)]
+  struct TinyMixedCircuit<E: Engine> {
+    x: u64,
+    _p: PhantomData<E>,
+  }
+
+  impl<E: Engine> TinyMixedCircuit<E> {
+    fn new(x: u64) -> Self {
+      Self { x, _p: PhantomData }
+    }
+  }
+
+  impl<E: Engine> SpartanCircuit<E> for TinyMixedCircuit<E> {
+    fn public_values(&self) -> Result<Vec<E::Scalar>, SynthesisError> {
+      Ok(vec![E::Scalar::ZERO])
+    }
+
+    fn shared<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      _: &mut CS,
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      Ok(vec![])
+    }
+
+    fn precommitted<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      cs: &mut CS,
+      _: &[AllocatedNum<E::Scalar>],
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      let x_val = E::Scalar::from(self.x);
+      let x = AllocatedNum::alloc(cs.namespace(|| "x"), || Ok(x_val))?;
+      let y = AllocatedNum::alloc(cs.namespace(|| "y"), || Ok(x_val * x_val))?;
+      cs.enforce(
+        || "x squared",
+        |lc| lc + x.get_variable(),
+        |lc| lc + x.get_variable(),
+        |lc| lc + y.get_variable(),
+      );
+
+      // Public IO inputized during the precommitted phase, while rest
+      // variables exist: regression layout for the input-truncation fix in
+      // r1cs_instance_and_witness.
+      let public = AllocatedNum::alloc(cs.namespace(|| "public zero"), || Ok(E::Scalar::ZERO))?;
+      public.inputize(cs.namespace(|| "inputize public zero"))?;
+
+      Ok(vec![x, y])
+    }
+
+    fn num_challenges(&self) -> usize {
+      0
+    }
+
+    fn synthesize<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      cs: &mut CS,
+      _: &[AllocatedNum<E::Scalar>],
+      precommitted: &[AllocatedNum<E::Scalar>],
+      _: Option<&[E::Scalar]>,
+    ) -> Result<(), SynthesisError> {
+      // Allocate a rest-segment variable constrained against precommitted ones.
+      let x = &precommitted[0];
+      let y = &precommitted[1];
+      let z = AllocatedNum::alloc(cs.namespace(|| "z"), || {
+        let xv = x.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+        let yv = y.get_value().ok_or(SynthesisError::AssignmentMissing)?;
+        Ok(xv * yv)
+      })?;
+      cs.enforce(
+        || "x cubed",
+        |lc| lc + y.get_variable(),
+        |lc| lc + x.get_variable(),
+        |lc| lc + z.get_variable(),
+      );
+      Ok(())
+    }
+  }
+
   impl<E: Engine> TinySmallBoolCircuit<E> {
     fn new(bit: bool) -> Self {
       Self {
@@ -3300,6 +3381,23 @@ mod tests {
     let (pk, vk) = NeutronNovaZkSNARK::<E>::setup(&proto, &core, num_circuits).unwrap();
     let circuits = (0..num_circuits)
       .map(|i| TinyCubicCircuit::<E>::new((i + 2) as u64))
+      .collect::<Vec<_>>();
+
+    let prep = NeutronNovaZkSNARK::<E>::prep_prove(&pk, &circuits, &core, true).unwrap();
+    let (snark, _) = NeutronNovaZkSNARK::<E>::prove(&pk, &circuits, &core, prep, true).unwrap();
+    snark.verify(&vk, num_circuits).unwrap();
+  }
+
+  #[test]
+  fn test_mixed_precommitted_and_rest_step_circuits_verify() {
+    type E = T256HyraxEngine;
+
+    let num_circuits = 3;
+    let proto = TinyMixedCircuit::<E>::new(2);
+    let core = TinyMixedCircuit::<E>::new(1);
+    let (pk, vk) = NeutronNovaZkSNARK::<E>::setup(&proto, &core, num_circuits).unwrap();
+    let circuits = (0..num_circuits)
+      .map(|i| TinyMixedCircuit::<E>::new((i + 2) as u64))
       .collect::<Vec<_>>();
 
     let prep = NeutronNovaZkSNARK::<E>::prep_prove(&pk, &circuits, &core, true).unwrap();

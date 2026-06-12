@@ -2577,6 +2577,19 @@ where
     S: &SplitR1CSShape<E>,
     transcript: &mut E::TE,
   ) -> Result<(), SpartanError> {
+    // The instance may come from an untrusted, deserialized proof (bypassing
+    // `new()`), so re-check the public-value count before it flows into
+    // transcript absorption and instance folding.
+    if self.public_values.len() != S.num_public {
+      return Err(SpartanError::ProofVerifyError {
+        reason: format!(
+          "SplitR1CS instance: Expected {} public values, got {}",
+          S.num_public,
+          self.public_values.len()
+        ),
+      });
+    }
+
     if S.num_shared > 0 {
       if let Some(comm) = &self.comm_W_shared {
         E::PCS::check_commitment(comm, S.num_shared, DEFAULT_COMMITMENT_WIDTH)?;
@@ -2902,6 +2915,37 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
     s: &SplitMultiRoundR1CSShape<E>,
     transcript: &mut E::TE,
   ) -> Result<(), SpartanError> {
+    // The instance may come from an untrusted, deserialized proof, so the
+    // structural checks performed by `new()` must be repeated here before any
+    // per-round indexing; otherwise a malformed proof panics the verifier.
+    if self.comm_w_per_round.len() != s.num_rounds {
+      return Err(SpartanError::ProofVerifyError {
+        reason: format!(
+          "SplitMultiRoundR1CS instance: Expected {} round commitments, got {}",
+          s.num_rounds,
+          self.comm_w_per_round.len()
+        ),
+      });
+    }
+    if self.challenges_per_round.len() != s.num_rounds {
+      return Err(SpartanError::ProofVerifyError {
+        reason: format!(
+          "SplitMultiRoundR1CS instance: Expected {} rounds of challenges, got {}",
+          s.num_rounds,
+          self.challenges_per_round.len()
+        ),
+      });
+    }
+    if self.public_values.len() != s.num_public {
+      return Err(SpartanError::ProofVerifyError {
+        reason: format!(
+          "SplitMultiRoundR1CS instance: Expected {} public values, got {}",
+          s.num_public,
+          self.public_values.len()
+        ),
+      });
+    }
+
     // Process each round, absorbing the previous round's commitment before deriving this round's challenges
     for round in 0..s.num_rounds {
       E::PCS::check_commitment(
