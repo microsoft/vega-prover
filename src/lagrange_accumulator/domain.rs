@@ -4,7 +4,7 @@
 // See the LICENSE file in the project root for full license information.
 // Source repository: https://github.com/Microsoft/Spartan2
 
-//! Domain types for the Algorithm 6 small-value sum-check optimization.
+//! Domain types for the small-value sum-check optimization.
 //!
 //! This module defines:
 //! - [`LagrangePoint`]: Points in U_d = {∞, 0, 1, ..., d-1}

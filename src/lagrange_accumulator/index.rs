@@ -1,8 +1,6 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
 
-//! Index mapping for Algorithm 6 small-value sumcheck optimization (Definition A.5).
-//!
 //! Maps evaluation prefixes β ∈ U_d^ℓ₀ to accumulator contributions.
 
 use super::domain::{LagrangeIndex, LagrangePoint};

@@ -4,7 +4,7 @@
 // See the LICENSE file in the project root for full license information.
 // Source repository: https://github.com/Microsoft/Spartan2
 
-//! Accumulator data structures for Algorithm 6 small-value sumcheck optimization.
+//! Accumulator data structures for small-value sumcheck optimization.
 //!
 //! This module defines:
 //! - [`RoundAccumulator`]: Single round accumulator A_i(v, u) with flat storage
