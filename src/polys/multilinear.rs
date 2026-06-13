@@ -35,7 +35,9 @@ use serde::{Deserialize, Serialize};
 /// but can also be any type with ring operations (add, sub, mul, zero).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MultilinearPolynomial<T> {
-  pub(crate) Z: Vec<T>, // evaluations of the polynomial in all the 2^num_vars Boolean inputs
+  // Dense evaluation table over all Boolean inputs. Entry `Z[i]` is the
+  // polynomial value at the `i`th point of `{0,1}^num_vars`.
+  pub(crate) Z: Vec<T>,
   // Non-zero prefix lengths for each half of Z, enabling zero-skip in bind/eval.
   // When Z has 2n elements: lo_eff covers Z[0..n), hi_eff covers Z[n..2n).
   // Z[i] = 0 for lo_eff <= i < n, and Z[n+i] = 0 for hi_eff <= i < n.

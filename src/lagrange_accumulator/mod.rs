@@ -4,7 +4,7 @@
 // See the LICENSE file in the project root for full license information.
 // Source repository: https://github.com/Microsoft/Spartan2
 
-//! Lagrange accumulator algorithm for small-value sumcheck optimization (Algorithm 6).
+//! Lagrange accumulator algorithm for small-value sumcheck optimization.
 //!
 //! This module implements the Lagrange domain extension technique from IACR 2025/1117,
 //! which accelerates sumcheck provers when witness coefficients are small integers.
@@ -32,8 +32,9 @@ mod thread_state;
 
 // Crate-internal surface used by the small-value sumcheck implementation.
 pub(crate) use accumulator::LagrangeAccumulators;
-pub(crate) use accumulator_builder::{SPARTAN_T_DEGREE, build_accumulators_spartan};
+pub(crate) use accumulator_builder::{
+  SPARTAN_T_DEGREE, SpartanExtensionBoundedPoly, build_accumulators_spartan,
+};
 pub(crate) use basis::{
   LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals, ReducedLagrangeDomainEvals,
 };
-pub(crate) use extension_bound::{ExtensionBoundedPoly, ExtensionSmallValue};

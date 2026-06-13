@@ -4,20 +4,37 @@
 // See the LICENSE file in the project root for full license information.
 // Source repository: https://github.com/Microsoft/Spartan2
 
-//! WideMul trait for widening multiplication of small values.
-//!
-//! This trait enables `small × small → intermediate` multiplication
-//! without overflow, used in the Lagrange accumulator algorithm.
+use std::fmt::Display;
 
-#![allow(dead_code)]
+use num_integer::Roots;
+use num_traits::{
+  Bounded, CheckedDiv, CheckedMul, CheckedNeg, CheckedSub, FromPrimitive, NumCast, One, Signed,
+  ToPrimitive, Zero,
+};
 
 /// Trait for widening multiplication: `Self × Self → Product`.
 ///
 /// Used to compute products of small values (i32 or i64) that may
 /// overflow the input type, producing a wider intermediate type.
-pub trait WideMul: Sized {
+pub trait WideMul: Sized + Bounded + ToPrimitive {
   /// The wider product type (e.g., i64 for i32, i128 for i64).
-  type Product: Copy + Send + Sync;
+  type Product: Bounded
+    + CheckedDiv
+    + CheckedMul
+    + CheckedNeg
+    + CheckedSub
+    + Copy
+    + Display
+    + FromPrimitive
+    + NumCast
+    + One
+    + PartialOrd
+    + Roots
+    + Send
+    + Signed
+    + Sync
+    + ToPrimitive
+    + Zero;
 
   /// Compute `a × b` with widening to avoid overflow.
   fn wide_mul(a: Self, b: Self) -> Self::Product;

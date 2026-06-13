@@ -10,16 +10,12 @@
 //! - [`build_accumulators_spartan`]: Optimized builder for Spartan's cubic relation
 
 use super::{
-  accumulator::LagrangeAccumulators,
-  csr::Csr,
-  domain::LagrangeIndex,
-  extension::extend_to_lagrange_domain,
-  extension_bound::{ExtensionBoundedPoly, ExtensionSmallValue},
-  index::AccumulatorPrefixIndex,
-  thread_state::SpartanThreadState,
+  accumulator::LagrangeAccumulators, csr::Csr, domain::LagrangeIndex,
+  extension::extend_to_lagrange_domain, extension_bound::ExtensionBoundedPoly,
+  index::AccumulatorPrefixIndex, thread_state::SpartanThreadState,
 };
 use crate::{
-  big_num::{DelayedReduction, SmallValueEngine},
+  big_num::{DelayedReduction, SmallValue, SmallValueEngine, WideMul},
   polys::{eq::build_eq_pyramid, eq::compute_suffix_eq_pyramid},
 };
 use ff::PrimeField;
@@ -31,6 +27,10 @@ use super::index::compute_idx4;
 /// Polynomial degree D for Spartan's small-value sumcheck.
 /// For Spartan's cubic relation (A·B - C), D=2 yields quadratic t_i.
 pub(crate) const SPARTAN_T_DEGREE: usize = 2;
+
+/// Extension-bound certificate specialized to Spartan's pairwise small product.
+pub(crate) type SpartanExtensionBoundedPoly<'a, SV, const LB: usize> =
+  ExtensionBoundedPoly<'a, SV, <SV as WideMul>::Product, SPARTAN_T_DEGREE, LB>;
 
 /// Builds the table accumulators `A_i(v, u)` used in Spartan's first `l0`
 /// outer sumcheck rounds.
@@ -57,7 +57,7 @@ pub(crate) const SPARTAN_T_DEGREE: usize = 2;
 /// The table stores only `u ∈ Û_2`, not `u = 1`, because the `u = 1` value is
 /// recovered later from the sumcheck relation.
 ///
-/// This builder is Spartan-outer-specific, not a generic Algorithm 6 backend.
+/// This builder is Spartan-outer-specific using a table accumulator
 /// It relies on the structure of Spartan's first sumcheck:
 /// - on `{0,1}^n`, satisfying witnesses obey `Az(x) · Bz(x) - Cz(x) = 0`, so
 ///   purely binary β points can be skipped
@@ -69,7 +69,7 @@ pub(crate) const SPARTAN_T_DEGREE: usize = 2;
 /// # Type Parameters
 ///
 /// - `F`: Field type with small-value and delayed reduction support
-/// - `SV`: Witness value type (i32 or i64)
+/// - `SV`: Witness value type (like i32 or i64)
 ///
 /// # Returns
 ///
@@ -93,13 +93,13 @@ pub(crate) const SPARTAN_T_DEGREE: usize = 2;
 /// - Only process betas containing ∞: these are exactly the points where the
 ///   highest-degree `Az·Bz` term can contribute after the `Cz` term drops out
 pub(crate) fn build_accumulators_spartan<F, SV, const LB: usize>(
-  az: &ExtensionBoundedPoly<'_, SV, SPARTAN_T_DEGREE, LB>,
-  bz: &ExtensionBoundedPoly<'_, SV, SPARTAN_T_DEGREE, LB>,
+  az: &SpartanExtensionBoundedPoly<'_, SV, LB>,
+  bz: &SpartanExtensionBoundedPoly<'_, SV, LB>,
   taus: &[F],
 ) -> (LagrangeAccumulators<F, 2>, Vec<Vec<F>>, Vec<Vec<F>>)
 where
   F: SmallValueEngine<SV>,
-  SV: ExtensionSmallValue,
+  SV: SmallValue,
 {
   let l0 = LB;
   let az = az.as_poly();
@@ -360,8 +360,10 @@ mod tests {
 
     let taus: Vec<Scalar> = vec![Scalar::from(3u64), Scalar::from(5u64)];
 
-    let az = ExtensionBoundedPoly::<_, D, L0>::new(&az).expect("Az should be extension-bounded");
-    let bz = ExtensionBoundedPoly::<_, D, L0>::new(&bz).expect("Bz should be extension-bounded");
+    let az =
+      SpartanExtensionBoundedPoly::<_, L0>::new(&az).expect("Az should be extension-bounded");
+    let bz =
+      SpartanExtensionBoundedPoly::<_, L0>::new(&bz).expect("Bz should be extension-bounded");
 
     let (acc, _, _) = build_accumulators_spartan(&az, &bz, &taus);
 
@@ -411,8 +413,10 @@ mod tests {
       Scalar::from(13u64),
     ];
 
-    let az = ExtensionBoundedPoly::<_, D, L0>::new(&az).expect("Az should be extension-bounded");
-    let bz = ExtensionBoundedPoly::<_, D, L0>::new(&bz).expect("Bz should be extension-bounded");
+    let az =
+      SpartanExtensionBoundedPoly::<_, L0>::new(&az).expect("Az should be extension-bounded");
+    let bz =
+      SpartanExtensionBoundedPoly::<_, L0>::new(&bz).expect("Bz should be extension-bounded");
 
     // Build accumulators twice
     let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus);
@@ -453,8 +457,10 @@ mod tests {
     // Random-looking taus
     let taus: Vec<Scalar> = (0..l).map(|i| Scalar::from((i * 7 + 3) as u64)).collect();
 
-    let az = ExtensionBoundedPoly::<_, D, L0>::new(&az).expect("Az should be extension-bounded");
-    let bz = ExtensionBoundedPoly::<_, D, L0>::new(&bz).expect("Bz should be extension-bounded");
+    let az =
+      SpartanExtensionBoundedPoly::<_, L0>::new(&az).expect("Az should be extension-bounded");
+    let bz =
+      SpartanExtensionBoundedPoly::<_, L0>::new(&bz).expect("Bz should be extension-bounded");
 
     // Build accumulators twice to verify consistency
     let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus);
