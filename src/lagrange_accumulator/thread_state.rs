@@ -12,7 +12,7 @@
 //! O(num_x_out) to O(num_threads).
 
 use super::accumulator::LagrangeAccumulators;
-use crate::big_num::{DelayedReduction, SmallValue, SmallValueEngine};
+use crate::big_num::{DelayedReduction, SmallValue};
 use num_traits::Zero;
 
 /// Thread-local scratch buffers for `build_accumulators_spartan`.
@@ -36,7 +36,7 @@ use num_traits::Zero;
 /// - `D`: Polynomial degree bound
 pub(crate) struct SpartanThreadState<F, SV, const D: usize>
 where
-  F: SmallValueEngine<SV>,
+  F: Copy + DelayedReduction<SV::Product> + DelayedReduction<F>,
   SV: SmallValue,
 {
   /// Partial sums indexed by β, accumulated over the x_in loop.
@@ -66,7 +66,7 @@ where
 
 impl<F, SV, const D: usize> SpartanThreadState<F, SV, D>
 where
-  F: SmallValueEngine<SV>,
+  F: Copy + DelayedReduction<SV::Product> + DelayedReduction<F>,
   SV: SmallValue,
 {
   pub fn new(l0: usize, num_betas: usize, prefix_size: usize, ext_size: usize) -> Self {
