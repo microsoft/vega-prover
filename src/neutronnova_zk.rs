@@ -3414,7 +3414,11 @@ mod tests {
 
   #[test]
   fn test_small_neutronnova_zk_has_no_custom_macros() {
-    let source = include_str!("small_neutronnova_zk.rs");
+    let sources = [
+      include_str!("small_neutronnova_zk.rs"),
+      include_str!("small_neutronnova_workspace.rs"),
+    ];
+    let source = sources.concat();
     for needle in [
       "macro_rules!",
       "finish_round!",
