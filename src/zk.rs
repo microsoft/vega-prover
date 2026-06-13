@@ -15,6 +15,127 @@ use crate::traits::{Engine, circuit::MultiRoundCircuit};
 use bellpepper_core::{ConstraintSystem, SynthesisError, num::AllocatedNum};
 use ff::Field;
 
+/// Round-index schedule for [`SpartanVerifierCircuit`].
+///
+/// The prover and verifier must agree on which multi-round-circuit round each
+/// protocol step occupies; this is the single source of truth for those
+/// indices (and for the derived challenge/public-value counts).
+///
+/// Layout: outer sum-check rounds, outer-final, inner sum-check rounds,
+/// inner-final, then a commit-only round for `eval_W`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SpartanRoundSchedule {
+  pub(crate) num_rounds_x: usize,
+  pub(crate) num_rounds_y: usize,
+}
+
+impl SpartanRoundSchedule {
+  /// Number of public values carried by the verifier circuit
+  /// (`tau_at_rx`, `eval_X`, `quotient`).
+  pub(crate) const NUM_PUBLIC_VALUES: usize = 3;
+
+  pub(crate) fn new(num_rounds_x: usize, num_rounds_y: usize) -> Self {
+    Self {
+      num_rounds_x,
+      num_rounds_y,
+    }
+  }
+
+  /// Round committing the outer-final claims (Az, Bz, Cz, tau_at_rx).
+  pub(crate) fn outer_final(&self) -> usize {
+    self.num_rounds_x
+  }
+
+  /// Round committing the j-th inner sum-check polynomial (j in 0..num_rounds_y).
+  pub(crate) fn inner(&self, j: usize) -> usize {
+    self.outer_final() + 1 + j
+  }
+
+  /// Round committing the inner-final equality check.
+  pub(crate) fn inner_final(&self) -> usize {
+    self.outer_final() + 1 + self.num_rounds_y
+  }
+
+  /// Commit-only round carrying `eval_W`.
+  pub(crate) fn eval_w_commit(&self) -> usize {
+    self.inner_final() + 1
+  }
+
+  /// Total number of per-round challenges exposed in the instance's public IO
+  /// (r_x, r, r_y).
+  pub(crate) fn num_challenges(&self) -> usize {
+    self.num_rounds_x + 1 + self.num_rounds_y
+  }
+}
+
+/// Round-index schedule for [`NeutronNovaVerifierCircuit`].
+///
+/// Layout: NIFS folding rounds, NIFS-final, outer sum-check rounds,
+/// outer-final, inner sum-check rounds, inner-final, then two commit-only
+/// rounds for `eval_W_step` and `eval_W_core`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct NeutronRoundSchedule {
+  pub(crate) num_rounds_b: usize,
+  pub(crate) num_rounds_x: usize,
+  pub(crate) num_rounds_y: usize,
+}
+
+impl NeutronRoundSchedule {
+  /// Number of public values carried by the verifier circuit
+  /// (`tau_at_rx`, `eval_X_step`, `eval_X_core`, `eq_rho_at_rb`,
+  /// `quotient_step`, `quotient_core`).
+  pub(crate) const NUM_PUBLIC_VALUES: usize = 6;
+
+  pub(crate) fn new(num_rounds_b: usize, num_rounds_x: usize, num_rounds_y: usize) -> Self {
+    Self {
+      num_rounds_b,
+      num_rounds_x,
+      num_rounds_y,
+    }
+  }
+
+  /// Round committing the NIFS-final values (T_out, eq_rho_at_rb).
+  pub(crate) fn nifs_final(&self) -> usize {
+    self.num_rounds_b
+  }
+
+  /// Round committing the i-th outer sum-check polynomial pair.
+  pub(crate) fn outer(&self, i: usize) -> usize {
+    self.nifs_final() + 1 + i
+  }
+
+  /// Round committing the outer-final claims.
+  pub(crate) fn outer_final(&self) -> usize {
+    self.nifs_final() + 1 + self.num_rounds_x
+  }
+
+  /// Round committing the j-th inner sum-check polynomial pair.
+  pub(crate) fn inner(&self, j: usize) -> usize {
+    self.outer_final() + 1 + j
+  }
+
+  /// Round committing the inner-final equality checks.
+  pub(crate) fn inner_final(&self) -> usize {
+    self.outer_final() + 1 + self.num_rounds_y
+  }
+
+  /// Commit-only round carrying `eval_W_step`.
+  pub(crate) fn eval_w_step_commit(&self) -> usize {
+    self.inner_final() + 1
+  }
+
+  /// Commit-only round carrying `eval_W_core`.
+  pub(crate) fn eval_w_core_commit(&self) -> usize {
+    self.inner_final() + 2
+  }
+
+  /// Total number of per-round challenges exposed in the instance's public IO
+  /// (r_b, r_x, r, r_y).
+  pub(crate) fn num_challenges(&self) -> usize {
+    self.num_rounds_b + self.num_rounds_x + 1 + self.num_rounds_y
+  }
+}
+
 /// Evaluates a polynomial using Horner's method within R1CS constraints.
 fn eval_poly_horner<E: Engine, CS: ConstraintSystem<E::Scalar>>(
   mut cs: CS,

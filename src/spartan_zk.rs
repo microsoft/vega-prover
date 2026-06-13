@@ -11,7 +11,7 @@ use crate::{
   bellpepper::{
     r1cs::{
       MultiRoundSpartanShape, MultiRoundSpartanWitness, PrecommittedState, SpartanShape,
-      SpartanWitness,
+      SpartanWitness, VcDriver,
     },
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
@@ -39,7 +39,7 @@ use crate::{
     snark::{DigestHelperTrait, R1CSSNARKTrait, SpartanDigest},
     transcript::TranscriptEngineTrait,
   },
-  zk::SpartanVerifierCircuit,
+  zk::{SpartanRoundSchedule, SpartanVerifierCircuit},
 };
 use ff::Field;
 use once_cell::sync::OnceCell;
@@ -91,28 +91,15 @@ pub struct SpartanVerifierKey<E: Engine> {
 
 impl<E: Engine> crate::digest::Digestible for SpartanVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
-    use bincode::Options;
-    let config = bincode::DefaultOptions::new()
-      .with_little_endian()
-      .with_fixint_encoding();
-    config
-      .serialize_into(&mut *w, &self.vk_ee)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    use crate::digest::bincode_write;
+    bincode_write(w, &self.vk_ee)?;
     // Use fast raw-byte path for the main shape
     self.S.write_bytes(w)?;
     // Serialize remaining small fields with bincode
-    config
-      .serialize_into(&mut *w, &self.vc_shape)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_shape_regular)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_ck)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    config
-      .serialize_into(&mut *w, &self.vc_vk)
-      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    bincode_write(w, &self.vc_shape)?;
+    bincode_write(w, &self.vc_shape_regular)?;
+    bincode_write(w, &self.vc_ck)?;
+    bincode_write(w, &self.vc_vk)?;
     Ok(())
   }
 }
@@ -308,10 +295,16 @@ where
       .map(|_| transcript.squeeze(b"challenge"))
       .collect::<Result<Vec<E::Scalar>, SpartanError>>()?;
 
-    // Reset cs to prep-state size so synthesize appends to the right position
+    // Reset cs to prep-state size so synthesize appends to the right position.
+    // Inputs allocated during the shared/precommitted phases are preserved;
+    // only synthesize-phase inputs are regenerated.
     let prep_aux_len = pk.S.num_shared_unpadded + pk.S.num_precommitted_unpadded;
     prep_snark.ps.cs.aux_assignment.truncate(prep_aux_len);
-    prep_snark.ps.cs.input_assignment.truncate(1);
+    prep_snark
+      .ps
+      .cs
+      .input_assignment
+      .truncate(1 + prep_snark.ps.num_prep_inputs);
 
     // Synthesize rest-witness with real challenges
     circuit
@@ -366,7 +359,19 @@ where
     transcript.absorb(b"comm_W_rest", &comm_W_rest);
 
     // Build instance and witness
-    let public_values_vec = prep_snark.ps.cs.input_assignment[1..1 + pk.S.num_public].to_vec();
+    let public_values_vec = prep_snark
+      .ps
+      .cs
+      .input_assignment
+      .get(1..1 + pk.S.num_public)
+      .map(|v| v.to_vec())
+      .ok_or_else(|| SpartanError::SynthesisError {
+        reason: format!(
+          "Circuit inputized {} public values, expected {}",
+          prep_snark.ps.cs.input_assignment.len().saturating_sub(1),
+          pk.S.num_public
+        ),
+      })?;
     let U = SplitR1CSInstance::<E>::new(
       &pk.S,
       prep_snark.ps.comm_W_shared.clone(),
@@ -439,12 +444,14 @@ where
     let mut poly_Cz = MultilinearPolynomial::new(scratch_cz);
     info!(elapsed_ms = %mp_t.elapsed().as_millis(), "prepare_multilinear_polys");
     // Initialize multi-round verifier circuit (will be filled as we go)
+    let sched = SpartanRoundSchedule::new(num_rounds_x, num_rounds_y);
     let mut verifier_circuit = SpartanVerifierCircuit::<E>::default(
       num_rounds_x,
       num_rounds_y,
       pk.vc_shape.commitment_width,
     );
     let mut state = SatisfyingAssignment::<E>::initialize_multiround_witness(&pk.vc_shape)?;
+    let mut driver = VcDriver::new(&mut verifier_circuit, &mut state, &pk.vc_shape, &pk.vc_ck);
 
     // Outer sum-check
     let (_sc_span, sc_t) = start_span!("outer_sumcheck");
@@ -454,32 +461,22 @@ where
       &mut poly_Az,
       &mut poly_Bz,
       &mut poly_Cz,
-      &mut verifier_circuit,
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
+      &mut driver,
       &mut transcript,
     )?;
     info!(elapsed_ms = %sc_t.elapsed().as_millis(), "outer_sumcheck");
     // Outer final round data
-    verifier_circuit.claim_Az = poly_Az[0];
-    verifier_circuit.claim_Bz = poly_Bz[0];
-    verifier_circuit.claim_Cz = poly_Cz[0];
+    driver.vc.claim_Az = poly_Az[0];
+    driver.vc.claim_Bz = poly_Bz[0];
+    driver.vc.claim_Cz = poly_Cz[0];
     // Recover scratch buffers (bound down to 1 element, but allocation preserved)
     let scratch_az = poly_Az.into_vec();
     let scratch_bz = poly_Bz.into_vec();
     let scratch_cz = poly_Cz.into_vec();
-    verifier_circuit.tau_at_rx = EqPolynomial::new(taus).evaluate(&r_x);
+    driver.vc.tau_at_rx = EqPolynomial::new(taus).evaluate(&r_x);
 
     // Process the "outer final" round in the circuit and capture challenge
-    let chals = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      num_rounds_x,
-      &mut transcript,
-    )?;
+    let chals = driver.commit_round(sched.outer_final(), &mut transcript)?;
     let r = chals[0];
 
     // Merged: compute eq(r_x), bind row variables, and prepare poly_ABC in a single pipeline
@@ -496,7 +493,7 @@ where
     // Inner sum-check
     let (_sc2_span, sc2_t) = start_span!("inner_sumcheck");
     let claim_inner_joint =
-      verifier_circuit.claim_Az + r * verifier_circuit.claim_Bz + r * r * verifier_circuit.claim_Cz;
+      driver.vc.claim_Az + r * driver.vc.claim_Bz + r * r * driver.vc.claim_Cz;
 
     // --- Manual first round of inner sumcheck ---
     // The "virtual" polynomial pair is:
@@ -544,21 +541,14 @@ where
     let evals = vec![eval0, claim_inner_joint - eval0, eval2];
     let inner_r0_poly = UniPoly::from_evals(&evals)?;
 
-    verifier_circuit.inner_polys[0] = [
+    driver.vc.inner_polys[0] = [
       inner_r0_poly.coeffs[0],
       inner_r0_poly.coeffs[1],
       inner_r0_poly.coeffs[2],
     ];
 
     // Process round 0 of inner sumcheck through verifier circuit
-    let chals_inner_r0 = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      num_rounds_x + 1,
-      &mut transcript,
-    )?;
+    let chals_inner_r0 = driver.commit_round(sched.inner(0), &mut transcript)?;
     let r0_inner = chals_inner_r0[0];
     let claim_after_r0 = inner_r0_poly.evaluate(&r0_inner);
 
@@ -590,12 +580,9 @@ where
       num_rounds_y - 1,
       &mut poly_ABC,
       &mut poly_z,
-      &mut verifier_circuit,
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
+      &mut driver,
       &mut transcript,
-      num_rounds_x + 2,
+      sched.inner(1),
       1,
     )?;
 
@@ -609,7 +596,7 @@ where
     let z_buffer = poly_z.into_vec();
     drop(poly_ABC);
     // Compute final evaluations needed for the inner-final round
-    let U_regular = U.to_regular_instance()?;
+    let U_regular = U.to_regular_field_instance()?;
     let eval_X = {
       let X = vec![E::Scalar::ONE]
         .into_iter()
@@ -624,32 +611,17 @@ where
 
     // Process the inner-final equality round
     // Set verifier circuit public values before processing inner-final round
-    verifier_circuit.eval_W = eval_W;
-    verifier_circuit.eval_X = eval_X;
-    _ = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      (num_rounds_x + 1) + num_rounds_y,
-      &mut transcript,
-    )?;
+    driver.vc.eval_W = eval_W;
+    driver.vc.eval_X = eval_X;
+    _ = driver.commit_round(sched.inner_final(), &mut transcript)?;
 
     // Process the dedicated commit-only round for eval_W
-    let eval_w_commit_round = num_rounds_x + 1 + num_rounds_y + 1;
-    let _ = SatisfyingAssignment::<E>::process_round(
-      &mut state,
-      &pk.vc_shape,
-      &pk.vc_ck,
-      &verifier_circuit,
-      eval_w_commit_round,
-      &mut transcript,
-    )?;
+    let eval_w_commit_round = sched.eval_w_commit();
+    let _ = driver.commit_round(eval_w_commit_round, &mut transcript)?;
 
     // Finalize multi-round witness and construct NIFS proof
     let (_nifs_span, nifs_t) = start_span!("finalize_and_nifs");
-    let (U_verifier, W_verifier) =
-      SatisfyingAssignment::<E>::finalize_multiround_witness(&mut state, &pk.vc_shape)?;
+    let (U_verifier, W_verifier) = driver.finalize()?;
     // Use the instance as produced by witness finalization; its public values
     // are exactly those absorbed during round 0 by the prover.
     let U_verifier_regular = U_verifier.to_regular_instance()?;
@@ -688,7 +660,7 @@ where
       &r_W,
       &r_y[1..],
       &U_verifier.comm_w_per_round[eval_w_commit_round],
-      &state.r_w_per_round[eval_w_commit_round],
+      &driver.state.r_w_per_round[eval_w_commit_round],
     )?;
     info!(elapsed_ms = %pcs_t.elapsed().as_millis(), "pcs_prove");
 
@@ -745,11 +717,12 @@ where
     let num_vars = vk.S.num_shared + vk.S.num_precommitted + vk.S.num_rest;
     let num_rounds_x = vk.S.num_cons.log_2();
     let num_rounds_y = num_vars.log_2() + 1;
+    let sched = SpartanRoundSchedule::new(num_rounds_x, num_rounds_y);
 
     let U_verifier_regular = self.U_verifier.to_regular_instance()?;
 
-    let num_public_values = 3usize;
-    let num_challenges = num_rounds_x + 1 + num_rounds_y;
+    let num_public_values = SpartanRoundSchedule::NUM_PUBLIC_VALUES;
+    let num_challenges = sched.num_challenges();
 
     if U_verifier_regular.X.len() != num_challenges + num_public_values {
       return Err(SpartanError::ProofVerifyError {
@@ -775,7 +748,7 @@ where
     let quotient = eval_A + r * eval_B + r * r * eval_C;
     info!(elapsed_ms = %matrix_eval_t.elapsed().as_millis(), "matrix_evaluations");
     // Recompute eval_X from original circuit public IO at r_y[1..]
-    let U_regular = self.U.to_regular_instance()?;
+    let U_regular = self.U.to_regular_field_instance()?;
 
     let eval_X = {
       let X = vec![E::Scalar::ONE]
@@ -816,7 +789,7 @@ where
     // Continue with PCS verification on the same transcript
     // Use the commitment from the dedicated eval_W commit-only last round
     let (_pcs_verify_span, pcs_verify_t) = start_span!("pcs_verify");
-    let eval_w_commit_round = num_rounds_x + 1 + num_rounds_y + 1;
+    let eval_w_commit_round = sched.eval_w_commit();
     E::PCS::verify(
       &vk.vk_ee,
       &vk.vc_ck,
@@ -927,6 +900,115 @@ mod tests {
     type E2 = crate::provider::T256HyraxEngine;
     type S2 = SpartanZkSNARK<E2>;
     test_zksnark_with::<E2, S2>();
+  }
+
+  /// A circuit that inputizes its public IO during the precommitted phase
+  /// while also allocating rest variables in synthesize. Exercises the
+  /// preservation of prep-phase inputs across re-synthesis.
+  #[derive(Clone, Debug, Default)]
+  struct PrecommittedIoCircuit {}
+
+  impl<E: Engine> SpartanCircuit<E> for PrecommittedIoCircuit {
+    fn public_values(&self) -> Result<Vec<E::Scalar>, SynthesisError> {
+      Ok(vec![E::Scalar::from(49u64)])
+    }
+
+    fn shared<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      _: &mut CS,
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      Ok(vec![])
+    }
+
+    fn precommitted<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      cs: &mut CS,
+      _: &[AllocatedNum<E::Scalar>],
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      let a = AllocatedNum::alloc(cs.namespace(|| "a"), || Ok(E::Scalar::from(7u64)))?;
+      let a_sq = a.square(cs.namespace(|| "a_sq"))?;
+      // Public IO inputized here, not in synthesize
+      a_sq.inputize(cs.namespace(|| "output"))?;
+      Ok(vec![a, a_sq])
+    }
+
+    fn num_challenges(&self) -> usize {
+      0
+    }
+
+    fn synthesize<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      cs: &mut CS,
+      _: &[AllocatedNum<E::Scalar>],
+      precommitted: &[AllocatedNum<E::Scalar>],
+      _: Option<&[E::Scalar]>,
+    ) -> Result<(), SynthesisError> {
+      // Rest-segment variable, so prove() takes the re-synthesis path
+      let a = &precommitted[0];
+      let b = AllocatedNum::alloc(cs.namespace(|| "b"), || {
+        a.get_value().ok_or(SynthesisError::AssignmentMissing)
+      })?;
+      cs.enforce(
+        || "b = a",
+        |lc| lc + b.get_variable(),
+        |lc| lc + CS::one(),
+        |lc| lc + a.get_variable(),
+      );
+      Ok(())
+    }
+  }
+
+  #[test]
+  fn test_public_values_inputized_in_precommitted_phase() {
+    type E = crate::provider::PallasHyraxEngine;
+
+    let circuit = PrecommittedIoCircuit::default();
+    let (pk, vk) = SpartanZkSNARK::<E>::setup(circuit.clone()).unwrap();
+    let prep_snark = SpartanZkSNARK::<E>::prep_prove(&pk, circuit.clone(), false).unwrap();
+    let (snark, _) = SpartanZkSNARK::<E>::prove(&pk, circuit, prep_snark, false).unwrap();
+    let io = snark.verify(&vk).unwrap();
+    assert_eq!(io, vec![<E as Engine>::Scalar::from(49u64)]);
+  }
+
+  /// Malformed (e.g. deserialized) proofs with wrong-length vectors must be
+  /// rejected with an error, not panic the verifier.
+  #[test]
+  fn test_verify_rejects_malformed_proof_lengths() {
+    type E = crate::provider::PallasHyraxEngine;
+
+    let circuit = CubicCircuit::default();
+    let (pk, vk) = SpartanZkSNARK::<E>::setup(circuit.clone()).unwrap();
+    let prep_snark = SpartanZkSNARK::<E>::prep_prove(&pk, circuit.clone(), false).unwrap();
+    let (mut snark, _) = SpartanZkSNARK::<E>::prove(&pk, circuit, prep_snark, false).unwrap();
+
+    // sanity: the honest proof verifies
+    assert!(snark.verify(&vk).is_ok());
+
+    // truncated per-round commitments
+    let comm = snark.U_verifier.comm_w_per_round.pop().unwrap();
+    assert!(snark.verify(&vk).is_err());
+    snark.U_verifier.comm_w_per_round.push(comm);
+
+    // truncated per-round challenges
+    let chals = snark.U_verifier.challenges_per_round.pop().unwrap();
+    assert!(snark.verify(&vk).is_err());
+    snark.U_verifier.challenges_per_round.push(chals);
+
+    // wrong-length public values on the multi-round verifier instance
+    snark
+      .U_verifier
+      .public_values
+      .push(<E as Engine>::Scalar::ZERO);
+    assert!(snark.verify(&vk).is_err());
+    let _ = snark.U_verifier.public_values.pop();
+
+    // wrong-length public values on the original split instance
+    snark.U.public_values.push(<E as Engine>::Scalar::ZERO);
+    assert!(snark.verify(&vk).is_err());
+    let _ = snark.U.public_values.pop();
+
+    // proof is intact again after undoing all mutations
+    assert!(snark.verify(&vk).is_ok());
   }
 
   fn test_zksnark_with<E: Engine, S: R1CSSNARKTrait<E>>() {
