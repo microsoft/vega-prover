@@ -24,7 +24,7 @@
 //!
 //! # Overview
 //!
-//! The main entry point is [`prove_cubic_small_value`], which implements
+//! The main entry point is [`prove_spartan_outer_cubic_small_value`], which implements
 
 use crate::{
   big_num::{DelayedReduction, SmallValueEngine, SmallValueField},
@@ -81,9 +81,9 @@ struct SmallValueSumCheck<Scalar: PrimeField, const D: usize> {
 ///   standard eq-sumcheck continuation.
 ///
 /// `poly_A_small` and `poly_B_small` must be provided as [`ExtensionBoundedPoly`]
-/// caller assertions. Debug builds validate that assertion; release builds skip
-/// the expensive full-polynomial scan.
-pub(crate) fn prove_cubic_small_value<E, SV, const LB: usize>(
+/// caller assertions. That certificate only covers native Lagrange extension
+/// bounds; the Spartan outer-relation invariant remains the caller's responsibility.
+pub(crate) fn prove_spartan_outer_cubic_small_value<E, SV, const LB: usize>(
   claim: &E::Scalar,
   taus: Vec<E::Scalar>,
   poly_A_small: ExtensionBoundedPoly<'_, SV, SPARTAN_T_DEGREE, LB>,
@@ -643,7 +643,7 @@ mod tests {
     run_smallvalue_round_test::<i64>();
   }
 
-  /// Test that prove_cubic_small_value produces identical
+  /// Test that prove_spartan_outer_cubic_small_value produces identical
   /// output to prove_cubic_with_three_inputs using synthetic small-value polynomials.
   ///
   /// Uses synthetic Az, Bz values in a small range and computes Cz = Az * Bz.
@@ -726,7 +726,7 @@ mod tests {
       .expect("Bz should be extension-bounded");
 
     // Run small-value method
-    let (proof2, r2, evals2) = prove_cubic_small_value::<E, SV, 3>(
+    let (proof2, r2, evals2) = prove_spartan_outer_cubic_small_value::<E, SV, 3>(
       &claim,
       taus.clone(),
       az_bound,
@@ -796,7 +796,7 @@ mod tests {
     let taus = vec![F::from(2u64), F::from(3u64), F::from(4u64)];
     let mut transcript = <E as Engine>::TE::new(b"test");
 
-    let result = prove_cubic_small_value::<E, i32, 3>(
+    let result = prove_spartan_outer_cubic_small_value::<E, i32, 3>(
       &F::ZERO,
       taus,
       az_bound,
@@ -825,7 +825,7 @@ mod tests {
     let taus = vec![F::from(2u64)];
     let mut transcript = <E as Engine>::TE::new(b"test");
 
-    let result = prove_cubic_small_value::<E, i32, 0>(
+    let result = prove_spartan_outer_cubic_small_value::<E, i32, 0>(
       &F::ZERO,
       taus,
       az_bound,
@@ -868,7 +868,7 @@ mod tests {
       .expect("Bz should be extension-bounded");
     let mut transcript = <E as Engine>::TE::new(b"test");
 
-    let result = prove_cubic_small_value::<E, i32, 3>(
+    let result = prove_spartan_outer_cubic_small_value::<E, i32, 3>(
       &claim,
       taus,
       az_bound,
@@ -940,7 +940,7 @@ mod perf_tests {
         num_vars = num_vars
       );
 
-      let (proof, _r, _evals) = prove_cubic_small_value::<E, _, 3>(
+      let (proof, _r, _evals) = prove_spartan_outer_cubic_small_value::<E, _, 3>(
         &E::Scalar::ZERO,
         taus.clone(),
         az_bound,
