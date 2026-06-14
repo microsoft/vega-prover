@@ -1642,68 +1642,6 @@ pub(crate) mod eq_sumcheck {
       }
     }
   }
-
-  /// Evaluates a cubic polynomial at points 0, 2, and 3 for three-input case.
-  ///
-  /// Computes evaluation points for the sum-check protocol when combining three
-  /// multilinear polynomials using a cubic combination function. Uses cached
-  /// evaluations at 0 and 1 to efficiently compute the required evaluation points.
-  ///
-  /// # Arguments
-  /// * `round_idx` - Current round index in the sum-check protocol
-  /// * `zero_a`, `one_a` - Evaluations of polynomial A at 0 and 1
-  /// * `zero_b`, `one_b` - Evaluations of polynomial B at 0 and 1
-  /// * `zero_c`, `one_c` - Evaluations of polynomial C at 0 and 1
-  ///
-  /// # Returns
-  /// A tuple `(eval_0, eval_2, eval_3)` containing the evaluation points.
-  #[inline]
-  #[allow(dead_code)]
-  fn eval_one_case_cubic_three_inputs<Scalar: PrimeField>(
-    round_idx: usize,
-    zero_a: &Scalar,
-    one_a: &Scalar,
-    zero_b: &Scalar,
-    one_b: &Scalar,
-    zero_c: &Scalar,
-    one_c: &Scalar,
-  ) -> (Scalar, Scalar, Scalar) {
-    // Optimization: In the first round (round == 0), eval_0 is always ZERO.
-    // This is mathematically correct because in round 0 of the sumcheck protocol with equality
-    // polynomials, when evaluating at point 0, the equality polynomial factor eq(tau, 0, ...)
-    // evaluates to (1 - tau_0) for the first variable. The sumcheck instance's update_evals
-    // method multiplies eval_0 by eq_tau_0_p, which for round 0 equals (1 - tau_0) * eval_eq_left.
-    // The contribution from eval_0 to the final sum is zero in this case due to the structure of
-    // the equality polynomial and how it combines with the cubic terms in the first round.
-    // This optimization avoids unnecessary computation of zero_a * zero_b - zero_c when the result
-    // will be zeroed out anyway by the equality polynomial evaluation at point 0 in round 0.
-    let eval_0 = if round_idx == 0 {
-      Scalar::ZERO
-    } else {
-      *zero_a * *zero_b - *zero_c
-    };
-
-    let double_one_a = one_a.double();
-    let double_one_b = one_b.double();
-    let double_one_c = one_c.double();
-
-    let eval_2 = {
-      let point_a = double_one_a - *zero_a;
-      let point_b = double_one_b - *zero_b;
-      let point_c = double_one_c - *zero_c;
-
-      point_a * point_b - point_c
-    };
-
-    let eval_3 = {
-      let point_a = double_one_a + one_a - zero_a.double();
-      let point_b = double_one_b + one_b - zero_b.double();
-      let point_c = double_one_c + one_c - zero_c.double();
-      point_a * point_b - point_c
-    };
-
-    (eval_0, eval_2, eval_3)
-  }
 }
 
 #[cfg(test)]

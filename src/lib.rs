@@ -42,7 +42,7 @@ mod big_num;
 #[allow(dead_code)] // TODO: remove once small-value sumcheck is integrated into spartan prover
 mod lagrange_accumulator;
 mod polys;
-#[allow(dead_code)] // TODO: remove once small-value NeutronNova NIFS is integrated into the prover
+#[cfg(test)]
 mod small_neutronnova;
 #[allow(dead_code)] // TODO: remove once small-value sumcheck is integrated into spartan prover
 mod small_sumcheck;

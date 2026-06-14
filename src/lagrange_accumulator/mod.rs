@@ -33,8 +33,7 @@ mod thread_state;
 // Crate-internal surface used by the small-value sumcheck implementation.
 pub(crate) use accumulator::LagrangeAccumulators;
 pub(crate) use accumulator_builder::{
-  SMALL_VALUE_T_DEGREE, SmallValueExtensionBoundedPoly, build_accumulators_neutronnova,
-  build_accumulators_spartan,
+  SMALL_VALUE_T_DEGREE, SmallValueExtensionBoundedPoly, build_accumulators_spartan, build_accumulators_neutronnova
 };
 pub(crate) use basis::{
   LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals, ReducedLagrangeDomainEvals,
