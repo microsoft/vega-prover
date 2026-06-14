@@ -31,7 +31,7 @@ use crate::{
   errors::SpartanError,
   lagrange_accumulator::{
     LagrangeAccumulators, LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals,
-    ReducedLagrangeDomainEvals, SPARTAN_T_DEGREE, SpartanExtensionBoundedPoly,
+    ReducedLagrangeDomainEvals, SMALL_VALUE_T_DEGREE, SmallValueExtensionBoundedPoly,
     build_accumulators_spartan,
   },
   polys::{eq::EqPolynomial, multilinear::MultilinearPolynomial, univariate::UniPoly},
@@ -80,14 +80,14 @@ pub(crate) struct SmallValueSumCheck<Scalar: PrimeField, const D: usize> {
 ///   standard eq-sumcheck continuation.
 ///
 /// `poly_A_small` and `poly_B_small` must be provided as
-/// [`SpartanExtensionBoundedPoly`] caller assertions. That certificate covers
+/// [`SmallValueExtensionBoundedPoly`] caller assertions. That certificate covers
 /// native Lagrange extension and pairwise small-product bounds; the Spartan
 /// outer-relation invariant remains the caller's responsibility.
 pub(crate) fn prove_spartan_outer_cubic_small_value<E, SV, const LB: usize>(
   claim: &E::Scalar,
   taus: Vec<E::Scalar>,
-  poly_A_small: SpartanExtensionBoundedPoly<'_, SV, LB>,
-  poly_B_small: SpartanExtensionBoundedPoly<'_, SV, LB>,
+  poly_A_small: SmallValueExtensionBoundedPoly<'_, SV, LB>,
+  poly_B_small: SmallValueExtensionBoundedPoly<'_, SV, LB>,
   poly_C_small: &MultilinearPolynomial<SV>,
   transcript: &mut E::TE,
 ) -> Result<(SumcheckProof<E>, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError>
@@ -131,7 +131,7 @@ where
     build_accumulators_spartan::<E::Scalar, SV, LB>(&poly_A_small, &poly_B_small, &taus);
 
   let mut small_value_sumcheck =
-    SmallValueSumCheck::<E::Scalar, SPARTAN_T_DEGREE>::from_accumulators(accumulators);
+    SmallValueSumCheck::<E::Scalar, SMALL_VALUE_T_DEGREE>::from_accumulators(accumulators);
 
   // ===== Small-Value Rounds (0 to ℓ₀-1) =====
   // During these rounds, we use the precomputed accumulators. Polynomials are NOT bound
@@ -140,35 +140,30 @@ where
   for round in 0..l0 {
     let (_round_span, round_t) = start_span!("sumcheck_smallvalue_round", round = round);
 
-    // 1. Get t_i evaluations from accumulators
-    let t_all = small_value_sumcheck.eval_t_all_u(round);
-    let t_inf = t_all.at_infinity();
-    let t0 = t_all.at_zero();
-
-    // 2. Get eq factor values ℓ_i(0), ℓ_i(1), ℓ_i(∞)
-    let li = small_value_sumcheck.eq_round_values(taus[round]);
-
-    // 3. Derive t(1) from the sumcheck constraint. If ℓ_i(1)=0, the optimized
-    // path cannot recover t_i(1).
-    let Some(t1) = derive_t1(li.at_zero(), li.at_one(), claim_per_round, t0) else {
-      return Err(SpartanError::InternalError {
+    // Build round polynomial s_i(X) = ℓ_i(X) · t_i(X).
+    let (poly, li) = generate_univariate_sumcheck_polynomial(
+      &small_value_sumcheck,
+      round,
+      taus[round],
+      claim_per_round,
+    )
+    .map_err(|err| match err {
+      SpartanError::InvalidSumcheckProof => SpartanError::InternalError {
         reason: format!("small-value sumcheck cannot derive t(1) at round {}", round),
-      });
-    };
+      },
+      err => err,
+    })?;
 
-    // 4. Build round polynomial s_i(X) = ℓ_i(X) · t_i(X)
-    let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
-
-    // 5. Transcript interaction
+    // Transcript interaction
     transcript.absorb(b"p", &poly);
     let r_i = transcript.squeeze(b"c")?;
     r.push(r_i);
     polys.push(poly.compress());
 
-    // 6. Update claim
+    // Update claim
     claim_per_round = poly.evaluate(&r_i);
 
-    // 7. Advance small-value state (updates R_{i+1} and the prefix eq factor)
+    // Advance small-value state (updates R_{i+1} and the prefix eq factor)
     small_value_sumcheck.advance(&li, r_i);
 
     info!(
@@ -322,6 +317,27 @@ pub(crate) fn build_univariate_round_polynomial<F: PrimeField>(
   }
 }
 
+/// Generate the cubic univariate sumcheck polynomial for one small-value round.
+pub(crate) fn generate_univariate_sumcheck_polynomial<F>(
+  state: &SmallValueSumCheck<F, 2>,
+  round: usize,
+  rho: F,
+  t_cur: F,
+) -> Result<(UniPoly<F>, LagrangeDomainEvals<F, 2>), SpartanError>
+where
+  F: PrimeField,
+{
+  let t_all = state.eval_t_all_u(round);
+  let t0 = t_all.at_zero();
+  let t_inf = t_all.at_infinity();
+  let li = state.eq_round_values(rho);
+  let t1 =
+    derive_t1(li.at_zero(), li.at_one(), t_cur, t0).ok_or(SpartanError::InvalidSumcheckProof)?;
+  let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
+
+  Ok((poly, li))
+}
+
 /// Batch-bind l0 top variables of three polynomials using eq-weighted small-value accumulation.
 ///
 /// Instead of l0 sequential passes with field×field muls, computes:
@@ -438,7 +454,7 @@ mod tests {
 
   #[test]
   fn test_eq_round_values_matches_formula() {
-    let mut small_value = SmallValueSumCheck::<F, SPARTAN_T_DEGREE>::new(
+    let mut small_value = SmallValueSumCheck::<F, SMALL_VALUE_T_DEGREE>::new(
       LagrangeAccumulators::new(1),
       LagrangeBasisFactory::new(|i| F::from(i as u64)),
     );
@@ -457,7 +473,7 @@ mod tests {
 
   #[test]
   fn test_advance_matches_prefix_eq_product() {
-    let mut small_value = SmallValueSumCheck::<F, SPARTAN_T_DEGREE>::new(
+    let mut small_value = SmallValueSumCheck::<F, SMALL_VALUE_T_DEGREE>::new(
       LagrangeAccumulators::new(4),
       LagrangeBasisFactory::new(|i| F::from(i as u64)),
     );
@@ -537,9 +553,9 @@ mod tests {
     // Claim = 0 for satisfying witness (Az·Bz = Cz)
     let mut claim = F::ZERO;
 
-    let az_bound = SpartanExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(&az_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(&az_poly)
       .expect("Az should be extension-bounded");
-    let bz_bound = SpartanExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(&bz_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(&bz_poly)
       .expect("Bz should be extension-bounded");
 
     // Build accumulators using the checked API
@@ -694,9 +710,9 @@ mod tests {
     )
     .expect("standard prove should succeed");
 
-    let az_bound = SpartanExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
       .expect("Az should be extension-bounded");
-    let bz_bound = SpartanExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
       .expect("Bz should be extension-bounded");
 
     // Run small-value method
@@ -763,9 +779,9 @@ mod tests {
     let az_small_poly = MultilinearPolynomial::new(vec![1i32; n]);
     let bz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
     let cz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
-    let az_bound = SpartanExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
       .expect("Az should be extension-bounded");
-    let bz_bound = SpartanExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
       .expect("Bz should be extension-bounded");
     let taus = vec![F::from(2u64), F::from(3u64), F::from(4u64)];
     let mut transcript = <E as Engine>::TE::new(b"test");
@@ -792,9 +808,9 @@ mod tests {
     let az_small_poly = MultilinearPolynomial::new(vec![1i32; n]);
     let bz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
     let cz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
-    let az_bound = SpartanExtensionBoundedPoly::<_, 0>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 0>::new(&az_small_poly)
       .expect("Az should be extension-bounded");
-    let bz_bound = SpartanExtensionBoundedPoly::<_, 0>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 0>::new(&bz_small_poly)
       .expect("Bz should be extension-bounded");
     let taus = vec![F::from(2u64)];
     let mut transcript = <E as Engine>::TE::new(b"test");
@@ -836,9 +852,9 @@ mod tests {
     let az_small_poly = MultilinearPolynomial::new(az_small);
     let bz_small_poly = MultilinearPolynomial::new(bz_small);
     let cz_small_poly = MultilinearPolynomial::new(cz_small);
-    let az_bound = SpartanExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
       .expect("Az should be extension-bounded");
-    let bz_bound = SpartanExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
       .expect("Bz should be extension-bounded");
     let mut transcript = <E as Engine>::TE::new(b"test");
 
@@ -900,10 +916,10 @@ mod perf_tests {
       let az_poly = MultilinearPolynomial::new(az_small);
       let bz_poly = MultilinearPolynomial::new(bz_small);
       let cz_poly = MultilinearPolynomial::new(cz_small);
-      let az_bound =
-        SpartanExtensionBoundedPoly::<_, 3>::new(&az_poly).expect("Az should be extension-bounded");
-      let bz_bound =
-        SpartanExtensionBoundedPoly::<_, 3>::new(&bz_poly).expect("Bz should be extension-bounded");
+      let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_poly)
+        .expect("Az should be extension-bounded");
+      let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_poly)
+        .expect("Bz should be extension-bounded");
 
       let taus: Vec<E::Scalar> = (0..num_vars).map(|_| E::Scalar::random(&mut rng)).collect();
       let mut transcript = E::TE::new(b"perf_test");

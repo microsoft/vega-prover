@@ -45,7 +45,7 @@ use crate::{
   },
   zk::NeutronNovaVerifierCircuit,
 };
-use ff::Field;
+use ff::{Field, PrimeField};
 use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,12 @@ pub struct NeutronNovaNIFS<E: Engine> {
 
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
-fn suffix_weight_full<F: Field>(t: usize, ell_b: usize, pair_idx: usize, rhos: &[F]) -> F {
+pub(crate) fn suffix_weight_full<F: Field>(
+  t: usize,
+  ell_b: usize,
+  pair_idx: usize,
+  rhos: &[F],
+) -> F {
   let mut w = F::ONE;
   let mut k = pair_idx;
   for s in (t + 1)..ell_b {
@@ -80,6 +85,370 @@ fn suffix_weight_full<F: Field>(t: usize, ell_b: usize, pair_idx: usize, rhos: &
     k >>= 1;
   }
   w
+}
+
+pub(crate) fn generate_nifs_field_round_polynomial<F>(
+  rho: F,
+  acc_eq: F,
+  t_cur: F,
+  e0: F,
+  quad_coeff: F,
+) -> Result<UniPoly<F>, SpartanError>
+where
+  F: PrimeField,
+{
+  let one_minus_rho = F::ONE - rho;
+  let two_rho_minus_one = rho - one_minus_rho;
+  let c = e0 * acc_eq;
+  let a = quad_coeff * acc_eq;
+  let rho_inv: Option<F> = rho.invert().into();
+  let a_b_c = (t_cur - c * one_minus_rho) * rho_inv.ok_or(SpartanError::DivisionByZero)?;
+  let b = a_b_c - a - c;
+  let new_a = a * two_rho_minus_one;
+  let new_b = b * two_rho_minus_one + a * one_minus_rho;
+  let new_c = c * two_rho_minus_one + b * one_minus_rho;
+  let new_d = c * one_minus_rho;
+
+  Ok(UniPoly {
+    coeffs: vec![new_d, new_c, new_b, new_a],
+  })
+}
+
+pub(crate) fn fold_layer_pair_into<F: Field>(
+  layers: &mut [Vec<F>],
+  src_even: usize,
+  src_odd: usize,
+  dest: usize,
+  r: F,
+) {
+  let even = std::mem::take(&mut layers[src_even]);
+  let odd = &layers[src_odd];
+  let mut folded = even;
+  folded
+    .iter_mut()
+    .zip(odd.iter())
+    .for_each(|(lo, hi)| *lo += r * (*hi - *lo));
+  layers[dest] = folded;
+}
+
+pub(crate) fn fold_abc_pair_into<F: Field>(
+  a_layers: &mut [Vec<F>],
+  b_layers: &mut [Vec<F>],
+  c_layers: &mut [Vec<F>],
+  src_even: usize,
+  src_odd: usize,
+  dest: usize,
+  r: F,
+) {
+  fold_layer_pair_into(a_layers, src_even, src_odd, dest, r);
+  fold_layer_pair_into(b_layers, src_even, src_odd, dest, r);
+  fold_layer_pair_into(c_layers, src_even, src_odd, dest, r);
+}
+
+#[allow(dead_code)]
+pub(crate) fn fold_quad_chunk<F: Field>(chunk: &mut [Vec<F>], r: F) {
+  {
+    let (lo, hi) = chunk.split_at_mut(1);
+    lo[0]
+      .iter_mut()
+      .zip(hi[0].iter())
+      .for_each(|(l, h)| *l += r * (*h - *l));
+  }
+  {
+    let (lo, hi) = chunk.split_at_mut(3);
+    lo[2]
+      .iter_mut()
+      .zip(hi[0].iter())
+      .for_each(|(l, h)| *l += r * (*h - *l));
+  }
+}
+
+#[allow(dead_code)]
+pub(crate) fn compact_folded_layers<F>(layers: &mut [Vec<F>], prove_pairs: usize) {
+  for j in 0..prove_pairs {
+    layers.swap(2 * j, 4 * j);
+    layers.swap(2 * j + 1, 4 * j + 2);
+  }
+}
+
+#[allow(dead_code)]
+pub(crate) fn compact_folded_layers_abc<F: Field>(
+  a_layers: &mut [Vec<F>],
+  b_layers: &mut [Vec<F>],
+  c_layers: &mut [Vec<F>],
+  prove_pairs: usize,
+) {
+  compact_folded_layers(a_layers, prove_pairs);
+  compact_folded_layers(b_layers, prove_pairs);
+  compact_folded_layers(c_layers, prove_pairs);
+}
+
+pub(crate) fn fold_final_abc_pairs<F: Field>(
+  a_layers: &mut [Vec<F>],
+  b_layers: &mut [Vec<F>],
+  c_layers: &mut [Vec<F>],
+  pairs: usize,
+  r: F,
+) {
+  for i in 0..pairs {
+    fold_abc_pair_into(a_layers, b_layers, c_layers, 2 * i, 2 * i + 1, i, r);
+  }
+}
+
+fn invalid_input(reason: impl Into<String>) -> SpartanError {
+  SpartanError::InvalidInputLength {
+    reason: reason.into(),
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_nifs_round<E>(
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  round: usize,
+  poly: &UniPoly<E::Scalar>,
+) -> Result<E::Scalar, SpartanError>
+where
+  E: Engine,
+{
+  let coeffs = &poly.coeffs;
+  vc.nifs_polys[round] = [coeffs[0], coeffs[1], coeffs[2], coeffs[3]];
+
+  let chals =
+    SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, round, transcript)?;
+  chals
+    .first()
+    .copied()
+    .ok_or_else(|| SpartanError::InternalError {
+      reason: format!("NeutronNova NIFS round {} produced no challenge", round),
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_nifs_field_round<E>(
+  rhos: &[E::Scalar],
+  round: usize,
+  e0: E::Scalar,
+  quad_coeff: E::Scalar,
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  r_bs: &mut Vec<E::Scalar>,
+  t_cur: &mut E::Scalar,
+  acc_eq: &mut E::Scalar,
+) -> Result<E::Scalar, SpartanError>
+where
+  E: Engine,
+{
+  let rho = rhos[round];
+  let poly = generate_nifs_field_round_polynomial(rho, *acc_eq, *t_cur, e0, quad_coeff)?;
+  let r_b = process_nifs_round(vc, vc_state, vc_shape, vc_ck, transcript, round, &poly)?;
+  *t_cur = poly.evaluate(&r_b);
+  *acc_eq *= (E::Scalar::ONE - r_b) * (E::Scalar::ONE - rho) + r_b * rho;
+  r_bs.push(r_b);
+  Ok(r_b)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finalize_nifs_step_claim<E>(
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  final_round: usize,
+  t_cur: E::Scalar,
+  acc_eq: E::Scalar,
+) -> Result<(), SpartanError>
+where
+  E: Engine,
+{
+  let acc_eq_inv: Option<E::Scalar> = acc_eq.invert().into();
+  vc.t_out_step = t_cur * acc_eq_inv.ok_or(SpartanError::DivisionByZero)?;
+  vc.eq_rho_at_rb = acc_eq;
+  let _ = SatisfyingAssignment::<E>::process_round(
+    vc_state,
+    vc_shape,
+    vc_ck,
+    vc,
+    final_round,
+    transcript,
+  )?;
+  Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_field_round_claim<E>(
+  a_layers: &[Vec<E::Scalar>],
+  b_layers: &[Vec<E::Scalar>],
+  c_layers: &[Vec<E::Scalar>],
+  e_eq: &[E::Scalar],
+  left: usize,
+  right: usize,
+  rhos: &[E::Scalar],
+  round: usize,
+) -> (E::Scalar, E::Scalar)
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  E::Scalar: DelayedReduction<E::Scalar>,
+{
+  let ell_b = rhos.len();
+  a_layers
+    .par_chunks(2)
+    .zip(b_layers.par_chunks(2))
+    .zip(c_layers.par_chunks(2))
+    .enumerate()
+    .map(|(pair_idx, ((pair_a, pair_b), pair_c))| {
+      let (e0, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper(
+        round,
+        (left, right),
+        e_eq,
+        &pair_a[0],
+        &pair_b[0],
+        &pair_c[0],
+        &pair_a[1],
+        &pair_b[1],
+      );
+      let w = suffix_weight_full::<E::Scalar>(round, ell_b, pair_idx, rhos);
+      (e0 * w, quad_coeff * w)
+    })
+    .reduce(
+      || (E::Scalar::ZERO, E::Scalar::ZERO),
+      |a, b| (a.0 + b.0, a.1 + b.1),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn continue_field_suffix<E>(
+  a_layers: &mut Vec<Vec<E::Scalar>>,
+  b_layers: &mut Vec<Vec<E::Scalar>>,
+  c_layers: &mut Vec<Vec<E::Scalar>>,
+  e_eq: &[E::Scalar],
+  left: usize,
+  right: usize,
+  rhos: &[E::Scalar],
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  start_round: usize,
+  r_bs: &mut Vec<E::Scalar>,
+  t_cur: &mut E::Scalar,
+  acc_eq: &mut E::Scalar,
+) -> Result<(), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  E::Scalar: DelayedReduction<E::Scalar>,
+{
+  let ell_b = rhos.len();
+  for round in start_round..ell_b {
+    let pairs = a_layers.len() / 2;
+    let (e0, quad_coeff) =
+      compute_field_round_claim::<E>(a_layers, b_layers, c_layers, e_eq, left, right, rhos, round);
+
+    let r_b = finish_nifs_field_round(
+      rhos, round, e0, quad_coeff, vc, vc_state, vc_shape, vc_ck, transcript, r_bs, t_cur, acc_eq,
+    )?;
+
+    fold_final_abc_pairs(a_layers, b_layers, c_layers, pairs, r_b);
+    a_layers.truncate(pairs);
+    b_layers.truncate(pairs);
+    c_layers.truncate(pairs);
+  }
+
+  Ok(())
+}
+
+pub(crate) fn fold_witness_and_instance<E>(
+  s: &SplitR1CSShape<E>,
+  ck: &CommitmentKey<E>,
+  mut us: Vec<R1CSInstance<E>>,
+  mut ws: Vec<R1CSWitness<E>>,
+  num_instances: usize,
+  n_padded: usize,
+  r_bs: &[E::Scalar],
+) -> Result<(R1CSWitness<E>, R1CSInstance<E>), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+{
+  if us.len() != num_instances {
+    return Err(invalid_input(format!(
+      "instance count {} does not match expected count {}",
+      us.len(),
+      num_instances
+    )));
+  }
+  if ws.len() != num_instances {
+    return Err(invalid_input(format!(
+      "witness count {} does not match expected count {}",
+      ws.len(),
+      num_instances
+    )));
+  }
+  if us.is_empty() {
+    return Err(invalid_input("cannot fold empty instance list"));
+  }
+
+  if us.len() < n_padded {
+    us.extend(vec![us[0].clone(); n_padded - us.len()]);
+    ws.extend(vec![ws[0].clone(); n_padded - ws.len()]);
+  }
+
+  let effective_len = s.num_shared + s.num_precommitted;
+  let use_truncated_fold = effective_len > 0;
+  if use_truncated_fold {
+    for w in ws.iter_mut() {
+      w.W.truncate(effective_len);
+    }
+  }
+
+  let (_fold_final_span, fold_final_t) = start_span!("fold_witnesses");
+  let mut folded_w = R1CSWitness::fold_multiple(r_bs, &ws)?;
+  if use_truncated_fold {
+    let full_dim = s.num_shared + s.num_precommitted + s.num_rest;
+    folded_w.W.resize(full_dim, E::Scalar::ZERO);
+  }
+  info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_witnesses");
+
+  let (_fold_final_span, fold_final_t) = start_span!("fold_instances");
+  let weights = weights_from_r::<E::Scalar>(r_bs, us.len());
+  let x_len = us[0].X.len();
+  let mut folded_x = vec![E::Scalar::ZERO; x_len];
+  for (weight, instance) in weights.iter().zip(us.iter()) {
+    for (acc, value) in folded_x.iter_mut().zip(instance.X.iter()) {
+      *acc += *weight * *value;
+    }
+  }
+
+  let comms = us
+    .iter()
+    .map(|instance| instance.comm_W.clone())
+    .collect::<Vec<_>>();
+  let folded_comm = if use_truncated_fold {
+    let num_data_rows = (s.num_shared + s.num_precommitted).div_ceil(DEFAULT_COMMITMENT_WIDTH);
+    <E::PCS as FoldingEngineTrait<E>>::fold_commitments_partial(
+      &comms,
+      &weights,
+      num_data_rows,
+      &folded_w.r_W,
+      ck,
+    )?
+  } else {
+    <E::PCS as FoldingEngineTrait<E>>::fold_commitments(&comms, &weights)?
+  };
+  let folded_u = R1CSInstance::<E>::new_unchecked(folded_comm, folded_x)?;
+  info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_instances");
+
+  Ok((folded_w, folded_u))
 }
 
 impl<E: Engine> NeutronNovaNIFS<E>
@@ -91,7 +460,7 @@ where
   /// Note: Outer level (over pairs) uses regular field arithmetic since there are few pairs.
   #[inline(always)]
   #[allow(clippy::needless_range_loop)]
-  fn prove_helper(
+  pub(crate) fn prove_helper(
     round: usize,
     (left, right): (usize, usize),
     e: &[E::Scalar],
@@ -729,47 +1098,10 @@ where
       vec![]
     };
 
-    let mut polys: Vec<UniPoly<E::Scalar>> = Vec::with_capacity(ell_b);
     let mut r_bs: Vec<E::Scalar> = Vec::with_capacity(ell_b);
     let mut T_cur = E::Scalar::ZERO; // the current target value, starts at 0
     let mut acc_eq = E::Scalar::ONE;
     let mut m = n_padded;
-
-    // Helper closure: build polynomial, process round, extract r_b
-    // (factored out since it's identical for standalone and merged rounds)
-    macro_rules! finish_round {
-      ($t:expr, $e0:expr, $quad_coeff:expr) => {{
-        let rho_t = rhos[$t];
-        let one_minus_rho = E::Scalar::ONE - rho_t;
-        let two_rho_minus_one = rho_t - one_minus_rho;
-        let c = $e0 * acc_eq;
-        let a = $quad_coeff * acc_eq;
-        let rho_t_inv: Option<E::Scalar> = rho_t.invert().into();
-        let a_b_c = (T_cur - c * one_minus_rho) * rho_t_inv.ok_or(SpartanError::DivisionByZero)?;
-        let b = a_b_c - a - c;
-        let new_a = a * two_rho_minus_one;
-        let new_b = b * two_rho_minus_one + a * one_minus_rho;
-        let new_c = c * two_rho_minus_one + b * one_minus_rho;
-        let new_d = c * one_minus_rho;
-
-        let poly_t = UniPoly {
-          coeffs: vec![new_d, new_c, new_b, new_a],
-        };
-        polys.push(poly_t.clone());
-
-        let c = &poly_t.coeffs;
-        vc.nifs_polys[$t] = [c[0], c[1], c[2], c[3]];
-
-        let chals =
-          SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, $t, transcript)?;
-        let r_b = chals[0];
-        r_bs.push(r_b);
-
-        acc_eq *= (E::Scalar::ONE - r_b) * (E::Scalar::ONE - rho_t) + r_b * rho_t;
-        T_cur = poly_t.evaluate(&r_b);
-        r_b
-      }};
-    }
 
     // Helper closure: fold one A/B pair from src indices to dest index.
     // C layers are NOT folded -- C contribution is handled via precomputed c_vals when has_i64.
@@ -845,31 +1177,24 @@ where
         (E::Scalar::ZERO, quad_coeff)
       } else {
         // Standard field arithmetic path
-        A_layers
-          .par_chunks(2)
-          .zip(B_layers.par_chunks(2))
-          .zip(C_layers.par_chunks(2))
-          .enumerate()
-          .map(|(pair_idx, ((pair_a, pair_b), pair_c))| {
-            let (e0, quad_coeff) = Self::prove_helper(
-              0,
-              (left, right),
-              &E_eq,
-              &pair_a[0],
-              &pair_b[0],
-              &pair_c[0],
-              &pair_a[1],
-              &pair_b[1],
-            );
-            let w = suffix_weight_full::<E::Scalar>(0, ell_b, pair_idx, &rhos);
-            (e0 * w, quad_coeff * w)
-          })
-          .reduce(
-            || (E::Scalar::ZERO, E::Scalar::ZERO),
-            |a, b| (a.0 + b.0, a.1 + b.1),
-          )
+        compute_field_round_claim::<E>(
+          &A_layers, &B_layers, &C_layers, &E_eq, left, right, &rhos, 0,
+        )
       };
-      let r_b = finish_round!(0, e0, quad_coeff);
+      let r_b = finish_nifs_field_round(
+        &rhos,
+        0,
+        e0,
+        quad_coeff,
+        vc,
+        vc_state,
+        vc_shape,
+        vc_ck,
+        transcript,
+        &mut r_bs,
+        &mut T_cur,
+        &mut acc_eq,
+      )?;
 
       if ell_b == 1 {
         for i in 0..pairs {
@@ -1139,7 +1464,20 @@ where
           C_layers.truncate(fold_pairs);
         }
         m = fold_pairs;
-        prev_r_b = finish_round!(t, e0_acc, quad_acc);
+        prev_r_b = finish_nifs_field_round(
+          &rhos,
+          t,
+          e0_acc,
+          quad_acc,
+          vc,
+          vc_state,
+          vc_shape,
+          vc_ck,
+          transcript,
+          &mut r_bs,
+          &mut T_cur,
+          &mut acc_eq,
+        )?;
 
         // Extend prefix_coeffs: each c splits into c*(1-r_t) and c*r_t
         if has_i64 {
@@ -1241,64 +1579,11 @@ where
 
       C_layers = vec![cz_step];
     }
-    // T_out = poly_last(r_last) / eq(r_b, rho)
-    let acc_eq_inv: Option<E::Scalar> = acc_eq.invert().into();
-    let T_out = T_cur * acc_eq_inv.ok_or(SpartanError::DivisionByZero)?;
-    vc.t_out_step = T_out;
-    vc.eq_rho_at_rb = acc_eq;
-    let _ =
-      SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, ell_b, transcript)?;
+    finalize_nifs_step_claim(
+      vc, vc_state, vc_shape, vc_ck, transcript, ell_b, T_cur, acc_eq,
+    )?;
 
-    // Truncate witness W vectors to skip zero rest portion before folding.
-    // The rest portion (indices effective_len..) is all zero for step circuits,
-    // so the folded result there is also zero. We resize back after folding.
-    // Only apply when shared+precommitted > 0 (otherwise truncation would zero everything).
-    let effective_len = S.num_shared + S.num_precommitted;
-    let use_truncated_fold = effective_len > 0;
-    if use_truncated_fold {
-      for w in Ws.iter_mut() {
-        w.W.truncate(effective_len);
-      }
-    }
-
-    let (_fold_final_span, fold_final_t) = start_span!("fold_witnesses");
-    let mut folded_W = R1CSWitness::fold_multiple(&r_bs, &Ws)?;
-    if use_truncated_fold {
-      let full_dim = S.num_shared + S.num_precommitted + S.num_rest;
-      folded_W.W.resize(full_dim, E::Scalar::ZERO);
-    }
-    info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_witnesses");
-
-    // Optimized instance fold: only MSM data rows (shared+precommitted),
-    // compute rest rows from folded blind + h (field arithmetic instead of MSM).
-    // Fall back to full fold when shared+precommitted=0.
-    let (_fold_final_span, fold_final_t) = start_span!("fold_instances");
-    let w = weights_from_r::<E::Scalar>(&r_bs, Us.len());
-    let d = Us[0].X.len();
-
-    let mut X_acc = vec![E::Scalar::ZERO; d];
-    for (i, Ui) in Us.iter().enumerate() {
-      let wi = w[i];
-      for (j, Uij) in Ui.X.iter().enumerate() {
-        X_acc[j] += wi * Uij;
-      }
-    }
-
-    let comms: Vec<_> = Us.iter().map(|U| U.comm_W.clone()).collect();
-    let comm_acc = if use_truncated_fold {
-      let num_data_rows = (S.num_shared + S.num_precommitted).div_ceil(DEFAULT_COMMITMENT_WIDTH);
-      <E::PCS as FoldingEngineTrait<E>>::fold_commitments_partial(
-        &comms,
-        &w,
-        num_data_rows,
-        &folded_W.r_W,
-        ck,
-      )?
-    } else {
-      <E::PCS as FoldingEngineTrait<E>>::fold_commitments(&comms, &w)?
-    };
-    let folded_U = R1CSInstance::<E>::new_unchecked(comm_acc, X_acc)?;
-    info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_instances");
+    let (folded_W, folded_U) = fold_witness_and_instance(S, ck, Us, Ws, n_padded, n_padded, &r_bs)?;
 
     Ok((
       E_eq,

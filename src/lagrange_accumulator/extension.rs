@@ -7,6 +7,7 @@
 //! Procedure 6: Extension of multilinear polynomial evaluations from
 //! boolean hypercube {0,1}^ℓ to Lagrange domain U_D^ℓ.
 
+use crate::big_num::SmallValue;
 use std::ops::{Add, Sub};
 
 // ============================================================================
@@ -128,6 +129,43 @@ where
     std::mem::swap(buf_curr, buf_scratch);
   }
   final_size
+}
+
+/// Builds the bit-reverse permutation table for a length-`l0` prefix.
+///
+/// `bit_rev[p]` reverses the low `l0` bits of `p`. NeutronNova accumulator
+/// builders use it to map prefix positions to instance-layer indices.
+#[inline]
+pub(crate) fn bit_rev_prefix_table(l0: usize) -> Vec<usize> {
+  debug_assert!(l0 >= 1, "bit_rev_prefix_table requires l0 >= 1");
+  let prefix_size = 1usize << l0;
+  (0..prefix_size)
+    .map(|p| p.reverse_bits() >> (usize::BITS as usize - l0))
+    .collect()
+}
+
+/// Reads one Boolean prefix from `layers` and extends it to `U_2^l0`.
+///
+/// For each prefix position `p`, this reads
+/// `layers[layer_base + bit_rev[p]][idx]`, writes the Boolean prefix into
+/// `prefix`, then writes the extended values into `ext_buf`.
+#[inline]
+pub(crate) fn gather_and_extend_prefix<SV>(
+  layers: &[&[SV]],
+  bit_rev: &[usize],
+  layer_base: usize,
+  idx: usize,
+  prefix: &mut [SV],
+  ext_buf: &mut Vec<SV>,
+  ext_scratch: &mut Vec<SV>,
+) -> usize
+where
+  SV: SmallValue,
+{
+  for (p, &rev) in bit_rev.iter().enumerate() {
+    prefix[p] = layers[layer_base + rev][idx];
+  }
+  extend_to_lagrange_domain::<SV, 2>(prefix, ext_buf, ext_scratch)
 }
 
 #[cfg(test)]

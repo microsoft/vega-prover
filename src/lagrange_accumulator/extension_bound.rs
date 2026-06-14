@@ -128,7 +128,9 @@ where
 /// The returned magnitude is represented as `Product`, the widened product type
 /// used by the caller's native small-value multiplication path. Spartan uses
 /// `<SV as WideMul>::Product`.
-pub(crate) fn max_extension_input_abs<SV, Product, const D: usize, const LB: usize>() -> Product
+pub(crate) fn max_extension_input_abs_for_rounds<SV, Product, const D: usize>(
+  rounds: usize,
+) -> Product
 where
   SV: SmallValue + Bounded + ToPrimitive,
   Product: Bounded
@@ -144,7 +146,8 @@ where
     + ToPrimitive
     + Zero,
 {
-  let Some(growth) = extension_step_growth::<Product, D>().and_then(|base| checked_pow(base, LB))
+  let Some(growth) =
+    extension_step_growth::<Product, D>().and_then(|base| checked_pow(base, rounds))
   else {
     return Product::zero();
   };
@@ -165,12 +168,75 @@ where
   limit.checked_div(&growth).unwrap_or_else(Product::zero)
 }
 
+pub(crate) fn max_extension_input_abs<SV, Product, const D: usize, const LB: usize>() -> Product
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Product: Bounded
+    + CheckedDiv
+    + CheckedMul
+    + CheckedSub
+    + Copy
+    + FromPrimitive
+    + NumCast
+    + One
+    + PartialOrd
+    + Roots
+    + ToPrimitive
+    + Zero,
+{
+  max_extension_input_abs_for_rounds::<SV, Product, D>(LB)
+}
+
 /// Check that original MLE evaluations are safe for native extension.
 ///
 /// This scans the polynomial's original evaluation table before extension, not
 /// already-extended values. Passing means every original evaluation is small
 /// enough that `LB` rounds of extension over `U_D` fit in `SV`, and the
 /// following pairwise native product fits in `Product`.
+pub(crate) fn check_extension_bound_values_for_rounds<SV, Product, const D: usize>(
+  values: impl IntoIterator<Item = SV>,
+  rounds: usize,
+  context: impl Display,
+) -> Result<(), SpartanError>
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Product: Bounded
+    + CheckedDiv
+    + CheckedMul
+    + CheckedNeg
+    + CheckedSub
+    + Copy
+    + FromPrimitive
+    + NumCast
+    + One
+    + PartialOrd
+    + Roots
+    + Signed
+    + ToPrimitive
+    + Zero
+    + Display,
+{
+  let max_abs = max_extension_input_abs_for_rounds::<SV, Product, D>(rounds);
+
+  if let Some(value) = values
+    .into_iter()
+    .find(|&value| abs_as::<SV, Product>(value).map_or(true, |value_abs| value_abs > max_abs))
+  {
+    return Err(SpartanError::SmallValueOverflow {
+      value: abs_as::<SV, Product>(value).map_or_else(
+        || "magnitude exceeds product type".to_string(),
+        |value_abs| value_abs.to_string(),
+      ),
+      context: format!(
+        "{}: small-value Lagrange extension/product bound exceeded: max_abs={}, D={}, rounds={}",
+        context, max_abs, D, rounds
+      ),
+    });
+  }
+
+  Ok(())
+}
+
 pub(crate) fn check_extension_bound<SV, Product, const D: usize, const LB: usize>(
   poly: &MultilinearPolynomial<SV>,
 ) -> Result<(), SpartanError>
@@ -192,27 +258,11 @@ where
     + Zero
     + Display,
 {
-  let max_abs = max_extension_input_abs::<SV, Product, D, LB>();
-
-  if let Some(value) = poly
-    .Z
-    .iter()
-    .copied()
-    .find(|&value| abs_as::<SV, Product>(value).map_or(true, |value_abs| value_abs > max_abs))
-  {
-    return Err(SpartanError::SmallValueOverflow {
-      value: abs_as::<SV, Product>(value).map_or_else(
-        || "magnitude exceeds product type".to_string(),
-        |value_abs| value_abs.to_string(),
-      ),
-      context: format!(
-        "small-value Lagrange extension/product bound exceeded: max_abs={}, D={}, LB={}",
-        max_abs, D, LB
-      ),
-    });
-  }
-
-  Ok(())
+  check_extension_bound_values_for_rounds::<SV, Product, D>(
+    poly.Z.iter().copied(),
+    LB,
+    "small-value polynomial",
+  )
 }
 
 /// Polynomial whose original MLE evaluations are certified safe for native extension.
@@ -226,6 +276,7 @@ where
 /// Use [`ExtensionBoundedPoly::new`] to scan and verify the bound, or
 /// [`ExtensionBoundedPoly::new_unchecked`] when the caller has established the
 /// bound through some other path and wants to avoid the O(n) scan.
+#[derive(Clone, Copy)]
 pub(crate) struct ExtensionBoundedPoly<'a, SV, Product, const D: usize, const LB: usize> {
   poly: &'a MultilinearPolynomial<SV>,
   _product: PhantomData<fn() -> Product>,
@@ -304,6 +355,17 @@ mod tests {
   }
 
   #[test]
+  fn test_runtime_extension_bound_matches_const_i32() {
+    const D: usize = 2;
+    const LB: usize = 3;
+
+    assert_eq!(
+      max_extension_input_abs_for_rounds::<i32, i64, D>(LB),
+      max_extension_input_abs::<i32, i64, D, LB>()
+    );
+  }
+
+  #[test]
   fn test_extension_bound_uses_product_limit() {
     const D: usize = 2;
     const LB: usize = 2;
@@ -328,6 +390,22 @@ mod tests {
   }
 
   #[test]
+  fn test_runtime_extension_bound_accepts_exact_bound_i32() {
+    const D: usize = 2;
+    const LB: usize = 3;
+    let bound = max_extension_input_abs_for_rounds::<i32, i64, D>(LB);
+
+    assert!(
+      check_extension_bound_values_for_rounds::<i32, i64, D>(
+        [bound as i32, -(bound as i32), 0, 1],
+        LB,
+        "runtime values",
+      )
+      .is_ok()
+    );
+  }
+
+  #[test]
   fn test_check_extension_bound_rejects_above_bound_i32() {
     const D: usize = 2;
     const LB: usize = 3;
@@ -336,6 +414,22 @@ mod tests {
 
     assert!(matches!(
       check_extension_bound::<i32, i64, D, LB>(&poly),
+      Err(SpartanError::SmallValueOverflow { .. })
+    ));
+  }
+
+  #[test]
+  fn test_runtime_extension_bound_rejects_above_bound_i32() {
+    const D: usize = 2;
+    const LB: usize = 3;
+    let bound = max_extension_input_abs_for_rounds::<i32, i64, D>(LB);
+
+    assert!(matches!(
+      check_extension_bound_values_for_rounds::<i32, i64, D>(
+        [(bound + 1) as i32],
+        LB,
+        "runtime values",
+      ),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
   }
@@ -378,6 +472,17 @@ mod tests {
   }
 
   #[test]
+  fn test_runtime_extension_bound_matches_const_i64() {
+    const D: usize = 2;
+    const LB: usize = 4;
+
+    assert_eq!(
+      max_extension_input_abs_for_rounds::<i64, i128, D>(LB),
+      max_extension_input_abs::<i64, i128, D, LB>()
+    );
+  }
+
+  #[test]
   fn test_extension_bound_accepts_exact_bound_i64() {
     const D: usize = 2;
     const LB: usize = 4;
@@ -385,6 +490,22 @@ mod tests {
     let poly = MultilinearPolynomial::new(vec![bound as i64, -(bound as i64), 0, 1]);
 
     assert!(ExtensionBoundedPoly::<i64, i128, D, LB>::new(&poly).is_ok());
+  }
+
+  #[test]
+  fn test_runtime_extension_bound_accepts_exact_bound_i64() {
+    const D: usize = 2;
+    const LB: usize = 4;
+    let bound = max_extension_input_abs_for_rounds::<i64, i128, D>(LB);
+
+    assert!(
+      check_extension_bound_values_for_rounds::<i64, i128, D>(
+        [bound as i64, -(bound as i64), 0, 1],
+        LB,
+        "runtime values",
+      )
+      .is_ok()
+    );
   }
 
   #[test]
@@ -396,6 +517,22 @@ mod tests {
 
     assert!(matches!(
       check_extension_bound::<i64, i128, D, LB>(&poly),
+      Err(SpartanError::SmallValueOverflow { .. })
+    ));
+  }
+
+  #[test]
+  fn test_runtime_extension_bound_rejects_above_bound_i64() {
+    const D: usize = 2;
+    const LB: usize = 4;
+    let bound = max_extension_input_abs_for_rounds::<i64, i128, D>(LB);
+
+    assert!(matches!(
+      check_extension_bound_values_for_rounds::<i64, i128, D>(
+        [(bound + 1) as i64],
+        LB,
+        "runtime values",
+      ),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
   }
