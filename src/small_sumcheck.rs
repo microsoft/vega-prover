@@ -208,44 +208,18 @@ where
 
   // Continue with the remaining rounds using the standard eq instance seeded with the
   // accumulated prefix eq factor from the small-value rounds.
-  for round in l0..num_rounds {
-    let (_round_span, round_t) = start_span!("sumcheck_round", round = round);
-
-    let poly = {
-      let (_eval_span, eval_t) = start_span!("compute_eval_points");
-      let (eval_point_0, eval_point_2, eval_point_3) = eq_instance
-        .evaluation_points_cubic_with_three_inputs(&poly_A, &poly_B, &poly_C, claim_per_round);
-      if eval_t.elapsed().as_millis() > 0 {
-        info!(elapsed_ms = %eval_t.elapsed().as_millis(), "compute_eval_points");
-      }
-
-      let evals = [
-        eval_point_0,
-        claim_per_round - eval_point_0,
-        eval_point_2,
-        eval_point_3,
-      ];
-      UniPoly::from_evals(&evals)?
-    };
-
-    // Transcript interaction
-    transcript.absorb(b"p", &poly);
-    let r_i = transcript.squeeze(b"c")?;
-    r.push(r_i);
-    polys.push(poly.compress());
-
-    // Update claim
-    claim_per_round = poly.evaluate(&r_i);
-
-    // Bind polynomials and advance eq instance
-    let (_bind_span, bind_t) = start_span!("bind_poly_vars");
-    poly_A.bind_poly_var_top(&r_i);
-    poly_B.bind_poly_var_top(&r_i);
-    poly_C.bind_poly_var_top(&r_i);
-    eq_instance.bound(&r_i);
-    info!(elapsed_ms = %bind_t.elapsed().as_millis(), "bind_poly_vars");
-    info!(elapsed_ms = %round_t.elapsed().as_millis(), round = round, "sumcheck_round");
-  }
+  SumcheckProof::<E>::prove_cubic_with_three_inputs_from_eq_instance(
+    claim_per_round,
+    l0,
+    num_rounds - l0,
+    &mut eq_instance,
+    &mut poly_A,
+    &mut poly_B,
+    &mut poly_C,
+    transcript,
+    &mut r,
+    &mut polys,
+  )?;
 
   Ok((
     SumcheckProof {

@@ -509,15 +509,49 @@ impl<E: Engine> SumcheckProof<E> {
     poly_C: &mut MultilinearPolynomial<E::Scalar>,
     transcript: &mut E::TE,
   ) -> Result<(Self, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
-    let mut r: Vec<E::Scalar> = Vec::new();
-    let mut polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::new();
-    let mut claim_per_round = *claim;
-
     let num_rounds = taus.len();
-
+    let mut r: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
+    let mut polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::with_capacity(num_rounds);
     let mut eq_instance = eq_sumcheck::EqSumCheckInstance::<E>::new(&taus);
 
-    for round in 0..num_rounds {
+    Self::prove_cubic_with_three_inputs_from_eq_instance(
+      *claim,
+      0,
+      num_rounds,
+      &mut eq_instance,
+      poly_A,
+      poly_B,
+      poly_C,
+      transcript,
+      &mut r,
+      &mut polys,
+    )?;
+
+    Ok((
+      SumcheckProof {
+        compressed_polys: polys,
+      },
+      r,
+      vec![poly_A[0], poly_B[0], poly_C[0]],
+    ))
+  }
+
+  /// Continue cubic sumcheck rounds from an already-initialized equality instance.
+  #[allow(clippy::too_many_arguments)]
+  pub(crate) fn prove_cubic_with_three_inputs_from_eq_instance(
+    mut claim_per_round: E::Scalar,
+    round_offset: usize,
+    num_rounds: usize,
+    eq_instance: &mut eq_sumcheck::EqSumCheckInstance<E>,
+    poly_A: &mut MultilinearPolynomial<E::Scalar>,
+    poly_B: &mut MultilinearPolynomial<E::Scalar>,
+    poly_C: &mut MultilinearPolynomial<E::Scalar>,
+    transcript: &mut E::TE,
+    r: &mut Vec<E::Scalar>,
+    polys: &mut Vec<CompressedUniPoly<E::Scalar>>,
+  ) -> Result<E::Scalar, SpartanError> {
+    for local_round in 0..num_rounds {
+      let round = round_offset + local_round;
       let (_round_span, round_t) = start_span!("sumcheck_round", round = round);
 
       let poly = {
@@ -562,13 +596,7 @@ impl<E: Engine> SumcheckProof<E> {
       info!(elapsed_ms = %round_t.elapsed().as_millis(), round = round, "sumcheck_round");
     }
 
-    Ok((
-      SumcheckProof {
-        compressed_polys: polys,
-      },
-      r,
-      vec![poly_A[0], poly_B[0], poly_C[0]],
-    ))
+    Ok(claim_per_round)
   }
 
   /// Executes the **outer** cubic-with-additive-term sum-check in
