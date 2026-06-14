@@ -131,6 +131,7 @@ pub(crate) fn fold_layer_pair_into<F: Field>(
   layers[dest] = folded;
 }
 
+#[allow(dead_code)]
 pub(crate) fn fold_abc_pair_into<F: Field>(
   a_layers: &mut [Vec<F>],
   b_layers: &mut [Vec<F>],
@@ -183,6 +184,7 @@ pub(crate) fn compact_folded_layers_abc<F: Field>(
   compact_folded_layers(c_layers, prove_pairs);
 }
 
+#[allow(dead_code)]
 pub(crate) fn fold_final_abc_pairs<F: Field>(
   a_layers: &mut [Vec<F>],
   b_layers: &mut [Vec<F>],
@@ -324,6 +326,7 @@ where
     )
 }
 
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn continue_field_suffix<E>(
   a_layers: &mut Vec<Vec<E::Scalar>>,
@@ -547,7 +550,7 @@ where
   /// The caller subtracts the precomputed C_val contribution from e0_ab externally.
   #[inline(always)]
   #[allow(clippy::needless_range_loop)]
-  fn prove_helper_ab_only(
+  pub(crate) fn prove_helper_ab_only(
     (left, right): (usize, usize),
     e: &[E::Scalar],
     Az1: &[E::Scalar],
