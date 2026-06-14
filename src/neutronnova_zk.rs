@@ -29,7 +29,7 @@ use crate::{
     eq::EqPolynomial,
     multilinear::{MultilinearPolynomial, SparsePolynomial},
     power::PowPolynomial,
-    univariate::UniPoly,
+    univariate::{UniPoly, build_linear_times_quadratic_poly_from_claim},
   },
   r1cs::{
     R1CSInstance, R1CSShape, R1CSWitness, RelaxedR1CSInstance, SplitMultiRoundR1CSInstance,
@@ -97,21 +97,21 @@ pub(crate) fn generate_nifs_field_round_polynomial<F>(
 where
   F: PrimeField,
 {
-  let one_minus_rho = F::ONE - rho;
-  let two_rho_minus_one = rho - one_minus_rho;
-  let c = e0 * acc_eq;
-  let a = quad_coeff * acc_eq;
-  let rho_inv: Option<F> = rho.invert().into();
-  let a_b_c = (t_cur - c * one_minus_rho) * rho_inv.ok_or(SpartanError::DivisionByZero)?;
-  let b = a_b_c - a - c;
-  let new_a = a * two_rho_minus_one;
-  let new_b = b * two_rho_minus_one + a * one_minus_rho;
-  let new_c = c * two_rho_minus_one + b * one_minus_rho;
-  let new_d = c * one_minus_rho;
+  let linear_at_zero = F::ONE - rho;
+  let linear_at_one = rho;
+  let linear_at_infinity = rho - linear_at_zero;
+  let quadratic_at_zero = e0 * acc_eq;
+  let quadratic_at_infinity = quad_coeff * acc_eq;
 
-  Ok(UniPoly {
-    coeffs: vec![new_d, new_c, new_b, new_a],
-  })
+  build_linear_times_quadratic_poly_from_claim(
+    linear_at_zero,
+    linear_at_one,
+    linear_at_infinity,
+    t_cur,
+    quadratic_at_zero,
+    quadratic_at_infinity,
+  )
+  .ok_or(SpartanError::DivisionByZero)
 }
 
 pub(crate) fn fold_layer_pair_into<F: Field>(

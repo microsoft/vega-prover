@@ -1378,14 +1378,12 @@ pub(crate) mod eq_sumcheck {
       let l_0_p = eq_0 * p;
       let l_1_p = (eq_0 + eq_slope) * p; // = tau_i * eval_eq_left
 
-      // When tau=0, l(1)=0 and we can't invert
-      let l_1_p_inv: Option<E::Scalar> = l_1_p.invert().into();
-      let l_1_p_inv = l_1_p_inv?;
+      let t_1 = crate::polys::univariate::derive_quadratic_eval_at_one_from_claim(
+        l_0_p, l_1_p, claim, t_0,
+      )?;
 
-      // s(0) = l(0) * p * t(0)
       let s_0 = l_0_p * t_0;
       let s_1 = claim - s_0;
-      let t_1 = s_1 * l_1_p_inv;
 
       // Cubic coefficient of s: s_leading = eq_slope * p * t(inf)
       let s_leading = eq_slope * p * t_inf;

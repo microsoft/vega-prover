@@ -19,7 +19,7 @@ use crate::{
     process_nifs_round,
   },
   r1cs::{R1CSInstance, R1CSWitness, SplitMultiRoundR1CSShape, SplitR1CSShape, weights_from_r},
-  small_sumcheck::{SmallValueSumCheck, generate_univariate_sumcheck_polynomial},
+  small_sumcheck::{SmallValueSumCheck, generate_univariate_sumcheck_polynomial_from_accumulator},
   traits::{Engine, pcs::FoldingEngineTrait},
   zk::NeutronNovaVerifierCircuit,
 };
@@ -100,8 +100,12 @@ where
     let mut acc_eq = E::Scalar::ONE;
 
     for round in 0..LB {
-      let (poly, li) =
-        generate_univariate_sumcheck_polynomial(&small_value, round, rhos[round], t_cur)?;
+      let (poly, li) = generate_univariate_sumcheck_polynomial_from_accumulator(
+        &small_value,
+        round,
+        rhos[round],
+        t_cur,
+      )?;
       let r_i = process_nifs_round(vc, vc_state, vc_shape, vc_ck, transcript, round, &poly)?;
       t_cur = poly.evaluate(&r_i);
       acc_eq = li.eval_linear_at(r_i);

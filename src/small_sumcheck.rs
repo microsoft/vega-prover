@@ -34,7 +34,11 @@ use crate::{
     ReducedLagrangeDomainEvals, SMALL_VALUE_T_DEGREE, SmallValueExtensionBoundedPoly,
     build_accumulators_spartan,
   },
-  polys::{eq::EqPolynomial, multilinear::MultilinearPolynomial, univariate::UniPoly},
+  polys::{
+    eq::EqPolynomial,
+    multilinear::MultilinearPolynomial,
+    univariate::{UniPoly, build_linear_times_quadratic_poly_from_claim},
+  },
   start_span,
   sumcheck::{SumcheckProof, eq_sumcheck},
   traits::{Engine, transcript::TranscriptEngineTrait},
@@ -141,7 +145,7 @@ where
     let (_round_span, round_t) = start_span!("sumcheck_smallvalue_round", round = round);
 
     // Build round polynomial s_i(X) = ℓ_i(X) · t_i(X).
-    let (poly, li) = generate_univariate_sumcheck_polynomial(
+    let (poly, li) = generate_univariate_sumcheck_polynomial_from_accumulator(
       &small_value_sumcheck,
       round,
       taus[round],
@@ -273,52 +277,8 @@ impl<Scalar: PrimeField, const D: usize> SmallValueSumCheck<Scalar, D> {
   }
 }
 
-/// Derive `t_i(1)` from the sumcheck relation
-/// `claim_prev = ℓ_i(0) · t_i(0) + ℓ_i(1) · t_i(1)`.
-///
-/// Returns `None` when `ℓ_i(1) = 0`, since the optimized path cannot recover
-/// `t_i(1)` in that case.
-pub(crate) fn derive_t1<F: PrimeField>(l0: F, l1: F, claim_prev: F, t0: F) -> Option<F> {
-  let s0 = l0 * t0;
-  let s1 = claim_prev - s0;
-  l1.invert().into_option().map(|inv| s1 * inv)
-}
-
-/// Build the cubic round polynomial s_i(X) in coefficient form for Spartan.
-///
-/// Constructs s_i(X) = ℓ_i(X) · t_i(X) where:
-/// - ℓ_i(X) is the linear eq factor
-/// - t_i(X) is the degree-2 polynomial from accumulators
-pub(crate) fn build_univariate_round_polynomial<F: PrimeField>(
-  li: &LagrangeDomainEvals<F, 2>,
-  t0: F,
-  t1: F,
-  t_inf: F,
-) -> UniPoly<F> {
-  // Reconstruct t_i(X) = aX^2 + bX + c using:
-  // - a = t_i(∞) (leading coefficient for degree-2 polynomials)
-  // - c = t_i(0)
-  // - t_i(1) = a + b + c ⇒ b = t_i(1) − a − c
-  let a = t_inf;
-  let c = t0;
-  let b = t1 - a - c;
-
-  let linf = li.at_infinity();
-  let l0 = li.at_zero();
-
-  // Multiply s_i(X) = ℓ_i(X)·t_i(X) with ℓ_i(X)=ℓ_∞X+ℓ_0 and collect coefficients.
-  let s3 = linf * a;
-  let s2 = linf * b + l0 * a;
-  let s1 = linf * c + l0 * b;
-  let s0 = l0 * c;
-
-  UniPoly {
-    coeffs: vec![s0, s1, s2, s3],
-  }
-}
-
 /// Generate the cubic univariate sumcheck polynomial for one small-value round.
-pub(crate) fn generate_univariate_sumcheck_polynomial<F>(
+pub(crate) fn generate_univariate_sumcheck_polynomial_from_accumulator<F>(
   state: &SmallValueSumCheck<F, 2>,
   round: usize,
   rho: F,
@@ -331,9 +291,15 @@ where
   let t0 = t_all.at_zero();
   let t_inf = t_all.at_infinity();
   let li = state.eq_round_values(rho);
-  let t1 =
-    derive_t1(li.at_zero(), li.at_one(), t_cur, t0).ok_or(SpartanError::InvalidSumcheckProof)?;
-  let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
+  let poly = build_linear_times_quadratic_poly_from_claim(
+    li.at_zero(),
+    li.at_one(),
+    li.at_infinity(),
+    t_cur,
+    t0,
+    t_inf,
+  )
+  .ok_or(SpartanError::InvalidSumcheckProof)?;
 
   Ok((poly, li))
 }
@@ -490,7 +456,7 @@ mod tests {
   }
 
   #[test]
-  fn test_derive_t1_returns_value() {
+  fn test_derive_quadratic_eval_at_one_from_claim_returns_value() {
     let l0 = F::from(2u64);
     let l1 = F::from(5u64);
     let t0 = F::from(11u64);
@@ -500,17 +466,23 @@ mod tests {
     let s1 = claim - s0;
     let expected = s1 * l1.invert().unwrap();
 
-    assert_eq!(derive_t1(l0, l1, claim, t0), Some(expected));
+    assert_eq!(
+      crate::polys::univariate::derive_quadratic_eval_at_one_from_claim(l0, l1, claim, t0),
+      Some(expected)
+    );
   }
 
   #[test]
-  fn test_derive_t1_returns_none_on_zero_l1() {
+  fn test_derive_quadratic_eval_at_one_from_claim_returns_none_on_zero_l1() {
     let l0 = F::from(3u64);
     let l1 = F::ZERO;
     let t0 = F::from(4u64);
     let claim = F::from(10u64);
 
-    assert_eq!(derive_t1(l0, l1, claim, t0), None);
+    assert_eq!(
+      crate::polys::univariate::derive_quadratic_eval_at_one_from_claim(l0, l1, claim, t0),
+      None
+    );
   }
 
   /// Generic helper to test that SmallValueSumCheck produces the same polynomial
@@ -576,14 +548,13 @@ mod tests {
       let expected_eval_1 = claim - expected_eval_0; // s(0) + s(1) = claim
 
       // Build small-value polynomial
-      let li = small_value.eq_round_values(tau_round);
-      let t_all = small_value.eval_t_all_u(round);
-      let t_inf = t_all.at_infinity();
-      let t0 = t_all.at_zero();
-      let t1 = derive_t1(li.at_zero(), li.at_one(), claim, t0)
-        .expect("l1 should be non-zero for chosen taus");
-
-      let poly = build_univariate_round_polynomial(&li, t0, t1, t_inf);
+      let (poly, li) = generate_univariate_sumcheck_polynomial_from_accumulator(
+        &small_value,
+        round,
+        tau_round,
+        claim,
+      )
+      .expect("l1 should be non-zero for chosen taus");
 
       // Check all 4 evaluation points
       assert_eq!(
