@@ -15,6 +15,47 @@ use num_traits::{
   ToPrimitive, Zero,
 };
 
+/// Numeric operations needed to compute native extension/product bounds.
+pub(crate) trait ExtensionMagnitude:
+  Bounded
+  + CheckedDiv
+  + CheckedMul
+  + CheckedSub
+  + Copy
+  + FromPrimitive
+  + NumCast
+  + One
+  + PartialOrd
+  + Roots
+  + ToPrimitive
+  + Zero
+{
+}
+
+impl<T> ExtensionMagnitude for T where
+  T: Bounded
+    + CheckedDiv
+    + CheckedMul
+    + CheckedSub
+    + Copy
+    + FromPrimitive
+    + NumCast
+    + One
+    + PartialOrd
+    + Roots
+    + ToPrimitive
+    + Zero
+{
+}
+
+/// Product type that can report native small-value extension bound failures.
+pub(crate) trait ExtensionBoundProduct:
+  ExtensionMagnitude + CheckedNeg + Signed + Display
+{
+}
+
+impl<T> ExtensionBoundProduct for T where T: ExtensionMagnitude + CheckedNeg + Signed + Display {}
+
 /// Maximum positive magnitude representable by `T`, converted into `Magnitude`.
 #[inline]
 fn max_abs<T, Magnitude>() -> Option<Magnitude>
@@ -133,18 +174,7 @@ pub(crate) fn max_extension_input_abs_for_rounds<SV, Product, const D: usize>(
 ) -> Product
 where
   SV: SmallValue + Bounded + ToPrimitive,
-  Product: Bounded
-    + CheckedDiv
-    + CheckedMul
-    + CheckedSub
-    + Copy
-    + FromPrimitive
-    + NumCast
-    + One
-    + PartialOrd
-    + Roots
-    + ToPrimitive
-    + Zero,
+  Product: ExtensionMagnitude,
 {
   let Some(growth) =
     extension_step_growth::<Product, D>().and_then(|base| checked_pow(base, rounds))
@@ -171,18 +201,7 @@ where
 pub(crate) fn max_extension_input_abs<SV, Product, const D: usize, const LB: usize>() -> Product
 where
   SV: SmallValue + Bounded + ToPrimitive,
-  Product: Bounded
-    + CheckedDiv
-    + CheckedMul
-    + CheckedSub
-    + Copy
-    + FromPrimitive
-    + NumCast
-    + One
-    + PartialOrd
-    + Roots
-    + ToPrimitive
-    + Zero,
+  Product: ExtensionMagnitude,
 {
   max_extension_input_abs_for_rounds::<SV, Product, D>(LB)
 }
@@ -200,27 +219,13 @@ pub(crate) fn check_extension_bound_values_for_rounds<SV, Product, const D: usiz
 ) -> Result<(), SpartanError>
 where
   SV: SmallValue + Bounded + ToPrimitive,
-  Product: Bounded
-    + CheckedDiv
-    + CheckedMul
-    + CheckedNeg
-    + CheckedSub
-    + Copy
-    + FromPrimitive
-    + NumCast
-    + One
-    + PartialOrd
-    + Roots
-    + Signed
-    + ToPrimitive
-    + Zero
-    + Display,
+  Product: ExtensionBoundProduct,
 {
   let max_abs = max_extension_input_abs_for_rounds::<SV, Product, D>(rounds);
 
   if let Some(value) = values
     .into_iter()
-    .find(|&value| abs_as::<SV, Product>(value).map_or(true, |value_abs| value_abs > max_abs))
+    .find(|&value| abs_as::<SV, Product>(value).is_none_or(|value_abs| value_abs > max_abs))
   {
     return Err(SpartanError::SmallValueOverflow {
       value: abs_as::<SV, Product>(value).map_or_else(
@@ -242,21 +247,7 @@ pub(crate) fn check_extension_bound<SV, Product, const D: usize, const LB: usize
 ) -> Result<(), SpartanError>
 where
   SV: SmallValue + Bounded + ToPrimitive,
-  Product: Bounded
-    + CheckedDiv
-    + CheckedMul
-    + CheckedNeg
-    + CheckedSub
-    + Copy
-    + FromPrimitive
-    + NumCast
-    + One
-    + PartialOrd
-    + Roots
-    + Signed
-    + ToPrimitive
-    + Zero
-    + Display,
+  Product: ExtensionBoundProduct,
 {
   check_extension_bound_values_for_rounds::<SV, Product, D>(
     poly.Z.iter().copied(),
@@ -285,21 +276,7 @@ pub(crate) struct ExtensionBoundedPoly<'a, SV, Product, const D: usize, const LB
 impl<'a, SV, Product, const D: usize, const LB: usize> ExtensionBoundedPoly<'a, SV, Product, D, LB>
 where
   SV: SmallValue + Bounded + ToPrimitive,
-  Product: Bounded
-    + CheckedDiv
-    + CheckedMul
-    + CheckedNeg
-    + CheckedSub
-    + Copy
-    + FromPrimitive
-    + NumCast
-    + One
-    + PartialOrd
-    + Roots
-    + Signed
-    + ToPrimitive
-    + Zero
-    + Display,
+  Product: ExtensionBoundProduct,
 {
   /// Construct a certificate for native Lagrange extension and pairwise product.
   ///

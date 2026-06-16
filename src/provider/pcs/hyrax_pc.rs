@@ -23,8 +23,6 @@ use crate::{
 use core::marker::PhantomData;
 use ff::{Field, PrimeField};
 use num_integer::div_ceil;
-#[cfg(test)]
-use rand::{SeedableRng, rngs::StdRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -32,33 +30,6 @@ use tracing::info;
 use crate::big_num::delayed_reduction::DelayedReduction;
 use crate::big_num::montgomery::MontgomeryLimbs;
 use crate::provider::msm::{AffineGroupElement, FixedBaseMul, vartime_scalar_mul};
-
-#[cfg(test)]
-thread_local! {
-  static TEST_BLIND_RNG: std::cell::RefCell<Option<StdRng>> = std::cell::RefCell::new(None);
-}
-
-#[cfg(test)]
-pub(crate) fn with_test_blind_seed<R>(seed: [u8; 32], f: impl FnOnce() -> R) -> R {
-  TEST_BLIND_RNG.with(|cell| {
-    let previous = cell.replace(Some(StdRng::from_seed(seed)));
-    let result = f();
-    let _ = cell.replace(previous);
-    result
-  })
-}
-
-#[cfg(test)]
-fn fill_test_blind_bytes(buf: &mut [u8]) -> bool {
-  TEST_BLIND_RNG.with(|cell| {
-    if let Some(rng) = cell.borrow_mut().as_mut() {
-      rand::RngCore::fill_bytes(rng, buf);
-      true
-    } else {
-      false
-    }
-  })
-}
 
 /// Bind polynomial top variables using delayed reduction for Montgomery multiply.
 /// Avoids per-product REDC, reducing multiply cost by ~50%.
@@ -220,18 +191,12 @@ where
 
   fn blind(ck: &Self::CommitmentKey, n: usize) -> Self::Blind {
     use crate::traits::PrimeFieldExt;
+    let mut rng = rand::thread_rng();
     let num_rows = div_ceil(n, ck.num_cols);
 
     // Bulk random generation: fill all bytes at once, then reduce mod p
     let mut buf = vec![0u8; num_rows * 64];
-    #[cfg(test)]
-    let filled = fill_test_blind_bytes(&mut buf);
-    #[cfg(not(test))]
-    let filled = false;
-    if !filled {
-      let mut rng = rand::thread_rng();
-      rand::RngCore::fill_bytes(&mut rng, &mut buf);
-    }
+    rand::RngCore::fill_bytes(&mut rng, &mut buf);
     HyraxBlind {
       blind: (0..num_rows)
         .map(|i| E::Scalar::from_uniform(&buf[i * 64..(i + 1) * 64]))

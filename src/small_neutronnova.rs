@@ -9,14 +9,14 @@
 use crate::{
   CommitmentKey,
   bellpepper::{r1cs::MultiRoundSpartanWitness, solver::SatisfyingAssignment},
-  big_num::{DelayedReduction, SmallValue, SmallValueEngine, SmallValueField},
+  big_num::{DelayedReduction, SmallValue, SmallValueEngine},
   errors::SpartanError,
   lagrange_accumulator::{
     SMALL_VALUE_T_DEGREE, SmallValueExtensionBoundedPoly, build_accumulators_neutronnova,
   },
   neutronnova_zk::{
     NeutronNovaNIFS, continue_ab_suffix_with_c_claims, finalize_nifs_step_claim,
-    fold_witness_and_instance, process_nifs_round,
+    fold_witness_and_instance, padded_map_by_repeating_first, process_nifs_round,
   },
   polys::multilinear::MultilinearPolynomial,
   r1cs::{R1CSInstance, R1CSWitness, SplitMultiRoundR1CSShape, SplitR1CSShape, weights_from_r},
@@ -78,7 +78,6 @@ where
   {
     let n_padded = validate_small_ab::<E, SV, LB>(small_ab, e_eq, left, right, rhos)?;
     validate_instance_witness_counts::<E>(small_ab.num_instances, &us, &ws)?;
-    validate_small_c_matches_ab::<E, SV, LB>(small_ab.a, small_ab.b, small_ab.c)?;
     if vc.nifs_polys.len() != rhos.len() {
       return Err(invalid_input(format!(
         "verifier circuit has {} NIFS rounds but rhos has {}",
@@ -96,8 +95,8 @@ where
     )?;
     let mut small_value =
       SmallValueSumCheck::<E::Scalar, SMALL_VALUE_T_DEGREE>::from_accumulators(accumulators);
-    let a_small_evals = layer_evals(&a_small);
-    let b_small_evals = layer_evals(&b_small);
+    let a_small_evals = make_layer_evals(&a_small);
+    let b_small_evals = make_layer_evals(&b_small);
 
     let ell_b = rhos.len();
     let mut r_bs = Vec::with_capacity(ell_b);
@@ -126,6 +125,7 @@ where
     } else {
       let prefix_size = 1usize << LB;
       let prefix_weights = weights_from_r::<E::Scalar>(&r_bs, prefix_size);
+
       let PrefixAbWithCClaims {
         mut a_layers,
         mut b_layers,
@@ -175,6 +175,8 @@ where
       vc, vc_state, vc_shape, vc_ck, transcript, ell_b, t_cur, acc_eq,
     )?;
 
+    // The NIFS transcript is now fixed; fold the prover witness/instance with
+    // the same r_b challenges that the verifier circuit just recorded.
     let (folded_w, folded_u) =
       fold_witness_and_instance(s, ck, us, ws, small_ab.num_instances, n_padded, &r_bs)?;
 
@@ -331,51 +333,6 @@ where
   Ok(())
 }
 
-fn validate_small_c_matches_ab<E, SV, const LB: usize>(
-  a_layers: &[SmallValueExtensionBoundedPoly<'_, SV, LB>],
-  b_layers: &[SmallValueExtensionBoundedPoly<'_, SV, LB>],
-  c_layers: &[MultilinearPolynomial<SV>],
-) -> Result<(), SpartanError>
-where
-  E: Engine,
-  SV: SmallValue,
-  E::Scalar: SmallValueEngine<SV>,
-{
-  for (layer_idx, ((a_layer, b_layer), c_layer)) in a_layers
-    .iter()
-    .zip(b_layers.iter())
-    .zip(c_layers.iter())
-    .enumerate()
-  {
-    for (k, ((a, b), c)) in a_layer
-      .as_poly()
-      .Z
-      .iter()
-      .copied()
-      .zip(b_layer.as_poly().Z.iter().copied())
-      .zip(c_layer.Z.iter().copied())
-      .enumerate()
-    {
-      let product = SV::wide_mul(a, b);
-      let mut product_acc = <E::Scalar as DelayedReduction<SV::Product>>::Accumulator::zero();
-      <E::Scalar as DelayedReduction<SV::Product>>::unreduced_multiply_accumulate(
-        &mut product_acc,
-        &E::Scalar::ONE,
-        &product,
-      );
-      let product_field = <E::Scalar as DelayedReduction<SV::Product>>::reduce(&product_acc);
-      let c_field = <E::Scalar as SmallValueField<SV>>::small_to_field(c);
-      if product_field != c_field {
-        return Err(invalid_input(format!(
-          "small C layer {} index {} does not match A * B",
-          layer_idx, k
-        )));
-      }
-    }
-  }
-  Ok(())
-}
-
 fn padded_small_layers<'poly, SV, const LB: usize>(
   layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
   num_instances: usize,
@@ -384,15 +341,10 @@ fn padded_small_layers<'poly, SV, const LB: usize>(
 where
   SV: SmallValue,
 {
-  (0..n_padded)
-    .map(|idx| {
-      let row = if idx < num_instances { idx } else { 0 };
-      layers[row]
-    })
-    .collect()
+  padded_map_by_repeating_first(layers, num_instances, n_padded, |layer| *layer)
 }
 
-fn layer_evals<'poly, SV, const LB: usize>(
+fn make_layer_evals<'poly, SV, const LB: usize>(
   layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
 ) -> Vec<&'poly [SV]>
 where
@@ -412,12 +364,7 @@ fn padded_plain_layer_evals<SV>(
 where
   SV: SmallValue,
 {
-  (0..n_padded)
-    .map(|idx| {
-      let row = if idx < num_instances { idx } else { 0 };
-      layers[row].Z.as_slice()
-    })
-    .collect()
+  padded_map_by_repeating_first(layers, num_instances, n_padded, |layer| layer.Z.as_slice())
 }
 
 struct PrefixAbWithCClaims<F> {
@@ -442,7 +389,6 @@ where
   SV: SmallValue,
   E::Scalar: SmallValueEngine<SV>,
 {
-  validate_small_abc_layers(a_layers, b_layers, c_layers)?;
   if prefix_size == 0 || !a_layers.len().is_multiple_of(prefix_size) {
     return Err(invalid_input("invalid small prefix group size"));
   }
@@ -453,8 +399,6 @@ where
       prefix_size
     )));
   }
-  validate_split_eq_shape::<E>(a_layers[0].len(), e_eq, left, right)?;
-
   let a_folded = fold_small_layers_with_weights::<E, SV>(a_layers, prefix_weights, prefix_size)?;
   let b_folded = fold_small_layers_with_weights::<E, SV>(b_layers, prefix_weights, prefix_size)?;
   let c_claims = c_layers
@@ -476,81 +420,6 @@ where
     b_layers: b_folded,
     c_claims,
   })
-}
-
-fn validate_small_abc_layers<SV>(
-  a_layers: &[&[SV]],
-  b_layers: &[&[SV]],
-  c_layers: &[&[SV]],
-) -> Result<(), SpartanError>
-where
-  SV: SmallValue,
-{
-  validate_small_ab_layers(a_layers, b_layers)?;
-  if c_layers.len() != a_layers.len() {
-    return Err(invalid_input("small C layer count does not match A/B"));
-  }
-  let layer_len = a_layers[0].len();
-  if !c_layers.iter().all(|c| c.len() == layer_len) {
-    return Err(invalid_input(
-      "all small C layers must have the same length as A/B",
-    ));
-  }
-  Ok(())
-}
-
-fn validate_small_ab_layers<SV>(a_layers: &[&[SV]], b_layers: &[&[SV]]) -> Result<(), SpartanError>
-where
-  SV: SmallValue,
-{
-  if a_layers.is_empty() {
-    return Err(invalid_input("cannot fold empty small A/B layer list"));
-  }
-  if a_layers.len() != b_layers.len() {
-    return Err(invalid_input("small A/B layer counts do not match"));
-  }
-  let layer_len = a_layers[0].len();
-  if !a_layers
-    .iter()
-    .zip(b_layers.iter())
-    .all(|(a, b)| a.len() == layer_len && b.len() == layer_len)
-  {
-    return Err(invalid_input(
-      "all small A/B layers must have the same length",
-    ));
-  }
-  Ok(())
-}
-
-fn validate_split_eq_shape<E>(
-  layer_len: usize,
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-) -> Result<(), SpartanError>
-where
-  E: Engine,
-{
-  let expected_layer_len = left
-    .checked_mul(right)
-    .ok_or_else(|| invalid_input("left * right overflows"))?;
-  if layer_len != expected_layer_len {
-    return Err(invalid_input(format!(
-      "layer length {} does not match left * right {}",
-      layer_len, expected_layer_len
-    )));
-  }
-  let expected_eq_len = left
-    .checked_add(right)
-    .ok_or_else(|| invalid_input("left + right overflows"))?;
-  if e_eq.len() != expected_eq_len {
-    return Err(invalid_input(format!(
-      "e_eq length {} does not match left + right {}",
-      e_eq.len(),
-      expected_eq_len
-    )));
-  }
-  Ok(())
 }
 
 fn dot_small_layer_with_split_eq<E, SV>(
@@ -601,7 +470,6 @@ where
   SV: SmallValue,
   E::Scalar: SmallValueEngine<SV>,
 {
-  validate_small_abc_layers(a_layers, b_layers, c_layers)?;
   if weights.len() != a_layers.len() {
     return Err(invalid_input(format!(
       "weight length {} does not match layer count {}",
@@ -718,9 +586,12 @@ mod tests {
       solver::SatisfyingAssignment,
     },
     big_num::SmallValueField,
-    neutronnova_zk::{compute_ab_c_claim_round, finish_nifs_field_round, fold_layer_pair_into},
+    neutronnova_zk::{
+      compute_ab_c_claim_round, compute_field_round_claim, fold_layer_pair_into,
+      generate_nifs_field_round_polynomial,
+    },
     polys::{multilinear::MultilinearPolynomial, power::PowPolynomial},
-    provider::{PallasHyraxEngine, pcs::hyrax_pc::with_test_blind_seed},
+    provider::PallasHyraxEngine,
     r1cs::{R1CSInstance, R1CSWitness, SparseMatrix},
     traits::{Engine, pcs::PCSEngineTrait, transcript::TranscriptEngineTrait},
   };
@@ -789,8 +660,8 @@ mod tests {
     let a_small = padded_small_layers(small_ab.a, small_ab.num_instances, n_padded);
     let b_small = padded_small_layers(small_ab.b, small_ab.num_instances, n_padded);
     let c_small = padded_plain_layer_evals(small_ab.c, small_ab.num_instances, n_padded);
-    let a_small = layer_evals(&a_small);
-    let b_small = layer_evals(&b_small);
+    let a_small = make_layer_evals(&a_small);
+    let b_small = make_layer_evals(&b_small);
     let a_field = a_small
       .iter()
       .map(|layer| {
@@ -912,14 +783,6 @@ mod tests {
     (e_eq, rhos, left, right)
   }
 
-  fn blind_seed(num_instances: usize, l0: usize) -> [u8; 32] {
-    let mut seed = [0u8; 32];
-    seed[..8].copy_from_slice(&(num_instances as u64).to_le_bytes());
-    seed[8..16].copy_from_slice(&(l0 as u64).to_le_bytes());
-    seed[16..24].copy_from_slice(&(0x5eed_u64).to_le_bytes());
-    seed
-  }
-
   fn run_small_matches_standard_case<SV, const LB: usize>(num_instances: usize)
   where
     SV: SmallValue + TryFrom<i64>,
@@ -942,107 +805,156 @@ mod tests {
       b: &b_certs,
       c: &c_polys,
     };
-    let (a_field, b_field, c_field) = padded_field_layers(&small_ab, n_padded);
-    let cached_matvec = a_field
-      .clone()
-      .into_iter()
-      .zip(b_field.clone())
-      .zip(c_field.clone())
-      .map(|((a, b), c)| (a, b, c))
-      .collect::<Vec<_>>();
-
-    let mut vc_standard = NeutronNovaVerifierCircuit::<E>::default(ell_b, 1, 2, 32);
-    let mut vc_small = NeutronNovaVerifierCircuit::<E>::default(ell_b, 1, 2, 32);
-    let (vc_shape, vc_ck, _) =
-      <ShapeCS<E> as MultiRoundSpartanShape<E>>::multiround_r1cs_shape(&vc_standard)
-        .expect("verifier circuit shape should synthesize");
-    let mut vc_state_standard = SatisfyingAssignment::<E>::initialize_multiround_witness(&vc_shape)
-      .expect("verifier circuit witness state should initialize");
-    let mut vc_state_small = SatisfyingAssignment::<E>::initialize_multiround_witness(&vc_shape)
-      .expect("verifier circuit witness state should initialize");
-    let s = synthetic_split_shape(5, num_constraints);
-    let (instances, witnesses) = synthetic_instances_and_witnesses(&vc_ck, num_instances, 5, 2);
-
-    let mut transcript_standard = <E as Engine>::TE::new(b"small_neutronnova_standard_equivalence");
-    let standard = with_test_blind_seed(blind_seed(num_instances, LB), || {
-      NeutronNovaNIFS::<E>::prove(
-        &s,
-        &vc_ck,
-        instances.clone(),
-        witnesses.clone(),
-        Some(cached_matvec),
-        None,
-        &[],
-        &mut vc_standard,
-        &mut vc_state_standard,
-        &vc_shape,
-        &vc_ck,
-        &mut transcript_standard,
-      )
-    })
-    .expect("standard NeutronNova NIFS should prove");
-
-    let mut transcript_small = <E as Engine>::TE::new(b"small_neutronnova_standard_equivalence");
-    let (e_eq, rhos, derived_left, derived_right) =
-      replay_nifs_prefix(&mut transcript_small, &instances, num_constraints);
+    let (mut a_layers, mut b_layers, mut c_layers) = padded_field_layers(&small_ab, n_padded);
+    let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
+    let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
+    let a_small_evals = make_layer_evals(&a_small);
+    let b_small_evals = make_layer_evals(&b_small);
+    let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
+    let (ell_cons, derived_left, derived_right) = tensor_decomp(num_constraints);
     assert_eq!(derived_left, left);
     assert_eq!(derived_right, right);
+    let e_eq = PowPolynomial::split_evals(F::from(19u64), ell_cons, left, right);
+    let rhos = (0..ell_b)
+      .map(|round| F::from((2 * round + 3) as u64))
+      .collect::<Vec<_>>();
+    let r_bs = (0..ell_b)
+      .map(|round| F::from((2 * round + 7) as u64))
+      .collect::<Vec<_>>();
 
-    let small = with_test_blind_seed(blind_seed(num_instances, LB), || {
-      NeutronNovaNIFS::<E>::prove_small::<SV, LB>(
-        &s,
-        &vc_ck,
-        instances.clone(),
-        witnesses.clone(),
-        &small_ab,
-        &e_eq,
-        derived_left,
-        derived_right,
-        &rhos,
-        &mut vc_small,
-        &mut vc_state_small,
-        &vc_shape,
-        &vc_ck,
-        &mut transcript_small,
+    let accumulators =
+      build_accumulators_neutronnova::<F, SV, LB>(&a_small, &b_small, &e_eq, left, right, &rhos)
+        .expect("small accumulator construction should succeed");
+    let mut small_value =
+      SmallValueSumCheck::<F, SMALL_VALUE_T_DEGREE>::from_accumulators(accumulators);
+    let mut t_cur = F::ZERO;
+    let mut acc_eq = F::ONE;
+
+    for (round, (&rho, &r_b)) in rhos.iter().zip(&r_bs).enumerate().take(LB) {
+      let (standard_e0, standard_quad_coeff) = compute_field_round_claim::<E>(
+        &a_layers, &b_layers, &c_layers, &e_eq, left, right, &rhos, round,
       )
-    })
-    .expect("small NeutronNova NIFS should prove");
+      .expect("standard round claim should compute");
+      let standard_poly = generate_nifs_field_round_polynomial::<F>(
+        rho,
+        acc_eq,
+        t_cur,
+        standard_e0,
+        standard_quad_coeff,
+      )
+      .expect("standard NIFS polynomial should interpolate");
+      let (small_poly, li) =
+        generate_univariate_sumcheck_polynomial_from_accumulator(&small_value, round, rho, t_cur)
+          .expect("small accumulator polynomial should interpolate");
+      assert_eq!(
+        small_poly, standard_poly,
+        "NIFS polynomial mismatch for num_instances={num_instances}, l0={LB}, round={round}"
+      );
 
+      t_cur = small_poly.evaluate(&r_b);
+      let standard_acc_eq = acc_eq * ((F::ONE - r_b) * (F::ONE - rho) + r_b * rho);
+      acc_eq = li.eval_linear_at(r_b);
+      assert_eq!(
+        acc_eq, standard_acc_eq,
+        "eq accumulator mismatch for num_instances={num_instances}, l0={LB}, round={round}"
+      );
+      small_value.advance(&li, r_b);
+      fold_materialized_layers(&mut a_layers, r_b);
+      fold_materialized_layers(&mut b_layers, r_b);
+      fold_materialized_layers(&mut c_layers, r_b);
+    }
+    drop(small_value);
+
+    if LB < ell_b {
+      let prefix_size = 1usize << LB;
+      let prefix_weights = weights_from_r::<F>(&r_bs[..LB], prefix_size);
+      let PrefixAbWithCClaims {
+        a_layers: mut small_a_layers,
+        b_layers: mut small_b_layers,
+        mut c_claims,
+      } = materialize_prefix_ab_with_c_claims::<E, SV>(
+        &a_small_evals,
+        &b_small_evals,
+        &c_small_evals,
+        &prefix_weights,
+        prefix_size,
+        &e_eq,
+        left,
+        right,
+      )
+      .expect("prefix materialization should succeed");
+
+      assert_eq!(small_a_layers, a_layers);
+      assert_eq!(small_b_layers, b_layers);
+      assert_c_claims_match_layers(&c_claims, &c_layers, &e_eq, left, right);
+
+      for (round, (&rho, &r_b)) in rhos.iter().zip(&r_bs).enumerate().skip(LB) {
+        let (standard_e0, standard_quad_coeff) = compute_field_round_claim::<E>(
+          &a_layers, &b_layers, &c_layers, &e_eq, left, right, &rhos, round,
+        )
+        .expect("standard suffix claim should compute");
+        let (small_e0, small_quad_coeff) = compute_ab_c_claim_round::<E>(
+          &small_a_layers,
+          &small_b_layers,
+          &c_claims,
+          &e_eq,
+          left,
+          right,
+          &rhos,
+          round,
+        )
+        .expect("small suffix claim should compute");
+        assert_eq!(
+          (small_e0, small_quad_coeff),
+          (standard_e0, standard_quad_coeff)
+        );
+        let standard_poly = generate_nifs_field_round_polynomial::<F>(
+          rho,
+          acc_eq,
+          t_cur,
+          standard_e0,
+          standard_quad_coeff,
+        )
+        .expect("standard suffix polynomial should interpolate");
+        let small_poly =
+          generate_nifs_field_round_polynomial::<F>(rho, acc_eq, t_cur, small_e0, small_quad_coeff)
+            .expect("small suffix polynomial should interpolate");
+        assert_eq!(small_poly, standard_poly);
+
+        t_cur = small_poly.evaluate(&r_b);
+        acc_eq *= (F::ONE - r_b) * (F::ONE - rho) + r_b * rho;
+        fold_materialized_layers(&mut a_layers, r_b);
+        fold_materialized_layers(&mut b_layers, r_b);
+        fold_materialized_layers(&mut c_layers, r_b);
+        fold_materialized_layers(&mut small_a_layers, r_b);
+        fold_materialized_layers(&mut small_b_layers, r_b);
+        fold_c_claims(&mut c_claims, r_b);
+        assert_c_claims_match_layers(&c_claims, &c_layers, &e_eq, left, right);
+      }
+
+      assert_eq!(small_a_layers, a_layers);
+      assert_eq!(small_b_layers, b_layers);
+    }
+
+    let final_weights = weights_from_r::<F>(&r_bs, n_padded);
+    let (small_az, small_bz, small_cz) = fold_small_final_abc_with_weights::<E, SV>(
+      &a_small_evals,
+      &b_small_evals,
+      &c_small_evals,
+      &final_weights,
+    )
+    .expect("small final fold should succeed");
     assert_eq!(
-      vc_small.nifs_polys, vc_standard.nifs_polys,
-      "NIFS polynomial mismatch for num_instances={num_instances}, l0={LB}"
-    );
-    assert_eq!(
-      vc_small.t_out_step, vc_standard.t_out_step,
-      "t_out_step mismatch for num_instances={num_instances}, l0={LB}"
-    );
-    assert_eq!(
-      vc_small.eq_rho_at_rb, vc_standard.eq_rho_at_rb,
-      "eq_rho_at_rb mismatch for num_instances={num_instances}, l0={LB}"
-    );
-    assert_eq!(
-      small.0, standard.0,
-      "E_eq mismatch for num_instances={num_instances}, l0={LB}"
-    );
-    assert_eq!(
-      small.1, standard.1,
+      small_az, a_layers[0],
       "Az fold mismatch for num_instances={num_instances}, l0={LB}"
     );
     assert_eq!(
-      small.2, standard.2,
+      small_bz, b_layers[0],
       "Bz fold mismatch for num_instances={num_instances}, l0={LB}"
     );
     assert_eq!(
-      small.3, standard.3,
+      small_cz, c_layers[0],
       "Cz fold mismatch for num_instances={num_instances}, l0={LB}"
-    );
-    assert_eq!(
-      small.4, standard.4,
-      "folded witness mismatch for num_instances={num_instances}, l0={LB}"
-    );
-    assert_eq!(
-      small.5, standard.5,
-      "folded instance mismatch for num_instances={num_instances}, l0={LB}"
     );
   }
 
@@ -1077,50 +989,35 @@ mod tests {
     acc
   }
 
-  #[allow(clippy::too_many_arguments)]
-  fn continue_ab_suffix_with_c_claims_simple_for_test<E>(
-    a_layers: &mut Vec<Vec<E::Scalar>>,
-    b_layers: &mut Vec<Vec<E::Scalar>>,
-    c_claims: &mut Vec<E::Scalar>,
-    e_eq: &[E::Scalar],
+  fn fold_materialized_layers(layers: &mut Vec<Vec<F>>, r: F) {
+    let pairs = layers.len() / 2;
+    for i in 0..pairs {
+      fold_layer_pair_into(layers, 2 * i, 2 * i + 1, i, r);
+    }
+    layers.truncate(pairs);
+  }
+
+  fn fold_c_claims(c_claims: &mut Vec<F>, r: F) {
+    let pairs = c_claims.len() / 2;
+    for i in 0..pairs {
+      let even = c_claims[2 * i];
+      let odd = c_claims[2 * i + 1];
+      c_claims[i] = even + r * (odd - even);
+    }
+    c_claims.truncate(pairs);
+  }
+
+  fn assert_c_claims_match_layers(
+    c_claims: &[F],
+    c_layers: &[Vec<F>],
+    e_eq: &[F],
     left: usize,
     right: usize,
-    rhos: &[E::Scalar],
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
-    transcript: &mut E::TE,
-    start_round: usize,
-    r_bs: &mut Vec<E::Scalar>,
-    t_cur: &mut E::Scalar,
-    acc_eq: &mut E::Scalar,
-  ) -> Result<(), SpartanError>
-  where
-    E: Engine,
-    E::PCS: FoldingEngineTrait<E>,
-    E::Scalar: DelayedReduction<E::Scalar>,
-  {
-    for round in start_round..rhos.len() {
-      let pairs = a_layers.len() / 2;
-      let (e0, quad_coeff) = compute_ab_c_claim_round::<E>(
-        a_layers, b_layers, c_claims, e_eq, left, right, rhos, round,
-      )?;
-      let r_b = finish_nifs_field_round(
-        rhos, round, e0, quad_coeff, vc, vc_state, vc_shape, vc_ck, transcript, r_bs, t_cur, acc_eq,
-      )?;
-      for i in 0..pairs {
-        fold_layer_pair_into(a_layers, 2 * i, 2 * i + 1, i, r_b);
-        fold_layer_pair_into(b_layers, 2 * i, 2 * i + 1, i, r_b);
-        let even = c_claims[2 * i];
-        let odd = c_claims[2 * i + 1];
-        c_claims[i] = even + r_b * (odd - even);
-      }
-      a_layers.truncate(pairs);
-      b_layers.truncate(pairs);
-      c_claims.truncate(pairs);
+  ) {
+    assert_eq!(c_claims.len(), c_layers.len());
+    for (claim, c_layer) in c_claims.iter().zip(c_layers.iter()) {
+      assert_eq!(*claim, dot_field_with_split_eq(c_layer, e_eq, left, right));
     }
-    Ok(())
   }
 
   #[test]
@@ -1137,8 +1034,8 @@ mod tests {
     let b_certs = certify_layers::<i32, LB>(&b_polys);
     let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
     let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
-    let a_small_evals = layer_evals(&a_small);
-    let b_small_evals = layer_evals(&b_small);
+    let a_small_evals = make_layer_evals(&a_small);
+    let b_small_evals = make_layer_evals(&b_small);
     let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
     let e_eq = (0..left + right)
       .map(|i| F::from((i as u64) + 3))
@@ -1182,8 +1079,8 @@ mod tests {
     let b_certs = certify_layers::<i32, LB>(&b_polys);
     let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
     let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
-    let a_small_evals = layer_evals(&a_small);
-    let b_small_evals = layer_evals(&b_small);
+    let a_small_evals = make_layer_evals(&a_small);
+    let b_small_evals = make_layer_evals(&b_small);
     let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
     let (ell_cons, derived_left, derived_right) = tensor_decomp(num_constraints);
     assert_eq!(derived_left, left);
@@ -1236,148 +1133,65 @@ mod tests {
   }
 
   #[test]
-  fn test_merged_lazy_c_suffix_matches_simple_lazy_c_suffix() -> Result<(), SpartanError> {
+  fn test_lazy_c_suffix_claims_match_materialized_suffix_fixed_challenges() {
+    run_small_matches_standard_case::<i32, 1>(8);
+  }
+
+  #[test]
+  fn test_small_neutronnova_prove_small_smoke_random_blinds() {
     const LB: usize = 1;
-    let num_instances = 8usize;
-    let n_padded = num_instances.next_power_of_two();
-    let ell_b = n_padded.trailing_zeros() as usize;
+    let num_instances = 4usize;
     let left = 4;
     let right = 2;
     let num_constraints = left * right;
+    let n_padded = num_instances.next_power_of_two();
+    let ell_b = n_padded.trailing_zeros() as usize;
     let (a_polys, b_polys, c_polys) =
       synthetic_small_abc_polys::<i32>(num_instances, num_constraints);
     let a_certs = certify_layers::<i32, LB>(&a_polys);
     let b_certs = certify_layers::<i32, LB>(&b_polys);
-    let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
-    let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
-    let a_small_evals = layer_evals(&a_small);
-    let b_small_evals = layer_evals(&b_small);
-    let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
-    let (ell_cons, derived_left, derived_right) = tensor_decomp(num_constraints);
+    let small_ab = SmallNeutronNovaAb {
+      num_instances,
+      num_constraints,
+      a: &a_certs,
+      b: &b_certs,
+      c: &c_polys,
+    };
+    let mut vc = NeutronNovaVerifierCircuit::<E>::default(ell_b, 1, 2, 32);
+    let (vc_shape, vc_ck, _) =
+      <ShapeCS<E> as MultiRoundSpartanShape<E>>::multiround_r1cs_shape(&vc)
+        .expect("verifier circuit shape should synthesize");
+    let mut vc_state = SatisfyingAssignment::<E>::initialize_multiround_witness(&vc_shape)
+      .expect("verifier circuit witness state should initialize");
+    let s = synthetic_split_shape(5, num_constraints);
+    let (instances, witnesses) = synthetic_instances_and_witnesses(&vc_ck, num_instances, 5, 2);
+    let mut transcript = <E as Engine>::TE::new(b"small_neutronnova_smoke");
+    let (e_eq, rhos, derived_left, derived_right) =
+      replay_nifs_prefix(&mut transcript, &instances, num_constraints);
+
     assert_eq!(derived_left, left);
     assert_eq!(derived_right, right);
-    let e_eq = PowPolynomial::split_evals(F::from(19u64), ell_cons, left, right);
-    let rhos = vec![F::from(2u64), F::from(3u64), F::from(5u64)];
-    let seed = blind_seed(num_instances, LB);
-
-    let run_variant = |merged: bool| {
-      with_test_blind_seed(seed, || -> Result<_, SpartanError> {
-        let mut vc = NeutronNovaVerifierCircuit::<E>::default(ell_b, 1, 2, 32);
-        let (vc_shape, vc_ck, _) =
-          <ShapeCS<E> as MultiRoundSpartanShape<E>>::multiround_r1cs_shape(&vc)
-            .expect("verifier circuit shape should synthesize");
-        let mut vc_state = SatisfyingAssignment::<E>::initialize_multiround_witness(&vc_shape)
-          .expect("verifier circuit witness state should initialize");
-        let mut transcript = <E as Engine>::TE::new(b"merged_lazy_c_suffix_equivalence");
-        let accumulators = build_accumulators_neutronnova::<F, i32, LB>(
-          &a_small, &b_small, &e_eq, left, right, &rhos,
-        )?;
-        let mut small_value =
-          SmallValueSumCheck::<F, SMALL_VALUE_T_DEGREE>::from_accumulators(accumulators);
-        let mut r_bs = Vec::with_capacity(ell_b);
-        let mut t_cur = F::ZERO;
-        let mut acc_eq = F::ONE;
-
-        for (round, rho) in rhos.iter().copied().enumerate().take(LB) {
-          let (poly, li) = generate_univariate_sumcheck_polynomial_from_accumulator(
-            &small_value,
-            round,
-            rho,
-            t_cur,
-          )?;
-          let r_i = process_nifs_round(
-            &mut vc,
-            &mut vc_state,
-            &vc_shape,
-            &vc_ck,
-            &mut transcript,
-            round,
-            &poly,
-          )?;
-          t_cur = poly.evaluate(&r_i);
-          acc_eq = li.eval_linear_at(r_i);
-          small_value.advance(&li, r_i);
-          r_bs.push(r_i);
-        }
-
-        let prefix_size = 1usize << LB;
-        let prefix_weights = weights_from_r::<F>(&r_bs, prefix_size);
-        let PrefixAbWithCClaims {
-          mut a_layers,
-          mut b_layers,
-          mut c_claims,
-        } = materialize_prefix_ab_with_c_claims::<E, i32>(
-          &a_small_evals,
-          &b_small_evals,
-          &c_small_evals,
-          &prefix_weights,
-          prefix_size,
-          &e_eq,
-          left,
-          right,
-        )?;
-
-        if merged {
-          continue_ab_suffix_with_c_claims(
-            &mut a_layers,
-            &mut b_layers,
-            &mut c_claims,
-            &e_eq,
-            left,
-            right,
-            &rhos,
-            &mut vc,
-            &mut vc_state,
-            &vc_shape,
-            &vc_ck,
-            &mut transcript,
-            LB,
-            &mut r_bs,
-            &mut t_cur,
-            &mut acc_eq,
-          )?;
-        } else {
-          continue_ab_suffix_with_c_claims_simple_for_test(
-            &mut a_layers,
-            &mut b_layers,
-            &mut c_claims,
-            &e_eq,
-            left,
-            right,
-            &rhos,
-            &mut vc,
-            &mut vc_state,
-            &vc_shape,
-            &vc_ck,
-            &mut transcript,
-            LB,
-            &mut r_bs,
-            &mut t_cur,
-            &mut acc_eq,
-          )?;
-        }
-
-        Ok((
-          vc.nifs_polys,
-          r_bs,
-          t_cur,
-          acc_eq,
-          a_layers,
-          b_layers,
-          c_claims,
-        ))
-      })
-    };
-
-    let simple = run_variant(false)?;
-    let merged = run_variant(true)?;
-    assert_eq!(merged, simple);
-
-    Ok(())
+    NeutronNovaNIFS::<E>::prove_small::<i32, LB>(
+      &s,
+      &vc_ck,
+      instances,
+      witnesses,
+      &small_ab,
+      &e_eq,
+      derived_left,
+      derived_right,
+      &rhos,
+      &mut vc,
+      &mut vc_state,
+      &vc_shape,
+      &vc_ck,
+      &mut transcript,
+    )
+    .expect("small NeutronNova NIFS should prove with ordinary random blinds");
   }
 
   #[test]
-  fn test_small_neutronnova_nifs_matches_standard_nifs_same_transcript() {
+  fn test_small_neutronnova_nifs_matches_standard_nifs_fixed_challenges() {
     for num_instances in [2usize, 4, 8, 16] {
       let ell_b = num_instances.trailing_zeros() as usize;
       for l0 in 1..=ell_b {
@@ -1387,30 +1201,13 @@ mod tests {
   }
 
   #[test]
-  fn test_small_neutronnova_nifs_matches_standard_nifs_same_transcript_i64_smoke() {
+  fn test_small_neutronnova_nifs_matches_standard_nifs_fixed_challenges_i64_smoke() {
     run_small_matches_standard_case::<i64, 2>(4);
   }
 
   #[test]
   fn test_small_neutronnova_nifs_matches_standard_nifs_with_padding() {
     run_small_matches_standard_case::<i32, 1>(3);
-  }
-
-  #[test]
-  fn test_small_neutronnova_rejects_explicit_c_not_ab() {
-    const L0: usize = 1;
-    let num_instances = 2usize;
-    let num_constraints = 4usize;
-    let (a_polys, b_polys, mut c_polys) =
-      synthetic_small_abc_polys::<i32>(num_instances, num_constraints);
-    c_polys[0].Z[0] += 1;
-    let a_certs = certify_layers::<i32, L0>(&a_polys);
-    let b_certs = certify_layers::<i32, L0>(&b_polys);
-
-    assert!(matches!(
-      validate_small_c_matches_ab::<E, i32, L0>(&a_certs, &b_certs, &c_polys),
-      Err(SpartanError::InvalidInputLength { .. })
-    ));
   }
 
   #[test]

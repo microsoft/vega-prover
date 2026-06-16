@@ -71,12 +71,7 @@ pub struct NeutronNovaNIFS<E: Engine> {
 
 #[inline(always)]
 #[allow(clippy::needless_range_loop)]
-pub(crate) fn suffix_weight_full<F: Field>(
-  t: usize,
-  ell_b: usize,
-  pair_idx: usize,
-  rhos: &[F],
-) -> F {
+fn suffix_weight_full<F: Field>(t: usize, ell_b: usize, pair_idx: usize, rhos: &[F]) -> F {
   let mut w = F::ONE;
   let mut k = pair_idx;
   for s in (t + 1)..ell_b {
@@ -87,715 +82,25 @@ pub(crate) fn suffix_weight_full<F: Field>(
   w
 }
 
-pub(crate) fn generate_nifs_field_round_polynomial<F>(
-  rho: F,
-  acc_eq: F,
-  t_cur: F,
-  e0: F,
-  quad_coeff: F,
-) -> Result<UniPoly<F>, SpartanError>
-where
-  F: PrimeField,
-{
-  let linear_at_zero = F::ONE - rho;
-  let linear_at_one = rho;
-  let linear_at_infinity = rho - linear_at_zero;
-  let quadratic_at_zero = e0 * acc_eq;
-  let quadratic_at_infinity = quad_coeff * acc_eq;
-
-  build_linear_times_quadratic_poly_from_claim(
-    linear_at_zero,
-    linear_at_one,
-    linear_at_infinity,
-    t_cur,
-    quadratic_at_zero,
-    quadratic_at_infinity,
-  )
-  .ok_or(SpartanError::DivisionByZero)
-}
-
-pub(crate) fn fold_layer_pair_into<F: Field>(
-  layers: &mut [Vec<F>],
-  src_even: usize,
-  src_odd: usize,
-  dest: usize,
-  r: F,
-) {
-  let even = std::mem::take(&mut layers[src_even]);
-  let odd = &layers[src_odd];
-  let mut folded = even;
-  folded
-    .iter_mut()
-    .zip(odd.iter())
-    .for_each(|(lo, hi)| *lo += r * (*hi - *lo));
-  layers[dest] = folded;
-}
-
-pub(crate) fn fold_abc_pair_into<F: Field>(
-  a_layers: &mut [Vec<F>],
-  b_layers: &mut [Vec<F>],
-  c_layers: &mut [Vec<F>],
-  src_even: usize,
-  src_odd: usize,
-  dest: usize,
-  r: F,
-) {
-  fold_layer_pair_into(a_layers, src_even, src_odd, dest, r);
-  fold_layer_pair_into(b_layers, src_even, src_odd, dest, r);
-  fold_layer_pair_into(c_layers, src_even, src_odd, dest, r);
-}
-
-pub(crate) fn fold_quad_chunk<F: Field>(chunk: &mut [Vec<F>], r: F) {
-  {
-    let (lo, hi) = chunk.split_at_mut(1);
-    lo[0]
-      .iter_mut()
-      .zip(hi[0].iter())
-      .for_each(|(l, h)| *l += r * (*h - *l));
-  }
-  {
-    let (lo, hi) = chunk.split_at_mut(3);
-    lo[2]
-      .iter_mut()
-      .zip(hi[0].iter())
-      .for_each(|(l, h)| *l += r * (*h - *l));
+fn extend_with_first_clones<T: Clone>(values: &mut Vec<T>, additional: usize) {
+  if additional > 0 {
+    values.extend(std::iter::repeat_n(values[0].clone(), additional));
   }
 }
 
-pub(crate) fn compact_folded_layers<F>(layers: &mut [Vec<F>], prove_pairs: usize) {
-  for j in 0..prove_pairs {
-    layers.swap(2 * j, 4 * j);
-    layers.swap(2 * j + 1, 4 * j + 2);
-  }
-}
-
-pub(crate) fn compact_folded_layers_abc<F: Field>(
-  a_layers: &mut [Vec<F>],
-  b_layers: &mut [Vec<F>],
-  c_layers: &mut [Vec<F>],
-  prove_pairs: usize,
-) {
-  compact_folded_layers(a_layers, prove_pairs);
-  compact_folded_layers(b_layers, prove_pairs);
-  compact_folded_layers(c_layers, prove_pairs);
-}
-
-fn invalid_input(reason: impl Into<String>) -> SpartanError {
-  SpartanError::InvalidInputLength {
-    reason: reason.into(),
-  }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn process_nifs_round<E>(
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
-  transcript: &mut E::TE,
-  round: usize,
-  poly: &UniPoly<E::Scalar>,
-) -> Result<E::Scalar, SpartanError>
-where
-  E: Engine,
-{
-  let coeffs = &poly.coeffs;
-  vc.nifs_polys[round] = [coeffs[0], coeffs[1], coeffs[2], coeffs[3]];
-
-  let chals =
-    SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, round, transcript)?;
-  chals
-    .first()
-    .copied()
-    .ok_or_else(|| SpartanError::InternalError {
-      reason: format!("NeutronNova NIFS round {} produced no challenge", round),
-    })
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn finish_nifs_field_round<E>(
-  rhos: &[E::Scalar],
-  round: usize,
-  e0: E::Scalar,
-  quad_coeff: E::Scalar,
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
-  transcript: &mut E::TE,
-  r_bs: &mut Vec<E::Scalar>,
-  t_cur: &mut E::Scalar,
-  acc_eq: &mut E::Scalar,
-) -> Result<E::Scalar, SpartanError>
-where
-  E: Engine,
-{
-  let rho = rhos[round];
-  let poly = generate_nifs_field_round_polynomial(rho, *acc_eq, *t_cur, e0, quad_coeff)?;
-  let r_b = process_nifs_round(vc, vc_state, vc_shape, vc_ck, transcript, round, &poly)?;
-  *t_cur = poly.evaluate(&r_b);
-  *acc_eq *= (E::Scalar::ONE - r_b) * (E::Scalar::ONE - rho) + r_b * rho;
-  r_bs.push(r_b);
-  Ok(r_b)
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn finalize_nifs_step_claim<E>(
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
-  transcript: &mut E::TE,
-  final_round: usize,
-  t_cur: E::Scalar,
-  acc_eq: E::Scalar,
-) -> Result<(), SpartanError>
-where
-  E: Engine,
-{
-  let acc_eq_inv: Option<E::Scalar> = acc_eq.invert().into();
-  vc.t_out_step = t_cur * acc_eq_inv.ok_or(SpartanError::DivisionByZero)?;
-  vc.eq_rho_at_rb = acc_eq;
-  let _ = SatisfyingAssignment::<E>::process_round(
-    vc_state,
-    vc_shape,
-    vc_ck,
-    vc,
-    final_round,
-    transcript,
-  )?;
-  Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn compute_field_round_claim<E>(
-  a_layers: &[Vec<E::Scalar>],
-  b_layers: &[Vec<E::Scalar>],
-  c_layers: &[Vec<E::Scalar>],
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-  rhos: &[E::Scalar],
-  round: usize,
-) -> Result<(E::Scalar, E::Scalar), SpartanError>
-where
-  E: Engine,
-  E::PCS: FoldingEngineTrait<E>,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  let shape = NifsRoundShape {
-    e_eq,
-    left,
-    right,
-    rhos,
-    round,
-  };
-  validate_materialized_c_round_inputs(shape, a_layers, b_layers, c_layers)?;
-  Ok(compute_weighted_round_claims::<E, _, _>(
-    a_layers,
-    b_layers,
-    c_layers,
-    rhos,
-    round,
-    |pair_a, pair_b, pair_c| {
-      let (e0, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper(
-        round,
-        (left, right),
-        e_eq,
-        &pair_a[0],
-        &pair_b[0],
-        &pair_c[0],
-        &pair_a[1],
-        &pair_b[1],
-      );
-      (e0, quad_coeff)
-    },
-  ))
-}
-
-#[derive(Clone, Copy)]
-struct NifsRoundShape<'a, F> {
-  e_eq: &'a [F],
-  left: usize,
-  right: usize,
-  rhos: &'a [F],
-  round: usize,
-}
-
-impl<F> NifsRoundShape<'_, F>
-where
-  F: Field,
-{
-  fn expected_layer_len(self) -> Result<usize, SpartanError> {
-    if self.round >= self.rhos.len() {
-      return Err(invalid_input(format!(
-        "round {} is out of range for {} rho challenges",
-        self.round,
-        self.rhos.len()
-      )));
-    }
-
-    let expected_len = self
-      .left
-      .checked_mul(self.right)
-      .ok_or_else(|| invalid_input("left * right overflows"))?;
-    let expected_eq_len = self
-      .left
-      .checked_add(self.right)
-      .ok_or_else(|| invalid_input("left + right overflows"))?;
-    if self.e_eq.len() != expected_eq_len {
-      return Err(invalid_input(format!(
-        "E_eq length {} does not match left + right {}",
-        self.e_eq.len(),
-        expected_eq_len
-      )));
-    }
-
-    Ok(expected_len)
-  }
-}
-
-fn validate_layer_family<F>(
-  label: &str,
-  layers: &[Vec<F>],
-  expected_len: usize,
-) -> Result<(), SpartanError> {
-  if !layers.iter().all(|layer| layer.len() == expected_len) {
-    return Err(invalid_input(format!(
-      "all {} layers must have length {}",
-      label, expected_len
-    )));
-  }
-  Ok(())
-}
-
-fn validate_materialized_c_round_inputs<F>(
-  shape: NifsRoundShape<'_, F>,
-  a_layers: &[Vec<F>],
-  b_layers: &[Vec<F>],
-  c_layers: &[Vec<F>],
-) -> Result<(), SpartanError>
-where
-  F: Field,
-{
-  if a_layers.len() != b_layers.len() || a_layers.len() != c_layers.len() {
-    return Err(invalid_input("A/B/C layer counts do not match"));
-  }
-  if a_layers.is_empty() || !a_layers.len().is_multiple_of(2) {
-    return Err(invalid_input(
-      "round claim layer count must be non-empty and even",
-    ));
-  }
-  let expected_len = shape.expected_layer_len()?;
-  validate_layer_family("A", a_layers, expected_len)?;
-  validate_layer_family("B", b_layers, expected_len)?;
-  validate_layer_family("C", c_layers, expected_len)?;
-  Ok(())
-}
-
-fn validate_scalar_c_fold_inputs<F>(
-  a_layers: &[Vec<F>],
-  b_layers: &[Vec<F>],
-  c_claims: &[F],
-) -> Result<(), SpartanError> {
-  if a_layers.len() != b_layers.len() || a_layers.len() != c_claims.len() {
-    return Err(invalid_input("A/B layer and C-claim counts do not match"));
-  }
-  if a_layers.is_empty() || !a_layers.len().is_multiple_of(2) {
-    return Err(invalid_input(
-      "suffix layer count must be non-empty and even",
-    ));
-  }
-  Ok(())
-}
-
-fn validate_scalar_c_round_inputs<F>(
-  shape: NifsRoundShape<'_, F>,
-  a_layers: &[Vec<F>],
-  b_layers: &[Vec<F>],
-  c_claims: &[F],
-) -> Result<(), SpartanError>
-where
-  F: Field,
-{
-  validate_scalar_c_fold_inputs(a_layers, b_layers, c_claims)?;
-  let expected_len = shape.expected_layer_len()?;
-  validate_layer_family("A", a_layers, expected_len)?;
-  validate_layer_family("B", b_layers, expected_len)?;
-  Ok(())
-}
-
-fn compute_weighted_round_claims<E, C, ClaimFn>(
-  a_layers: &[Vec<E::Scalar>],
-  b_layers: &[Vec<E::Scalar>],
-  c_data: &[C],
-  rhos: &[E::Scalar],
-  round: usize,
-  claim_for_pair: ClaimFn,
-) -> (E::Scalar, E::Scalar)
-where
-  E: Engine,
-  C: Sync,
-  ClaimFn: Fn(&[Vec<E::Scalar>], &[Vec<E::Scalar>], &[C]) -> (E::Scalar, E::Scalar) + Sync,
-{
-  let ell_b = rhos.len();
-  a_layers
-    .par_chunks(2)
-    .zip(b_layers.par_chunks(2))
-    .zip(c_data.par_chunks(2))
-    .enumerate()
-    .map(|(pair_idx, ((pair_a, pair_b), pair_c))| {
-      let (e0, quad_coeff) = claim_for_pair(pair_a, pair_b, pair_c);
-      let w = suffix_weight_full::<E::Scalar>(round, ell_b, pair_idx, rhos);
-      (e0 * w, quad_coeff * w)
-    })
-    .reduce(
-      || (E::Scalar::ZERO, E::Scalar::ZERO),
-      |a, b| (a.0 + b.0, a.1 + b.1),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
 #[cfg(test)]
-pub(crate) fn compute_ab_c_claim_round<E>(
-  a_layers: &[Vec<E::Scalar>],
-  b_layers: &[Vec<E::Scalar>],
-  c_claims: &[E::Scalar],
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-  rhos: &[E::Scalar],
-  round: usize,
-) -> Result<(E::Scalar, E::Scalar), SpartanError>
-where
-  E: Engine,
-  E::PCS: FoldingEngineTrait<E>,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  let shape = NifsRoundShape {
-    e_eq,
-    left,
-    right,
-    rhos,
-    round,
-  };
-  validate_scalar_c_round_inputs(shape, a_layers, b_layers, c_claims)?;
-
-  Ok(compute_weighted_round_claims::<E, _, _>(
-    a_layers,
-    b_layers,
-    c_claims,
-    rhos,
-    round,
-    |pair_a, pair_b, pair_c| {
-      let (e0_ab, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper_ab_only(
-        (left, right),
-        e_eq,
-        &pair_a[0],
-        &pair_b[0],
-        &pair_a[1],
-        &pair_b[1],
-      );
-      let e0 = e0_ab - pair_c[0];
-      (e0, quad_coeff)
-    },
-  ))
-}
-
-fn fold_ab_c_claim_pairs<E>(
-  a_layers: &mut [Vec<E::Scalar>],
-  b_layers: &mut [Vec<E::Scalar>],
-  c_claims: &mut [E::Scalar],
-  pairs: usize,
-  r: E::Scalar,
-) where
-  E: Engine,
-{
-  for i in 0..pairs {
-    fold_layer_pair_into(a_layers, 2 * i, 2 * i + 1, i, r);
-    fold_layer_pair_into(b_layers, 2 * i, 2 * i + 1, i, r);
-    fold_c_claim_pair_into(c_claims, 2 * i, 2 * i + 1, i, r);
-  }
-}
-
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) fn continue_ab_suffix_with_c_claims<E>(
-  a_layers: &mut Vec<Vec<E::Scalar>>,
-  b_layers: &mut Vec<Vec<E::Scalar>>,
-  c_claims: &mut Vec<E::Scalar>,
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-  rhos: &[E::Scalar],
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
-  transcript: &mut E::TE,
-  start_round: usize,
-  r_bs: &mut Vec<E::Scalar>,
-  t_cur: &mut E::Scalar,
-  acc_eq: &mut E::Scalar,
-) -> Result<(), SpartanError>
-where
-  E: Engine,
-  E::PCS: FoldingEngineTrait<E>,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  if start_round >= rhos.len() {
-    return Ok(());
-  }
-
-  let (e0, quad_coeff) = compute_ab_c_claim_round::<E>(
-    a_layers,
-    b_layers,
-    c_claims,
-    e_eq,
-    left,
-    right,
-    rhos,
-    start_round,
-  )?;
-  let pending_r_b = finish_nifs_field_round(
-    rhos,
-    start_round,
-    e0,
-    quad_coeff,
-    vc,
-    vc_state,
-    vc_shape,
-    vc_ck,
-    transcript,
-    r_bs,
-    t_cur,
-    acc_eq,
-  )?;
-
-  continue_ab_suffix_with_c_claims_from_pending(
-    a_layers,
-    b_layers,
-    c_claims,
-    e_eq,
-    left,
-    right,
-    rhos,
-    vc,
-    vc_state,
-    vc_shape,
-    vc_ck,
-    transcript,
-    start_round + 1,
-    pending_r_b,
-    r_bs,
-    t_cur,
-    acc_eq,
-  )
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn continue_ab_suffix_with_c_claims_from_pending<E>(
-  a_layers: &mut Vec<Vec<E::Scalar>>,
-  b_layers: &mut Vec<Vec<E::Scalar>>,
-  c_claims: &mut Vec<E::Scalar>,
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-  rhos: &[E::Scalar],
-  vc: &mut NeutronNovaVerifierCircuit<E>,
-  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
-  vc_shape: &SplitMultiRoundR1CSShape<E>,
-  vc_ck: &CommitmentKey<E>,
-  transcript: &mut E::TE,
-  start_round: usize,
-  mut pending_r_b: E::Scalar,
-  r_bs: &mut Vec<E::Scalar>,
-  t_cur: &mut E::Scalar,
-  acc_eq: &mut E::Scalar,
-) -> Result<(), SpartanError>
-where
-  E: Engine,
-  E::PCS: FoldingEngineTrait<E>,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  let mut layer_count = a_layers.len();
-  for round in start_round..rhos.len() {
-    let shape = NifsRoundShape {
-      e_eq,
-      left,
-      right,
-      rhos,
-      round,
-    };
-    validate_scalar_c_round_inputs(shape, a_layers, b_layers, c_claims)?;
-    let fold_pairs = layer_count / 2;
-    let prove_pairs = fold_pairs / 2;
-    if prove_pairs == 0 || 4 * prove_pairs != layer_count {
-      return Err(invalid_input(
-        "merged suffix round requires layer count divisible by 4",
-      ));
-    }
-
-    let (a_head, _) = a_layers.split_at_mut(4 * prove_pairs);
-    let (b_head, _) = b_layers.split_at_mut(4 * prove_pairs);
-    let c_head = &mut c_claims[..4 * prove_pairs];
-
-    let (e0, quad_coeff) = a_head
-      .par_chunks_mut(4)
-      .zip(b_head.par_chunks_mut(4))
-      .zip(c_head.par_chunks_mut(4))
-      .enumerate()
-      .map(|(pair_idx, ((a_chunk, b_chunk), c_chunk))| {
-        fold_quad_chunk(a_chunk, pending_r_b);
-        fold_quad_chunk(b_chunk, pending_r_b);
-        fold_quad_c_claim_chunk(c_chunk, pending_r_b);
-
-        let (e0_ab, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper_ab_only(
-          (left, right),
-          e_eq,
-          &a_chunk[0],
-          &b_chunk[0],
-          &a_chunk[2],
-          &b_chunk[2],
-        );
-        let e0 = e0_ab - c_chunk[0];
-        let w = suffix_weight_full::<E::Scalar>(round, rhos.len(), pair_idx, rhos);
-        (e0 * w, quad_coeff * w)
-      })
-      .reduce(
-        || (E::Scalar::ZERO, E::Scalar::ZERO),
-        |a, b| (a.0 + b.0, a.1 + b.1),
-      );
-
-    compact_folded_layers(a_layers, prove_pairs);
-    compact_folded_layers(b_layers, prove_pairs);
-    compact_c_claims(c_claims, prove_pairs);
-    a_layers.truncate(fold_pairs);
-    b_layers.truncate(fold_pairs);
-    c_claims.truncate(fold_pairs);
-    layer_count = fold_pairs;
-
-    pending_r_b = finish_nifs_field_round(
-      rhos, round, e0, quad_coeff, vc, vc_state, vc_shape, vc_ck, transcript, r_bs, t_cur, acc_eq,
-    )?;
-  }
-
-  validate_scalar_c_fold_inputs(a_layers, b_layers, c_claims)?;
-  let final_pairs = layer_count / 2;
-  fold_ab_c_claim_pairs::<E>(a_layers, b_layers, c_claims, final_pairs, pending_r_b);
-  a_layers.truncate(final_pairs);
-  b_layers.truncate(final_pairs);
-  c_claims.truncate(final_pairs);
-
-  Ok(())
-}
-
-fn fold_quad_c_claim_chunk<F: Field>(chunk: &mut [F], r: F) {
-  chunk[0] += r * (chunk[1] - chunk[0]);
-  chunk[2] += r * (chunk[3] - chunk[2]);
-}
-
-fn compact_c_claims<F>(claims: &mut [F], prove_pairs: usize) {
-  for j in 0..prove_pairs {
-    claims.swap(2 * j, 4 * j);
-    claims.swap(2 * j + 1, 4 * j + 2);
-  }
-}
-
-fn fold_c_claim_pair_into<F: Field>(
-  c_claims: &mut [F],
-  src_even: usize,
-  src_odd: usize,
-  dest: usize,
-  r: F,
-) {
-  let even = c_claims[src_even];
-  let odd = c_claims[src_odd];
-  c_claims[dest] = even + r * (odd - even);
-}
-
-pub(crate) fn fold_witness_and_instance<E>(
-  s: &SplitR1CSShape<E>,
-  ck: &CommitmentKey<E>,
-  mut us: Vec<R1CSInstance<E>>,
-  mut ws: Vec<R1CSWitness<E>>,
-  num_instances: usize,
-  n_padded: usize,
-  r_bs: &[E::Scalar],
-) -> Result<(R1CSWitness<E>, R1CSInstance<E>), SpartanError>
-where
-  E: Engine,
-  E::PCS: FoldingEngineTrait<E>,
-{
-  if us.len() != num_instances {
-    return Err(invalid_input(format!(
-      "instance count {} does not match expected count {}",
-      us.len(),
-      num_instances
-    )));
-  }
-  if ws.len() != num_instances {
-    return Err(invalid_input(format!(
-      "witness count {} does not match expected count {}",
-      ws.len(),
-      num_instances
-    )));
-  }
-  if us.is_empty() {
-    return Err(invalid_input("cannot fold empty instance list"));
-  }
-
-  if us.len() < n_padded {
-    us.extend(vec![us[0].clone(); n_padded - us.len()]);
-    ws.extend(vec![ws[0].clone(); n_padded - ws.len()]);
-  }
-
-  let effective_len = s.num_shared + s.num_precommitted;
-  let use_truncated_fold = effective_len > 0;
-  if use_truncated_fold {
-    for w in ws.iter_mut() {
-      w.W.truncate(effective_len);
-    }
-  }
-
-  let (_fold_final_span, fold_final_t) = start_span!("fold_witnesses");
-  let mut folded_w = R1CSWitness::fold_multiple(r_bs, &ws)?;
-  if use_truncated_fold {
-    let full_dim = s.num_shared + s.num_precommitted + s.num_rest;
-    folded_w.W.resize(full_dim, E::Scalar::ZERO);
-  }
-  info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_witnesses");
-
-  let (_fold_final_span, fold_final_t) = start_span!("fold_instances");
-  let weights = weights_from_r::<E::Scalar>(r_bs, us.len());
-  let x_len = us[0].X.len();
-  let mut folded_x = vec![E::Scalar::ZERO; x_len];
-  for (weight, instance) in weights.iter().zip(us.iter()) {
-    for (acc, value) in folded_x.iter_mut().zip(instance.X.iter()) {
-      *acc += *weight * *value;
-    }
-  }
-
-  let comms = us
-    .iter()
-    .map(|instance| instance.comm_W.clone())
-    .collect::<Vec<_>>();
-  let folded_comm = if use_truncated_fold {
-    let num_data_rows = (s.num_shared + s.num_precommitted).div_ceil(DEFAULT_COMMITMENT_WIDTH);
-    <E::PCS as FoldingEngineTrait<E>>::fold_commitments_partial(
-      &comms,
-      &weights,
-      num_data_rows,
-      &folded_w.r_W,
-      ck,
-    )?
-  } else {
-    <E::PCS as FoldingEngineTrait<E>>::fold_commitments(&comms, &weights)?
-  };
-  let folded_u = R1CSInstance::<E>::new_unchecked(folded_comm, folded_x)?;
-  info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_instances");
-
-  Ok((folded_w, folded_u))
+pub(crate) fn padded_map_by_repeating_first<'a, T, U>(
+  values: &'a [T],
+  num_values: usize,
+  padded_len: usize,
+  mut map_value: impl FnMut(&'a T) -> U,
+) -> Vec<U> {
+  (0..padded_len)
+    .map(|idx| {
+      let row = if idx < num_values { idx } else { 0 };
+      map_value(&values[row])
+    })
+    .collect()
 }
 
 impl<E: Engine> NeutronNovaNIFS<E>
@@ -1227,8 +532,9 @@ where
     let mut Us = Us;
     let mut Ws = Ws;
     if Us.len() < n_padded {
-      Us.extend(vec![Us[0].clone(); n_padded - n]);
-      Ws.extend(vec![Ws[0].clone(); n_padded - n]);
+      let additional = n_padded - n;
+      extend_with_first_clones(&mut Us, additional);
+      extend_with_first_clones(&mut Ws, additional);
     }
     for U in Us.iter() {
       transcript.absorb(b"U", U);
@@ -1438,17 +744,7 @@ where
         if has_i64 {
           fold_ab_c_claim_pairs::<E>(&mut A_layers, &mut B_layers, &mut c_claims, pairs, r_b);
         } else {
-          for i in 0..pairs {
-            fold_abc_pair_into(
-              &mut A_layers,
-              &mut B_layers,
-              &mut C_layers,
-              2 * i,
-              2 * i + 1,
-              i,
-              r_b,
-            );
-          }
+          fold_abc_pairs(&mut A_layers, &mut B_layers, &mut C_layers, pairs, r_b);
         }
         if has_i64 {
           c_claims.truncate(pairs);
@@ -1544,11 +840,13 @@ where
           compact_folded_layers(&mut B_layers, prove_pairs);
           compact_c_claims(&mut c_claims, prove_pairs);
         }
-        for i in (2 * prove_pairs)..fold_pairs {
-          fold_layer_pair_into(&mut A_layers, 2 * i, 2 * i + 1, i, prev_r_b);
-          fold_layer_pair_into(&mut B_layers, 2 * i, 2 * i + 1, i, prev_r_b);
-          fold_c_claim_pair_into(&mut c_claims, 2 * i, 2 * i + 1, i, prev_r_b);
-        }
+        fold_ab_c_claim_pairs_in_range::<E>(
+          &mut A_layers,
+          &mut B_layers,
+          &mut c_claims,
+          (2 * prove_pairs)..fold_pairs,
+          prev_r_b,
+        );
         A_layers.truncate(fold_pairs);
         B_layers.truncate(fold_pairs);
         c_claims.truncate(fold_pairs);
@@ -1627,17 +925,13 @@ where
 
           compact_folded_layers_abc(&mut A_layers, &mut B_layers, &mut C_layers, prove_pairs);
 
-          for i in (2 * prove_pairs)..fold_pairs {
-            fold_abc_pair_into(
-              &mut A_layers,
-              &mut B_layers,
-              &mut C_layers,
-              2 * i,
-              2 * i + 1,
-              i,
-              prev_r_b,
-            );
-          }
+          fold_abc_pairs_in_range(
+            &mut A_layers,
+            &mut B_layers,
+            &mut C_layers,
+            (2 * prove_pairs)..fold_pairs,
+            prev_r_b,
+          );
 
           A_layers.truncate(fold_pairs);
           B_layers.truncate(fold_pairs);
@@ -1660,17 +954,13 @@ where
         }
 
         let final_pairs = m / 2;
-        for i in 0..final_pairs {
-          fold_abc_pair_into(
-            &mut A_layers,
-            &mut B_layers,
-            &mut C_layers,
-            2 * i,
-            2 * i + 1,
-            i,
-            prev_r_b,
-          );
-        }
+        fold_abc_pairs(
+          &mut A_layers,
+          &mut B_layers,
+          &mut C_layers,
+          final_pairs,
+          prev_r_b,
+        );
         A_layers.truncate(final_pairs);
         B_layers.truncate(final_pairs);
         C_layers.truncate(final_pairs);
@@ -1729,6 +1019,762 @@ where
       folded_U,
     ))
   }
+}
+
+/// Build the cubic NIFS round polynomial from the current claim and round claims.
+pub(crate) fn generate_nifs_field_round_polynomial<F>(
+  rho: F,
+  acc_eq: F,
+  t_cur: F,
+  e0: F,
+  quad_coeff: F,
+) -> Result<UniPoly<F>, SpartanError>
+where
+  F: PrimeField,
+{
+  let linear_at_zero = F::ONE - rho;
+  let linear_at_one = rho;
+  let linear_at_infinity = rho - linear_at_zero;
+  // Scale the pairwise round claims by the eq accumulator from previous rounds.
+  let quadratic_at_zero = e0 * acc_eq;
+  let quadratic_at_infinity = quad_coeff * acc_eq;
+
+  build_linear_times_quadratic_poly_from_claim(
+    linear_at_zero,
+    linear_at_one,
+    linear_at_infinity,
+    t_cur,
+    quadratic_at_zero,
+    quadratic_at_infinity,
+  )
+  .ok_or(SpartanError::DivisionByZero)
+}
+
+pub(crate) fn fold_layer_pair_into<F: Field>(
+  layers: &mut [Vec<F>],
+  src_even: usize,
+  src_odd: usize,
+  dest: usize,
+  r: F,
+) {
+  let even = std::mem::take(&mut layers[src_even]);
+  let odd = &layers[src_odd];
+  let mut folded = even;
+  folded
+    .iter_mut()
+    .zip(odd.iter())
+    .for_each(|(lo, hi)| *lo += r * (*hi - *lo));
+  layers[dest] = folded;
+}
+
+pub(crate) fn fold_abc_pair_into<F: Field>(
+  a_layers: &mut [Vec<F>],
+  b_layers: &mut [Vec<F>],
+  c_layers: &mut [Vec<F>],
+  src_even: usize,
+  src_odd: usize,
+  dest: usize,
+  r: F,
+) {
+  fold_layer_pair_into(a_layers, src_even, src_odd, dest, r);
+  fold_layer_pair_into(b_layers, src_even, src_odd, dest, r);
+  fold_layer_pair_into(c_layers, src_even, src_odd, dest, r);
+}
+
+fn fold_abc_pairs<F: Field>(
+  a_layers: &mut [Vec<F>],
+  b_layers: &mut [Vec<F>],
+  c_layers: &mut [Vec<F>],
+  pairs: usize,
+  r: F,
+) {
+  fold_abc_pairs_in_range(a_layers, b_layers, c_layers, 0..pairs, r);
+}
+
+fn fold_abc_pairs_in_range<F: Field>(
+  a_layers: &mut [Vec<F>],
+  b_layers: &mut [Vec<F>],
+  c_layers: &mut [Vec<F>],
+  pair_range: std::ops::Range<usize>,
+  r: F,
+) {
+  for i in pair_range {
+    fold_abc_pair_into(a_layers, b_layers, c_layers, 2 * i, 2 * i + 1, i, r);
+  }
+}
+
+pub(crate) fn fold_quad_chunk<F: Field>(chunk: &mut [Vec<F>], r: F) {
+  {
+    let (lo, hi) = chunk.split_at_mut(1);
+    lo[0]
+      .iter_mut()
+      .zip(hi[0].iter())
+      .for_each(|(l, h)| *l += r * (*h - *l));
+  }
+  {
+    let (lo, hi) = chunk.split_at_mut(3);
+    lo[2]
+      .iter_mut()
+      .zip(hi[0].iter())
+      .for_each(|(l, h)| *l += r * (*h - *l));
+  }
+}
+
+pub(crate) fn compact_folded_layers<F>(layers: &mut [Vec<F>], prove_pairs: usize) {
+  for j in 0..prove_pairs {
+    layers.swap(2 * j, 4 * j);
+    layers.swap(2 * j + 1, 4 * j + 2);
+  }
+}
+
+pub(crate) fn compact_folded_layers_abc<F: Field>(
+  a_layers: &mut [Vec<F>],
+  b_layers: &mut [Vec<F>],
+  c_layers: &mut [Vec<F>],
+  prove_pairs: usize,
+) {
+  compact_folded_layers(a_layers, prove_pairs);
+  compact_folded_layers(b_layers, prove_pairs);
+  compact_folded_layers(c_layers, prove_pairs);
+}
+
+fn invalid_input(reason: impl Into<String>) -> SpartanError {
+  SpartanError::InvalidInputLength {
+    reason: reason.into(),
+  }
+}
+
+/// Record one NIFS polynomial in the verifier circuit and return its challenge.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn process_nifs_round<E>(
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  round: usize,
+  poly: &UniPoly<E::Scalar>,
+) -> Result<E::Scalar, SpartanError>
+where
+  E: Engine,
+{
+  let coeffs = &poly.coeffs;
+  // The verifier circuit stores dense cubic coefficients as public round state.
+  vc.nifs_polys[round] = [coeffs[0], coeffs[1], coeffs[2], coeffs[3]];
+
+  let chals =
+    SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, round, transcript)?;
+  chals
+    .first()
+    .copied()
+    .ok_or_else(|| SpartanError::InternalError {
+      reason: format!("NeutronNova NIFS round {} produced no challenge", round),
+    })
+}
+
+/// Complete one ordinary field-backed NIFS round and advance running claims.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finish_nifs_field_round<E>(
+  rhos: &[E::Scalar],
+  round: usize,
+  e0: E::Scalar,
+  quad_coeff: E::Scalar,
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  r_bs: &mut Vec<E::Scalar>,
+  t_cur: &mut E::Scalar,
+  acc_eq: &mut E::Scalar,
+) -> Result<E::Scalar, SpartanError>
+where
+  E: Engine,
+{
+  let rho = rhos[round];
+  let poly = generate_nifs_field_round_polynomial(rho, *acc_eq, *t_cur, e0, quad_coeff)?;
+  let r_b = process_nifs_round(vc, vc_state, vc_shape, vc_ck, transcript, round, &poly)?;
+  // Carry the sumcheck claim and eq(rho, r_b) accumulator into the next round.
+  *t_cur = poly.evaluate(&r_b);
+  *acc_eq *= (E::Scalar::ONE - r_b) * (E::Scalar::ONE - rho) + r_b * rho;
+  r_bs.push(r_b);
+  Ok(r_b)
+}
+
+/// Publish the final normalized step claim and consume the final verifier round.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn finalize_nifs_step_claim<E>(
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  final_round: usize,
+  t_cur: E::Scalar,
+  acc_eq: E::Scalar,
+) -> Result<(), SpartanError>
+where
+  E: Engine,
+{
+  let acc_eq_inv: Option<E::Scalar> = acc_eq.invert().into();
+  // t_cur includes the accumulated eq factor; the verifier circuit stores T_out.
+  vc.t_out_step = t_cur * acc_eq_inv.ok_or(SpartanError::DivisionByZero)?;
+  vc.eq_rho_at_rb = acc_eq;
+  let _ = SatisfyingAssignment::<E>::process_round(
+    vc_state,
+    vc_shape,
+    vc_ck,
+    vc,
+    final_round,
+    transcript,
+  )?;
+  Ok(())
+}
+
+/// Compute the weighted field claims for one NIFS round from materialized A/B/C layers.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn compute_field_round_claim<E>(
+  a_layers: &[Vec<E::Scalar>],
+  b_layers: &[Vec<E::Scalar>],
+  c_layers: &[Vec<E::Scalar>],
+  e_eq: &[E::Scalar],
+  left: usize,
+  right: usize,
+  rhos: &[E::Scalar],
+  round: usize,
+) -> Result<(E::Scalar, E::Scalar), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  E::Scalar: DelayedReduction<E::Scalar>,
+{
+  let shape = NifsRoundShape {
+    e_eq,
+    left,
+    right,
+    rhos,
+    round,
+  };
+  validate_materialized_c_round_inputs(shape, a_layers, b_layers, c_layers)?;
+  Ok(compute_weighted_round_claims::<E, _, _>(
+    a_layers,
+    b_layers,
+    c_layers,
+    rhos,
+    round,
+    |pair_a, pair_b, pair_c| {
+      let (e0, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper(
+        round,
+        (left, right),
+        e_eq,
+        &pair_a[0],
+        &pair_b[0],
+        &pair_c[0],
+        &pair_a[1],
+        &pair_b[1],
+      );
+      (e0, quad_coeff)
+    },
+  ))
+}
+
+#[derive(Clone, Copy)]
+struct NifsRoundShape<'a, F> {
+  e_eq: &'a [F],
+  left: usize,
+  right: usize,
+  rhos: &'a [F],
+  round: usize,
+}
+
+impl<F> NifsRoundShape<'_, F>
+where
+  F: Field,
+{
+  fn expected_layer_len(self) -> Result<usize, SpartanError> {
+    if self.round >= self.rhos.len() {
+      return Err(invalid_input(format!(
+        "round {} is out of range for {} rho challenges",
+        self.round,
+        self.rhos.len()
+      )));
+    }
+
+    let expected_len = self
+      .left
+      .checked_mul(self.right)
+      .ok_or_else(|| invalid_input("left * right overflows"))?;
+    let expected_eq_len = self
+      .left
+      .checked_add(self.right)
+      .ok_or_else(|| invalid_input("left + right overflows"))?;
+    if self.e_eq.len() != expected_eq_len {
+      return Err(invalid_input(format!(
+        "E_eq length {} does not match left + right {}",
+        self.e_eq.len(),
+        expected_eq_len
+      )));
+    }
+
+    Ok(expected_len)
+  }
+}
+
+fn validate_layer_family<F>(
+  label: &str,
+  layers: &[Vec<F>],
+  expected_len: usize,
+) -> Result<(), SpartanError> {
+  if !layers.iter().all(|layer| layer.len() == expected_len) {
+    return Err(invalid_input(format!(
+      "all {} layers must have length {}",
+      label, expected_len
+    )));
+  }
+  Ok(())
+}
+
+fn validate_materialized_c_round_inputs<F>(
+  shape: NifsRoundShape<'_, F>,
+  a_layers: &[Vec<F>],
+  b_layers: &[Vec<F>],
+  c_layers: &[Vec<F>],
+) -> Result<(), SpartanError>
+where
+  F: Field,
+{
+  if a_layers.len() != b_layers.len() || a_layers.len() != c_layers.len() {
+    return Err(invalid_input("A/B/C layer counts do not match"));
+  }
+  if a_layers.is_empty() || !a_layers.len().is_multiple_of(2) {
+    return Err(invalid_input(
+      "round claim layer count must be non-empty and even",
+    ));
+  }
+  let expected_len = shape.expected_layer_len()?;
+  validate_layer_family("A", a_layers, expected_len)?;
+  validate_layer_family("B", b_layers, expected_len)?;
+  validate_layer_family("C", c_layers, expected_len)?;
+  Ok(())
+}
+
+fn validate_scalar_c_fold_inputs<F>(
+  a_layers: &[Vec<F>],
+  b_layers: &[Vec<F>],
+  c_claims: &[F],
+) -> Result<(), SpartanError> {
+  if a_layers.len() != b_layers.len() || a_layers.len() != c_claims.len() {
+    return Err(invalid_input("A/B layer and C-claim counts do not match"));
+  }
+  if a_layers.is_empty() || !a_layers.len().is_multiple_of(2) {
+    return Err(invalid_input(
+      "suffix layer count must be non-empty and even",
+    ));
+  }
+  Ok(())
+}
+
+fn validate_scalar_c_round_inputs<F>(
+  shape: NifsRoundShape<'_, F>,
+  a_layers: &[Vec<F>],
+  b_layers: &[Vec<F>],
+  c_claims: &[F],
+) -> Result<(), SpartanError>
+where
+  F: Field,
+{
+  validate_scalar_c_fold_inputs(a_layers, b_layers, c_claims)?;
+  let expected_len = shape.expected_layer_len()?;
+  validate_layer_family("A", a_layers, expected_len)?;
+  validate_layer_family("B", b_layers, expected_len)?;
+  Ok(())
+}
+
+fn compute_weighted_round_claims<E, C, ClaimFn>(
+  a_layers: &[Vec<E::Scalar>],
+  b_layers: &[Vec<E::Scalar>],
+  c_data: &[C],
+  rhos: &[E::Scalar],
+  round: usize,
+  claim_for_pair: ClaimFn,
+) -> (E::Scalar, E::Scalar)
+where
+  E: Engine,
+  C: Sync,
+  ClaimFn: Fn(&[Vec<E::Scalar>], &[Vec<E::Scalar>], &[C]) -> (E::Scalar, E::Scalar) + Sync,
+{
+  let ell_b = rhos.len();
+  a_layers
+    .par_chunks(2)
+    .zip(b_layers.par_chunks(2))
+    .zip(c_data.par_chunks(2))
+    .enumerate()
+    .map(|(pair_idx, ((pair_a, pair_b), pair_c))| {
+      let (e0, quad_coeff) = claim_for_pair(pair_a, pair_b, pair_c);
+      let w = suffix_weight_full::<E::Scalar>(round, ell_b, pair_idx, rhos);
+      (e0 * w, quad_coeff * w)
+    })
+    .reduce(
+      || (E::Scalar::ZERO, E::Scalar::ZERO),
+      |a, b| (a.0 + b.0, a.1 + b.1),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) fn compute_ab_c_claim_round<E>(
+  a_layers: &[Vec<E::Scalar>],
+  b_layers: &[Vec<E::Scalar>],
+  c_claims: &[E::Scalar],
+  e_eq: &[E::Scalar],
+  left: usize,
+  right: usize,
+  rhos: &[E::Scalar],
+  round: usize,
+) -> Result<(E::Scalar, E::Scalar), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  E::Scalar: DelayedReduction<E::Scalar>,
+{
+  let shape = NifsRoundShape {
+    e_eq,
+    left,
+    right,
+    rhos,
+    round,
+  };
+  validate_scalar_c_round_inputs(shape, a_layers, b_layers, c_claims)?;
+
+  Ok(compute_weighted_round_claims::<E, _, _>(
+    a_layers,
+    b_layers,
+    c_claims,
+    rhos,
+    round,
+    |pair_a, pair_b, pair_c| {
+      let (e0_ab, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper_ab_only(
+        (left, right),
+        e_eq,
+        &pair_a[0],
+        &pair_b[0],
+        &pair_a[1],
+        &pair_b[1],
+      );
+      let e0 = e0_ab - pair_c[0];
+      (e0, quad_coeff)
+    },
+  ))
+}
+
+fn fold_ab_c_claim_pairs<E>(
+  a_layers: &mut [Vec<E::Scalar>],
+  b_layers: &mut [Vec<E::Scalar>],
+  c_claims: &mut [E::Scalar],
+  pairs: usize,
+  r: E::Scalar,
+) where
+  E: Engine,
+{
+  fold_ab_c_claim_pairs_in_range::<E>(a_layers, b_layers, c_claims, 0..pairs, r);
+}
+
+fn fold_ab_c_claim_pairs_in_range<E>(
+  a_layers: &mut [Vec<E::Scalar>],
+  b_layers: &mut [Vec<E::Scalar>],
+  c_claims: &mut [E::Scalar],
+  pair_range: std::ops::Range<usize>,
+  r: E::Scalar,
+) where
+  E: Engine,
+{
+  for i in pair_range {
+    fold_layer_pair_into(a_layers, 2 * i, 2 * i + 1, i, r);
+    fold_layer_pair_into(b_layers, 2 * i, 2 * i + 1, i, r);
+    fold_c_claim_pair_into(c_claims, 2 * i, 2 * i + 1, i, r);
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) fn continue_ab_suffix_with_c_claims<E>(
+  a_layers: &mut Vec<Vec<E::Scalar>>,
+  b_layers: &mut Vec<Vec<E::Scalar>>,
+  c_claims: &mut Vec<E::Scalar>,
+  e_eq: &[E::Scalar],
+  left: usize,
+  right: usize,
+  rhos: &[E::Scalar],
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  start_round: usize,
+  r_bs: &mut Vec<E::Scalar>,
+  t_cur: &mut E::Scalar,
+  acc_eq: &mut E::Scalar,
+) -> Result<(), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  E::Scalar: DelayedReduction<E::Scalar>,
+{
+  if start_round >= rhos.len() {
+    return Ok(());
+  }
+
+  let (e0, quad_coeff) = compute_ab_c_claim_round::<E>(
+    a_layers,
+    b_layers,
+    c_claims,
+    e_eq,
+    left,
+    right,
+    rhos,
+    start_round,
+  )?;
+  let pending_r_b = finish_nifs_field_round(
+    rhos,
+    start_round,
+    e0,
+    quad_coeff,
+    vc,
+    vc_state,
+    vc_shape,
+    vc_ck,
+    transcript,
+    r_bs,
+    t_cur,
+    acc_eq,
+  )?;
+
+  continue_ab_suffix_with_c_claims_from_pending(
+    a_layers,
+    b_layers,
+    c_claims,
+    e_eq,
+    left,
+    right,
+    rhos,
+    vc,
+    vc_state,
+    vc_shape,
+    vc_ck,
+    transcript,
+    start_round + 1,
+    pending_r_b,
+    r_bs,
+    t_cur,
+    acc_eq,
+  )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn continue_ab_suffix_with_c_claims_from_pending<E>(
+  a_layers: &mut Vec<Vec<E::Scalar>>,
+  b_layers: &mut Vec<Vec<E::Scalar>>,
+  c_claims: &mut Vec<E::Scalar>,
+  e_eq: &[E::Scalar],
+  left: usize,
+  right: usize,
+  rhos: &[E::Scalar],
+  vc: &mut NeutronNovaVerifierCircuit<E>,
+  vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+  vc_shape: &SplitMultiRoundR1CSShape<E>,
+  vc_ck: &CommitmentKey<E>,
+  transcript: &mut E::TE,
+  start_round: usize,
+  mut pending_r_b: E::Scalar,
+  r_bs: &mut Vec<E::Scalar>,
+  t_cur: &mut E::Scalar,
+  acc_eq: &mut E::Scalar,
+) -> Result<(), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  E::Scalar: DelayedReduction<E::Scalar>,
+{
+  let mut layer_count = a_layers.len();
+  for round in start_round..rhos.len() {
+    let shape = NifsRoundShape {
+      e_eq,
+      left,
+      right,
+      rhos,
+      round,
+    };
+    validate_scalar_c_round_inputs(shape, a_layers, b_layers, c_claims)?;
+    let fold_pairs = layer_count / 2;
+    let prove_pairs = fold_pairs / 2;
+    if prove_pairs == 0 || 4 * prove_pairs != layer_count {
+      return Err(invalid_input(
+        "merged suffix round requires layer count divisible by 4",
+      ));
+    }
+
+    let (a_head, _) = a_layers.split_at_mut(4 * prove_pairs);
+    let (b_head, _) = b_layers.split_at_mut(4 * prove_pairs);
+    let c_head = &mut c_claims[..4 * prove_pairs];
+
+    let (e0, quad_coeff) = a_head
+      .par_chunks_mut(4)
+      .zip(b_head.par_chunks_mut(4))
+      .zip(c_head.par_chunks_mut(4))
+      .enumerate()
+      .map(|(pair_idx, ((a_chunk, b_chunk), c_chunk))| {
+        fold_quad_chunk(a_chunk, pending_r_b);
+        fold_quad_chunk(b_chunk, pending_r_b);
+        fold_quad_c_claim_chunk(c_chunk, pending_r_b);
+
+        let (e0_ab, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper_ab_only(
+          (left, right),
+          e_eq,
+          &a_chunk[0],
+          &b_chunk[0],
+          &a_chunk[2],
+          &b_chunk[2],
+        );
+        let e0 = e0_ab - c_chunk[0];
+        let w = suffix_weight_full::<E::Scalar>(round, rhos.len(), pair_idx, rhos);
+        (e0 * w, quad_coeff * w)
+      })
+      .reduce(
+        || (E::Scalar::ZERO, E::Scalar::ZERO),
+        |a, b| (a.0 + b.0, a.1 + b.1),
+      );
+
+    compact_folded_layers(a_layers, prove_pairs);
+    compact_folded_layers(b_layers, prove_pairs);
+    compact_c_claims(c_claims, prove_pairs);
+    a_layers.truncate(fold_pairs);
+    b_layers.truncate(fold_pairs);
+    c_claims.truncate(fold_pairs);
+    layer_count = fold_pairs;
+
+    pending_r_b = finish_nifs_field_round(
+      rhos, round, e0, quad_coeff, vc, vc_state, vc_shape, vc_ck, transcript, r_bs, t_cur, acc_eq,
+    )?;
+  }
+
+  validate_scalar_c_fold_inputs(a_layers, b_layers, c_claims)?;
+  let final_pairs = layer_count / 2;
+  fold_ab_c_claim_pairs::<E>(a_layers, b_layers, c_claims, final_pairs, pending_r_b);
+  a_layers.truncate(final_pairs);
+  b_layers.truncate(final_pairs);
+  c_claims.truncate(final_pairs);
+
+  Ok(())
+}
+
+fn fold_quad_c_claim_chunk<F: Field>(chunk: &mut [F], r: F) {
+  chunk[0] += r * (chunk[1] - chunk[0]);
+  chunk[2] += r * (chunk[3] - chunk[2]);
+}
+
+fn compact_c_claims<F>(claims: &mut [F], prove_pairs: usize) {
+  for j in 0..prove_pairs {
+    claims.swap(2 * j, 4 * j);
+    claims.swap(2 * j + 1, 4 * j + 2);
+  }
+}
+
+fn fold_c_claim_pair_into<F: Field>(
+  c_claims: &mut [F],
+  src_even: usize,
+  src_odd: usize,
+  dest: usize,
+  r: F,
+) {
+  let even = c_claims[src_even];
+  let odd = c_claims[src_odd];
+  c_claims[dest] = even + r * (odd - even);
+}
+
+pub(crate) fn fold_witness_and_instance<E>(
+  s: &SplitR1CSShape<E>,
+  ck: &CommitmentKey<E>,
+  mut us: Vec<R1CSInstance<E>>,
+  mut ws: Vec<R1CSWitness<E>>,
+  num_instances: usize,
+  n_padded: usize,
+  r_bs: &[E::Scalar],
+) -> Result<(R1CSWitness<E>, R1CSInstance<E>), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+{
+  if us.len() != num_instances {
+    return Err(invalid_input(format!(
+      "instance count {} does not match expected count {}",
+      us.len(),
+      num_instances
+    )));
+  }
+  if ws.len() != num_instances {
+    return Err(invalid_input(format!(
+      "witness count {} does not match expected count {}",
+      ws.len(),
+      num_instances
+    )));
+  }
+  if us.is_empty() {
+    return Err(invalid_input("cannot fold empty instance list"));
+  }
+
+  if us.len() < n_padded {
+    let us_additional = n_padded - us.len();
+    let ws_additional = n_padded - ws.len();
+    extend_with_first_clones(&mut us, us_additional);
+    extend_with_first_clones(&mut ws, ws_additional);
+  }
+
+  let effective_len = s.num_shared + s.num_precommitted;
+  let use_truncated_fold = effective_len > 0;
+  if use_truncated_fold {
+    for w in ws.iter_mut() {
+      w.W.truncate(effective_len);
+    }
+  }
+
+  let (_fold_final_span, fold_final_t) = start_span!("fold_witnesses");
+  let mut folded_w = R1CSWitness::fold_multiple(r_bs, &ws)?;
+  if use_truncated_fold {
+    let full_dim = s.num_shared + s.num_precommitted + s.num_rest;
+    folded_w.W.resize(full_dim, E::Scalar::ZERO);
+  }
+  info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_witnesses");
+
+  let (_fold_final_span, fold_final_t) = start_span!("fold_instances");
+  let weights = weights_from_r::<E::Scalar>(r_bs, us.len());
+  let x_len = us[0].X.len();
+  let mut folded_x = vec![E::Scalar::ZERO; x_len];
+  for (weight, instance) in weights.iter().zip(us.iter()) {
+    for (acc, value) in folded_x.iter_mut().zip(instance.X.iter()) {
+      *acc += *weight * *value;
+    }
+  }
+
+  let comms = us
+    .iter()
+    .map(|instance| instance.comm_W.clone())
+    .collect::<Vec<_>>();
+  let folded_comm = if use_truncated_fold {
+    let num_data_rows = (s.num_shared + s.num_precommitted).div_ceil(DEFAULT_COMMITMENT_WIDTH);
+    <E::PCS as FoldingEngineTrait<E>>::fold_commitments_partial(
+      &comms,
+      &weights,
+      num_data_rows,
+      &folded_w.r_W,
+      ck,
+    )?
+  } else {
+    <E::PCS as FoldingEngineTrait<E>>::fold_commitments(&comms, &weights)?
+  };
+  let folded_u = R1CSInstance::<E>::new_unchecked(folded_comm, folded_x)?;
+  info!(elapsed_ms = %fold_final_t.elapsed().as_millis(), "fold_instances");
+
+  Ok((folded_w, folded_u))
 }
 
 /// A type that represents the prover's key
@@ -2622,10 +2668,9 @@ where
     let (_convert_span, convert_t) = start_span!("convert_to_regular_verify");
     let mut step_instances_padded = step_instances.clone();
     if step_instances_padded.len() != step_instances_padded.len().next_power_of_two() {
-      step_instances_padded.extend(std::iter::repeat_n(
-        step_instances_padded[0].clone(),
-        step_instances_padded.len().next_power_of_two() - step_instances_padded.len(),
-      ));
+      let additional =
+        step_instances_padded.len().next_power_of_two() - step_instances_padded.len();
+      extend_with_first_clones(&mut step_instances_padded, additional);
     }
     let step_instances_regular = step_instances_padded
       .par_iter()

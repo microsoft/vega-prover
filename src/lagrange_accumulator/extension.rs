@@ -255,7 +255,7 @@ mod tests {
     let extended = extend_for_test::<Scalar, D>(&input);
 
     // Check all finite points via direct multilinear evaluation
-    for idx in 0..extended.len() {
+    for (idx, value) in extended.iter().enumerate() {
       let tuple = index_to_tuple(idx, base, num_vars);
 
       // Skip infinity points (index 0 in any coordinate)
@@ -270,7 +270,7 @@ mod tests {
         .collect();
 
       let direct = evaluate_multilinear(&input, &point);
-      assert_eq!(extended[idx], direct);
+      assert_eq!(*value, direct);
     }
   }
 

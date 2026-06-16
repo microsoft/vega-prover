@@ -96,7 +96,6 @@ impl<T: Field> MultilinearPolynomial<T> {
   /// Exploits zero-structure: when hi half is all zero or sparse, uses
   /// cheaper operations (scale by (1-r) instead of sub+mul+add).
   #[inline(always)]
-
   /// This operation modifies the polynomial in-place.
   ///
   /// Variable order is MSB-first: the "top" variable is the most-significant

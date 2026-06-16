@@ -301,8 +301,8 @@ impl<F: PrimeField, const D: usize> LagrangeBasisFactory<F, D> {
     }
 
     let mut acc = F::ZERO;
-    for idx in 0..extended.len() {
-      acc += coeff.get(idx) * extended[idx];
+    for (idx, value) in extended.iter().enumerate() {
+      acc += coeff.get(idx) * *value;
     }
     acc
   }

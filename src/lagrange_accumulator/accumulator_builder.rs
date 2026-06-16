@@ -9,21 +9,19 @@
 //! This module provides:
 //! - [`build_accumulators_spartan`]: Optimized builder for Spartan's cubic relation
 
+#[cfg(test)]
+use super::extension::{bit_rev_prefix_table, gather_and_extend_prefix};
 use super::{
-  accumulator::LagrangeAccumulators,
-  csr::Csr,
-  domain::LagrangeIndex,
-  extension::{bit_rev_prefix_table, extend_to_lagrange_domain, gather_and_extend_prefix},
-  extension_bound::ExtensionBoundedPoly,
-  index::AccumulatorPrefixIndex,
-  thread_state::SpartanThreadState,
+  accumulator::LagrangeAccumulators, csr::Csr, domain::LagrangeIndex,
+  extension::extend_to_lagrange_domain, extension_bound::ExtensionBoundedPoly,
+  index::AccumulatorPrefixIndex, thread_state::SpartanThreadState,
 };
 use crate::{
   big_num::{DelayedReduction, SmallValue, SmallValueEngine, WideMul},
-  errors::SpartanError,
   polys::{eq::build_eq_pyramid, eq::compute_suffix_eq_pyramid},
-  r1cs::weights_from_r,
 };
+#[cfg(test)]
+use crate::{errors::SpartanError, r1cs::weights_from_r};
 use ff::PrimeField;
 use num_traits::Zero;
 use rayon::prelude::*;
@@ -37,24 +35,6 @@ pub(crate) const SMALL_VALUE_T_DEGREE: usize = 2;
 /// Extension-bound certificate specialized to pairwise small-value products.
 pub(crate) type SmallValueExtensionBoundedPoly<'a, SV, const LB: usize> =
   ExtensionBoundedPoly<'a, SV, <SV as WideMul>::Product, SMALL_VALUE_T_DEGREE, LB>;
-
-fn invalid_input(reason: impl Into<String>) -> SpartanError {
-  SpartanError::InvalidInputLength {
-    reason: reason.into(),
-  }
-}
-
-fn layer_evals<'poly, SV, const LB: usize>(
-  layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
-) -> Vec<&'poly [SV]>
-where
-  SV: SmallValue,
-{
-  layers
-    .iter()
-    .map(|layer| layer.as_poly().Z.as_slice())
-    .collect()
-}
 
 /// Builds the table accumulators `A_i(v, u)` used in Spartan's first `l0`
 /// outer sumcheck rounds.
@@ -299,6 +279,7 @@ where
 /// - partial-small (`0 < l0 < ell_b`): the first `l0` instance bits use the
 ///   accumulator path, while the suffix bits are summed with Boolean equality
 ///   weights from `rhos[l0..]`.
+#[cfg(test)]
 pub(crate) fn build_accumulators_neutronnova<'poly, F, SV, const LB: usize>(
   a_layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
   b_layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
@@ -378,6 +359,8 @@ where
     )));
   }
 
+  // Partition the instance bits into the Lagrange prefix handled here and the
+  // Boolean suffix folded by equality weights.
   let base: usize = SMALL_VALUE_T_DEGREE + 1;
   let l0_shift = u32::try_from(l0).map_err(|_| invalid_input("l0 does not fit in a u32 shift"))?;
   let prefix_size = 1usize
@@ -394,6 +377,9 @@ where
   ext_size
     .checked_mul(l0)
     .ok_or_else(|| invalid_input("small-value beta cache size overflows"))?;
+
+  // Equality data for suffix bits beyond LB. In full-small mode this collapses
+  // to one suffix group with weight 1.
   let e_b = compute_suffix_eq_pyramid(rhos, l0);
   let suffix_weights = weights_from_r(&rhos[l0..], suffix_groups);
 
@@ -407,6 +393,8 @@ where
     (e_right, e_left)
   };
 
+  // Cache eq_outer * eq_suffix_round in round-major layout:
+  // e_cache[round][x_outer * num_y + y].
   let e_cache: Vec<Vec<F>> = e_b
     .iter()
     .map(|round_ey| {
@@ -418,6 +406,8 @@ where
     .collect();
   let num_y_per_round: Vec<usize> = e_b.iter().map(|ey| ey.len()).collect();
 
+  // Map each Lagrange beta point to accumulator buckets. Only beta points with
+  // an ∞ coordinate can contribute to the stored table.
   let bit_rev = bit_rev_prefix_table(l0);
   let BetaPrefixCache {
     cache: beta_prefix_cache,
@@ -430,6 +420,8 @@ where
 
   type State<F2, SV2> = SpartanThreadState<F2, SV2, SMALL_VALUE_T_DEGREE>;
   let process_outer = |state: &mut State<F, SV>, x_outer: usize| {
+    // One worker fixes x_outer, extends each LB prefix, and accumulates the
+    // suffix-weighted A/B products in unreduced form.
     state.reset_partial_sums();
 
     for (x_inner, &e_inner_val) in e_inner.iter().enumerate() {
@@ -475,6 +467,7 @@ where
       }
     }
 
+    // Reduce each beta once, then route it into the affected round buckets.
     for &beta_idx in &betas_with_infty {
       let unreduced = &state.partial_sums[beta_idx];
       if unreduced.is_zero() {
@@ -486,6 +479,7 @@ where
       }
     }
 
+    // Apply the cached equality weights while scattering into accumulator cells.
     for &(beta_idx, ref val) in &state.beta_values {
       for pref in &beta_prefix_cache[beta_idx] {
         let round = pref.round_0 as usize;
@@ -500,6 +494,7 @@ where
     }
   };
 
+  // Merge the thread-local accumulator buckets produced by the outer loop.
   let merged = (0..outer_dim)
     .into_par_iter()
     .fold(
@@ -515,11 +510,25 @@ where
     })
     .unwrap_or_else(|| State::<F, SV>::new(l0, num_betas, prefix_size, ext_size));
 
+  // Convert merged wide accumulators back into field elements.
   Ok(
     merged
       .acc
       .map(|acc| <F as DelayedReduction<F>>::reduce(acc)),
   )
+}
+
+#[cfg(test)]
+fn layer_evals<'poly, SV, const LB: usize>(
+  layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
+) -> Vec<&'poly [SV]>
+where
+  SV: SmallValue,
+{
+  layers
+    .iter()
+    .map(|layer| layer.as_poly().Z.as_slice())
+    .collect()
 }
 
 /// Precomputed eq polynomial pyramids with balanced split.
@@ -585,6 +594,13 @@ pub(crate) fn build_beta_cache<const D: usize>(l0: usize) -> BetaPrefixCache {
   }
 
   BetaPrefixCache { cache, num_betas }
+}
+
+#[cfg(test)]
+fn invalid_input(reason: impl Into<String>) -> SpartanError {
+  SpartanError::InvalidInputLength {
+    reason: reason.into(),
+  }
 }
 
 #[cfg(test)]
