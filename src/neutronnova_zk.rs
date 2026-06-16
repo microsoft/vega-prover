@@ -20,7 +20,9 @@ use crate::{
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
   },
-  big_num::{DelayedReduction, SmallAccumulator, small_value_conversion::to_small_vec_or_zero},
+  big_num::{
+    DelayedReduction, SmallAccumulator, SmallValue, small_value_conversion::to_small_vec_or_zero,
+  },
   digest::DigestComputer,
   errors::SpartanError,
   math::Math,
@@ -67,6 +69,34 @@ fn compute_tensor_decomp(n: usize) -> (usize, usize, usize) {
 #[serde(bound = "")]
 pub struct NeutronNovaNIFS<E: Engine> {
   polys: Vec<UniPoly<E::Scalar>>,
+}
+
+/// Cached Az/Bz/Cz layers in both field and small-value representations.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "SV: Serialize", deserialize = "SV: Deserialize<'de>"))]
+pub struct CachedStepMatvec<E: Engine, SV: SmallValue> {
+  /// The field-valued Az layer.
+  pub a_field: Vec<E::Scalar>,
+  /// The field-valued Bz layer.
+  pub b_field: Vec<E::Scalar>,
+  /// The field-valued Cz layer.
+  pub c_field: Vec<E::Scalar>,
+  /// The small-value Az layer, with global large positions zeroed.
+  pub a_small: Vec<SV>,
+  /// The small-value Bz layer, with global large positions zeroed.
+  pub b_small: Vec<SV>,
+  /// The small-value Cz layer, with global large positions zeroed.
+  pub c_small: Vec<SV>,
+}
+
+/// Cached step-circuit matrix-vector products and their global large-value positions.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(bound(serialize = "SV: Serialize", deserialize = "SV: Deserialize<'de>"))]
+pub struct CachedStepMatvecs<E: Engine, SV: SmallValue> {
+  /// Cached step layers in original instance order.
+  pub layers: Vec<CachedStepMatvec<E, SV>>,
+  /// Positions where any cached Az/Bz/Cz value did not fit in the small representation.
+  pub large_positions: Vec<usize>,
 }
 
 #[inline(always)]
@@ -496,9 +526,7 @@ where
     ck: &CommitmentKey<E>,
     Us: Vec<R1CSInstance<E>>,
     Ws: Vec<R1CSWitness<E>>,
-    cached_matvec: Option<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>>,
-    cached_i64: Option<Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>>,
-    large_positions: &[usize],
+    cached_step_matvecs: Option<CachedStepMatvecs<E, i64>>,
     vc: &mut NeutronNovaVerifierCircuit<E>,
     vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
@@ -559,13 +587,24 @@ where
     let mut A_layers: Vec<Vec<E::Scalar>> = Vec::with_capacity(n_padded);
     let mut B_layers: Vec<Vec<E::Scalar>> = Vec::with_capacity(n_padded);
     let mut C_layers: Vec<Vec<E::Scalar>> = Vec::with_capacity(n_padded);
+    let mut A_i64_layers: Vec<Vec<i64>> = Vec::with_capacity(n_padded);
+    let mut B_i64_layers: Vec<Vec<i64>> = Vec::with_capacity(n_padded);
+    let mut C_i64_layers: Vec<Vec<i64>> = Vec::with_capacity(n_padded);
+    let mut large_positions_vec = Vec::new();
 
-    let n_cached = cached_matvec.as_ref().map_or(0, |c| c.len());
-    if let Some(cached) = cached_matvec {
-      for (a, b, c) in cached {
-        A_layers.push(a);
-        B_layers.push(b);
-        C_layers.push(c);
+    let n_cached = cached_step_matvecs
+      .as_ref()
+      .map_or(0, |cached| cached.layers.len());
+    let has_i64 = cached_step_matvecs.is_some();
+    if let Some(cached) = cached_step_matvecs {
+      large_positions_vec = cached.large_positions;
+      for layer in cached.layers {
+        A_layers.push(layer.a_field);
+        B_layers.push(layer.b_field);
+        C_layers.push(layer.c_field);
+        A_i64_layers.push(layer.a_small);
+        B_i64_layers.push(layer.b_small);
+        C_i64_layers.push(layer.c_small);
       }
     }
     // Compute matvec for any remaining (padded) instances
@@ -581,23 +620,12 @@ where
       B_layers.push(b);
       C_layers.push(c);
     }
+    let large_positions = large_positions_vec.as_slice();
     // Build i64 layers for small-value NIFS optimization
-    let n_i64_cached = cached_i64.as_ref().map_or(0, |c| c.len());
-    let mut A_i64_layers: Vec<Vec<i64>> = Vec::with_capacity(n_padded);
-    let mut B_i64_layers: Vec<Vec<i64>> = Vec::with_capacity(n_padded);
-    let mut C_i64_layers: Vec<Vec<i64>> = Vec::with_capacity(n_padded);
-    let has_i64 = cached_i64.is_some();
-    if let Some(cached) = cached_i64 {
-      for (a, b, c) in cached {
-        A_i64_layers.push(a);
-        B_i64_layers.push(b);
-        C_i64_layers.push(c);
-      }
-    }
     // For padded instances, convert from field layers.
     // Padded instances are clones of Us[0], so their large positions should be a subset
     // of the global large_positions. We still zero at all global positions for safety.
-    for i in n_i64_cached..n_padded {
+    for i in n_cached..n_padded {
       if has_i64 {
         let (mut a_i64, a_large) = to_small_vec_or_zero(&A_layers[i]);
         let (mut b_i64, b_large) = to_small_vec_or_zero(&B_layers[i]);
@@ -1860,15 +1888,9 @@ impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
 pub struct NeutronNovaPrepZkSNARK<E: Engine> {
   ps_step: Vec<PrecommittedState<E>>,
   ps_core: PrecommittedState<E>,
-  /// Cached partial matrix-vector products for shared+precommitted columns per step circuit (deterministic).
-  cached_step_matvec: Option<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>>,
-  /// Small-value (i64) cache of Az/Bz/Cz for NIFS integer arithmetic.
-  /// Large values are stored as 0 and corrected via field arithmetic using `large_positions`.
-  cached_step_i64: Option<Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>>,
-  /// Positions where ANY instance's Az/Bz/Cz didn't fit i64 (union across all instances).
-  /// i64 vectors are zeroed at these positions; correction uses field values.
-  large_positions: Vec<usize>,
-  /// Public values used when computing cached_step_matvec, for validation in prove.
+  /// Cached Az/Bz/Cz layers for step circuits, including their small-value representation.
+  cached_step_matvecs: Option<CachedStepMatvecs<E, i64>>,
+  /// Public values used when computing cached_step_matvecs, for validation in prove.
   /// Non-empty when the matvec cache is active; prove checks that step circuits produce the same values.
   cached_step_public_values: Vec<Vec<E::Scalar>>,
 }
@@ -2027,81 +2049,98 @@ where
     // meaning z = [shared_W, precommitted_W, 0..., 1, public_values] is fully known during prep.
     let can_cache_matvec = pk.S_step.num_challenges == 0 && pk.S_step.num_rest_unpadded == 0;
 
-    let (cached_step_matvec, cached_step_i64, large_positions, cached_step_public_values) =
-      if can_cache_matvec {
-        // Collect public values for each step circuit so we can validate in prove
-        let step_public_values: Vec<Vec<E::Scalar>> = step_circuits
-          .iter()
-          .map(|c| {
-            c.public_values().map_err(|e| SpartanError::SynthesisError {
-              reason: format!("Circuit does not provide public IO: {e}"),
-            })
+    let (cached_step_matvecs, cached_step_public_values) = if can_cache_matvec {
+      // Collect public values for each step circuit so we can validate in prove
+      let step_public_values: Vec<Vec<E::Scalar>> = step_circuits
+        .iter()
+        .map(|c| {
+          c.public_values().map_err(|e| SpartanError::SynthesisError {
+            reason: format!("Circuit does not provide public IO: {e}"),
           })
-          .collect::<Result<Vec<_>, _>>()?;
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
-        let matvec: Vec<_> = (0..ps_step.len())
-          .into_par_iter()
-          .map(|i| {
-            let ps_i = &ps_step[i];
-            let public_values = &step_public_values[i];
-            let mut z = Vec::with_capacity(ps_i.W.len() + 1 + public_values.len());
-            z.extend_from_slice(&ps_i.W);
-            z.push(E::Scalar::ONE);
-            z.extend_from_slice(public_values);
-            pk.S_step.multiply_vec(&z)
-          })
-          .collect::<Result<Vec<_>, _>>()?;
-        // Convert Az/Bz to i64 for small-value NIFS round 0 optimization.
-        let mut all_i64 = Vec::with_capacity(matvec.len());
-        let mut large_pos_set = std::collections::BTreeSet::new();
-        for (az, bz, cz) in &matvec {
-          let (az_i64, az_large) = to_small_vec_or_zero(az);
-          let (bz_i64, bz_large) = to_small_vec_or_zero(bz);
-          let (cz_i64, cz_large) = to_small_vec_or_zero(cz);
-          for pos in az_large {
-            large_pos_set.insert(pos);
-          }
-          for pos in bz_large {
-            large_pos_set.insert(pos);
-          }
-          for pos in cz_large {
-            large_pos_set.insert(pos);
-          }
-          all_i64.push((az_i64, bz_i64, cz_i64));
+      let matvec: Vec<_> = (0..ps_step.len())
+        .into_par_iter()
+        .map(|i| {
+          let ps_i = &ps_step[i];
+          let public_values = &step_public_values[i];
+          let mut z = Vec::with_capacity(ps_i.W.len() + 1 + public_values.len());
+          z.extend_from_slice(&ps_i.W);
+          z.push(E::Scalar::ONE);
+          z.extend_from_slice(public_values);
+          pk.S_step.multiply_vec(&z)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+      // Convert Az/Bz to i64 for small-value NIFS round 0 optimization.
+      let mut all_i64 = Vec::with_capacity(matvec.len());
+      let mut large_pos_set = std::collections::BTreeSet::new();
+      for (az, bz, cz) in &matvec {
+        let (az_i64, az_large) = to_small_vec_or_zero(az);
+        let (bz_i64, bz_large) = to_small_vec_or_zero(bz);
+        let (cz_i64, cz_large) = to_small_vec_or_zero(cz);
+        for pos in az_large {
+          large_pos_set.insert(pos);
         }
-        let lp: Vec<usize> = large_pos_set.into_iter().collect();
-        info!(
-          n_large = lp.len(),
-          total = matvec[0].0.len(),
-          "i64_conversion_stats"
-        );
+        for pos in bz_large {
+          large_pos_set.insert(pos);
+        }
+        for pos in cz_large {
+          large_pos_set.insert(pos);
+        }
+        all_i64.push((az_i64, bz_i64, cz_i64));
+      }
+      let lp: Vec<usize> = large_pos_set.into_iter().collect();
+      info!(
+        n_large = lp.len(),
+        total = matvec[0].0.len(),
+        "i64_conversion_stats"
+      );
 
-        // Zero out i64 values at ALL large_positions in ALL instances.
-        if !lp.is_empty() {
-          for (az_i64, bz_i64, cz_i64) in &mut all_i64 {
-            for &pos in &lp {
-              az_i64[pos] = 0;
-              bz_i64[pos] = 0;
-              cz_i64[pos] = 0;
-            }
+      // Zero out i64 values at ALL large_positions in ALL instances.
+      if !lp.is_empty() {
+        for (az_i64, bz_i64, cz_i64) in &mut all_i64 {
+          for &pos in &lp {
+            az_i64[pos] = 0;
+            bz_i64[pos] = 0;
+            cz_i64[pos] = 0;
           }
         }
-        (Some(matvec), Some(all_i64), lp, step_public_values)
-      } else {
-        info!(
-          "Step circuit has rest_unpadded={} challenges={}, skipping matvec/i64 caching",
-          pk.S_step.num_rest_unpadded, pk.S_step.num_challenges
-        );
-        (None, None, Vec::new(), Vec::new())
-      };
+      }
+      let layers = matvec
+        .into_iter()
+        .zip(all_i64)
+        .map(
+          |((a_field, b_field, c_field), (a_small, b_small, c_small))| CachedStepMatvec {
+            a_field,
+            b_field,
+            c_field,
+            a_small,
+            b_small,
+            c_small,
+          },
+        )
+        .collect();
+      (
+        Some(CachedStepMatvecs {
+          layers,
+          large_positions: lp,
+        }),
+        step_public_values,
+      )
+    } else {
+      info!(
+        "Step circuit has rest_unpadded={} challenges={}, skipping matvec/i64 caching",
+        pk.S_step.num_rest_unpadded, pk.S_step.num_challenges
+      );
+      (None, Vec::new())
+    };
 
     info!(elapsed_ms = %prep_t.elapsed().as_millis(), "neutronnova_prep_prove");
     Ok(NeutronNovaPrepZkSNARK {
       ps_step,
       ps_core: ps,
-      cached_step_matvec,
-      cached_step_i64,
-      large_positions,
+      cached_step_matvecs,
       cached_step_public_values,
     })
   }
@@ -2259,29 +2298,27 @@ where
     let mut vc_state = SatisfyingAssignment::<E>::initialize_multiround_witness(&pk.vc_shape)?;
 
     // Perform ZK NIFS prove and collect outputs.
-    // Clone caches (matvec/i64) before passing to NIFS, which consumes them.
-    // This keeps `prep_snark.cached_step_matvec` / `cached_step_i64` populated
+    // Clone cached matvec layers before passing to NIFS, which consumes them.
+    // This keeps `prep_snark.cached_step_matvecs` populated
     // so that a subsequent `prove` call on the same prep state reuses them
-    // (production reuse scenario). large_positions is also kept intact via `&`.
+    // (production reuse scenario).
     let (_nifs_span, nifs_t) = start_span!("NIFS");
-    // Parallel clone: each inner triple (Vec, Vec, Vec) of size num_cons is
+    // Parallel clone: each cached layer has six Vecs of size num_cons, which is
     // large enough that serial clone becomes a bottleneck at many instances.
-    let cached_matvec = prep_snark
-      .cached_step_matvec
-      .as_ref()
-      .map(|v| v.par_iter().cloned().collect::<Vec<_>>());
-    let cached_i64 = prep_snark
-      .cached_step_i64
-      .as_ref()
-      .map(|v| v.par_iter().cloned().collect::<Vec<_>>());
+    let cached_step_matvecs =
+      prep_snark
+        .cached_step_matvecs
+        .as_ref()
+        .map(|cache| CachedStepMatvecs {
+          layers: cache.layers.par_iter().cloned().collect::<Vec<_>>(),
+          large_positions: cache.large_positions.clone(),
+        });
     let (E_eq, Az_step, Bz_step, Cz_step, folded_W, folded_U) = NeutronNovaNIFS::<E>::prove(
       &pk.S_step,
       &pk.ck,
       step_instances_regular,
       step_witnesses,
-      cached_matvec,
-      cached_i64,
-      &prep_snark.large_positions,
+      cached_step_matvecs,
       &mut vc,
       &mut vc_state,
       &pk.vc_shape,
