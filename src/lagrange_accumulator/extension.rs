@@ -7,7 +7,6 @@
 //! Procedure 6: Extension of multilinear polynomial evaluations from
 //! boolean hypercube {0,1}^ℓ to Lagrange domain U_D^ℓ.
 
-use crate::big_num::SmallValue;
 use std::ops::{Add, Sub};
 
 // ============================================================================
@@ -150,22 +149,22 @@ pub(crate) fn bit_rev_prefix_table(l0: usize) -> Vec<usize> {
 /// `layers[layer_base + bit_rev[p]][idx]`, writes the Boolean prefix into
 /// `prefix`, then writes the extended values into `ext_buf`.
 #[inline]
-pub(crate) fn gather_and_extend_prefix<SV>(
-  layers: &[&[SV]],
+pub(crate) fn gather_and_extend_prefix<T, const D: usize>(
+  layers: &[&[T]],
   bit_rev: &[usize],
   layer_base: usize,
   idx: usize,
-  prefix: &mut [SV],
-  ext_buf: &mut Vec<SV>,
-  ext_scratch: &mut Vec<SV>,
+  prefix: &mut [T],
+  ext_buf: &mut Vec<T>,
+  ext_scratch: &mut Vec<T>,
 ) -> usize
 where
-  SV: SmallValue,
+  T: Copy + Default + Add<Output = T> + Sub<Output = T>,
 {
   for (p, &rev) in bit_rev.iter().enumerate() {
     prefix[p] = layers[layer_base + rev][idx];
   }
-  extend_to_lagrange_domain::<SV, 2>(prefix, ext_buf, ext_scratch)
+  extend_to_lagrange_domain::<T, D>(prefix, ext_buf, ext_scratch)
 }
 
 #[cfg(test)]

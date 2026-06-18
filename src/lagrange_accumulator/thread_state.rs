@@ -15,6 +15,38 @@ use super::accumulator::LagrangeAccumulators;
 use crate::big_num::{DelayedReduction, SmallValue};
 use num_traits::Zero;
 
+/// Reusable A/B prefix and Lagrange-extension buffers.
+pub(crate) struct PrefixExtensionScratch<T> {
+  /// Prefix evaluations of A for current suffix. Size: 2^l0.
+  pub a_prefix: Vec<T>,
+  /// Prefix evaluations of B for current suffix. Size: 2^l0.
+  pub b_prefix: Vec<T>,
+  /// Result buffer for A Lagrange extension. Size: (D+1)^l0.
+  pub a_ext: Vec<T>,
+  /// Scratch buffer for A Lagrange extension.
+  pub a_scratch: Vec<T>,
+  /// Result buffer for B Lagrange extension. Size: (D+1)^l0.
+  pub b_ext: Vec<T>,
+  /// Scratch buffer for B Lagrange extension.
+  pub b_scratch: Vec<T>,
+}
+
+impl<T> PrefixExtensionScratch<T>
+where
+  T: Copy + Default,
+{
+  pub(crate) fn new(prefix_size: usize, ext_size: usize) -> Self {
+    Self {
+      a_prefix: vec![T::default(); prefix_size],
+      b_prefix: vec![T::default(); prefix_size],
+      a_ext: vec![T::default(); ext_size],
+      a_scratch: vec![T::default(); ext_size],
+      b_ext: vec![T::default(); ext_size],
+      b_scratch: vec![T::default(); ext_size],
+    }
+  }
+}
+
 /// Thread-local scratch buffers for `build_accumulators_spartan`.
 ///
 /// # Motivation
@@ -47,18 +79,8 @@ where
   /// Uses unreduced F×F form (accumulator for field × field products).
   /// Accumulated across all x_out iterations, then merged.
   pub acc: LagrangeAccumulators<<F as DelayedReduction<F>>::Accumulator, D>,
-  /// Prefix evaluations of Az for current suffix. Size: 2^l0
-  pub az_prefix_boolean_evals: Vec<SV>,
-  /// Prefix evaluations of Bz for current suffix. Size: 2^l0
-  pub bz_prefix_boolean_evals: Vec<SV>,
-  /// Result buffer for Az Lagrange extension. Size: (D+1)^l0
-  pub az_extended_evals: Vec<SV>,
-  /// Scratch buffer for Az Lagrange extension.
-  pub az_extended_scratch: Vec<SV>,
-  /// Result buffer for Bz Lagrange extension. Size: (D+1)^l0
-  pub bz_extended_evals: Vec<SV>,
-  /// Scratch buffer for Bz Lagrange extension.
-  pub bz_extended_scratch: Vec<SV>,
+  /// Reusable prefix and extension buffers for A/B.
+  pub ext: PrefixExtensionScratch<SV>,
   /// Reusable buffer for filtered (beta_idx, reduced_value) pairs.
   /// Eliminates per-x_out allocation overhead.
   pub beta_values: Vec<(usize, F)>,
@@ -73,12 +95,7 @@ where
     Self {
       partial_sums: vec![<F as DelayedReduction<SV::Product>>::Accumulator::zero(); num_betas],
       acc: LagrangeAccumulators::new(l0),
-      az_prefix_boolean_evals: vec![SV::zero(); prefix_size],
-      bz_prefix_boolean_evals: vec![SV::zero(); prefix_size],
-      az_extended_evals: vec![SV::zero(); ext_size],
-      az_extended_scratch: vec![SV::zero(); ext_size],
-      bz_extended_evals: vec![SV::zero(); ext_size],
-      bz_extended_scratch: vec![SV::zero(); ext_size],
+      ext: PrefixExtensionScratch::new(prefix_size, ext_size),
       beta_values: Vec::with_capacity(num_betas),
     }
   }

@@ -26,7 +26,6 @@ mod limbs;
 
 // Re-exports: traits
 pub use delayed_reduction::DelayedReduction;
-pub(crate) use delayed_reduction::SmallAccumulator;
 pub use field_reduction_constants::{
   BarrettReductionConstants, BarrettRemainderWidth, FieldReductionConstants,
 };

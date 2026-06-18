@@ -8,7 +8,12 @@
 
 use std::{fmt::Display, marker::PhantomData};
 
-use crate::{big_num::SmallValue, errors::SpartanError, polys::multilinear::MultilinearPolynomial};
+use super::accumulator_builder::SMALL_VALUE_T_DEGREE;
+use crate::{
+  big_num::{SmallValue, SmallValueField},
+  errors::SpartanError,
+  polys::multilinear::MultilinearPolynomial,
+};
 use num_integer::Roots;
 use num_traits::{
   Bounded, CheckedDiv, CheckedMul, CheckedNeg, CheckedSub, FromPrimitive, NumCast, One, Signed,
@@ -256,6 +261,34 @@ where
   )
 }
 
+/// Convert field elements into i64 values that are safe for `l0` rounds of the
+/// NeutronNova small-value accumulator. Unsafe values are replaced with zero
+/// and returned as large positions for field-arithmetic correction.
+pub(crate) fn field_to_i64_or_zero_for_l0<F>(values: &[F], l0: usize) -> (Vec<i64>, Vec<usize>)
+where
+  F: SmallValueField<i64>,
+{
+  let max_abs = max_extension_input_abs_for_rounds::<i64, i128, SMALL_VALUE_T_DEGREE>(l0);
+  let mut small = Vec::with_capacity(values.len());
+  let mut large_positions = Vec::new();
+
+  for (idx, value) in values.iter().enumerate() {
+    match F::try_field_to_small(value).and_then(|small_value| {
+      abs_as::<i64, i128>(small_value)
+        .filter(|value_abs| *value_abs <= max_abs)
+        .map(|_| small_value)
+    }) {
+      Some(small_value) => small.push(small_value),
+      None => {
+        small.push(0);
+        large_positions.push(idx);
+      }
+    }
+  }
+
+  (small, large_positions)
+}
+
 /// Polynomial whose original MLE evaluations are certified safe for native extension.
 ///
 /// The certificate is parameterized by the input value type `SV`, the caller's
@@ -409,6 +442,23 @@ mod tests {
       ),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
+  }
+
+  #[test]
+  fn test_field_to_i64_or_zero_for_l0_marks_values_above_runtime_bound() {
+    use crate::{provider::PallasHyraxEngine, traits::Engine};
+
+    type F = <PallasHyraxEngine as Engine>::Scalar;
+    let l0 = 2;
+    let bound = max_extension_input_abs_for_rounds::<i64, i128, SMALL_VALUE_T_DEGREE>(l0);
+    let at_bound = F::from(u64::try_from(bound).unwrap());
+    let above_bound = F::from(u64::try_from(bound + 1).unwrap());
+
+    let (small, large_positions) =
+      field_to_i64_or_zero_for_l0(&[F::from(7u64), at_bound, above_bound], l0);
+
+    assert_eq!(small, vec![7, i64::try_from(bound).unwrap(), 0]);
+    assert_eq!(large_positions, vec![2]);
   }
 
   #[test]

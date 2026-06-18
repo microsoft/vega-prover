@@ -10,6 +10,7 @@
 //!
 //! Run with: `RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_neutronnova`
 //! Override thread counts with `BENCH_THREADS=1,4,8`.
+//! Override backends with `BENCH_L0=field,0,1,2`; `0` is the regular small round-0 baseline.
 
 #[cfg(feature = "jem")]
 use tikv_jemallocator::Jemalloc;
@@ -26,7 +27,12 @@ use bellpepper_core::{
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use ff::Field;
 use spartan2::{
-  neutronnova_zk::NeutronNovaZkSNARK,
+  errors::SpartanError,
+  neutronnova_zk::{
+    NeutronNovaNIFS, NeutronNovaNifsStrategy, NeutronNovaPrepZkSNARK, NeutronNovaProverKey,
+    NeutronNovaStepMatvecs, NeutronNovaVerifierKey, NeutronNovaZkSNARK, SmallValueNeutronNovaNIFS,
+    SmallValueNeutronNovaStepMatvecs,
+  },
   provider::T256HyraxEngine,
   traits::{Engine, circuit::SpartanCircuit},
 };
@@ -216,35 +222,257 @@ fn thread_counts() -> Vec<usize> {
   }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum BenchBackend {
+  /// Full-field regular NeutronNova, with no small-value optimization.
+  RegularField,
+  /// Old regular NeutronNova optimized path: small witness synthesis and round-0 i64 path.
+  RegularSmallRound0,
+  /// Small-value accumulator backend with runtime l0.
+  SmallValue { l0: usize },
+}
+
+impl BenchBackend {
+  fn label(self) -> String {
+    match self {
+      BenchBackend::RegularField => "regular-field".to_string(),
+      BenchBackend::RegularSmallRound0 => "regular-small-round0".to_string(),
+      BenchBackend::SmallValue { l0 } => format!("small-value-l0-{l0}"),
+    }
+  }
+}
+
+/// NIFS backends to benchmark. `0` preserves the old regular optimized baseline;
+/// `field` selects the regular full-field backend; positive values select the
+/// small-value accumulator with runtime `l0 = value`.
+fn bench_backends() -> Vec<BenchBackend> {
+  std::env::var("BENCH_L0")
+    .ok()
+    .map(|val| {
+      let values = val
+        .split(',')
+        .map(|raw| {
+          let s = raw.trim();
+          if s.is_empty() {
+            panic!("invalid BENCH_L0 value: empty entry in {val:?}");
+          }
+          if matches!(s, "field" | "regular-field" | "full-field") {
+            return BenchBackend::RegularField;
+          }
+          let l0 = s.parse::<usize>().unwrap_or_else(|_| {
+            panic!("invalid BENCH_L0 value: {s:?}; supported values are field,0,1,2,3,4,5")
+          });
+          if l0 > 5 {
+            panic!("unsupported BENCH_L0={l0}; supported values are field,0,1,2,3,4,5");
+          }
+          if l0 == 0 {
+            BenchBackend::RegularSmallRound0
+          } else {
+            BenchBackend::SmallValue { l0 }
+          }
+        })
+        .collect::<Vec<_>>();
+      if values.is_empty() {
+        vec![BenchBackend::RegularSmallRound0]
+      } else {
+        values
+      }
+    })
+    .unwrap_or_else(|| vec![BenchBackend::RegularSmallRound0])
+}
+
+fn validate_backend_for_case(backend: BenchBackend, size: usize, num_steps: usize) {
+  if let BenchBackend::SmallValue { l0 } = backend {
+    let ell_b = num_steps.next_power_of_two().ilog2() as usize;
+    if l0 > ell_b {
+      panic!("BENCH_L0={l0} exceeds ell_b={ell_b} for size={size}B num_steps={num_steps}");
+    }
+  }
+}
+
+fn prove_with_backend<Nifs>(
+  pk: &NeutronNovaProverKey<E>,
+  step_circuits: &[Sha256StepCircuit<E>],
+  core_circuit: &CoreCircuit<E>,
+  prep: NeutronNovaPrepZkSNARK<E, Nifs::StepMatvecs, Nifs::Input>,
+  nifs_input: &Nifs::Input,
+) -> Result<
+  (
+    NeutronNovaZkSNARK<E>,
+    NeutronNovaPrepZkSNARK<E, Nifs::StepMatvecs, Nifs::Input>,
+  ),
+  SpartanError,
+>
+where
+  Nifs: NeutronNovaNifsStrategy<E>,
+{
+  NeutronNovaZkSNARK::<E>::prove::<Sha256StepCircuit<E>, CoreCircuit<E>, Nifs>(
+    pk,
+    step_circuits,
+    core_circuit,
+    prep,
+    nifs_input,
+  )
+}
+
+fn prep_and_prove_with_backend<Nifs>(
+  pk: &NeutronNovaProverKey<E>,
+  step_circuits: &[Sha256StepCircuit<E>],
+  core_circuit: &CoreCircuit<E>,
+  nifs_input: &Nifs::Input,
+) -> Result<NeutronNovaZkSNARK<E>, SpartanError>
+where
+  Nifs: NeutronNovaNifsStrategy<E>,
+{
+  let prep = NeutronNovaZkSNARK::<E>::prep_prove::<Sha256StepCircuit<E>, CoreCircuit<E>, Nifs>(
+    pk,
+    step_circuits,
+    core_circuit,
+    nifs_input,
+  )?;
+  let (proof, _) = prove_with_backend::<Nifs>(pk, step_circuits, core_circuit, prep, nifs_input)?;
+  Ok(proof)
+}
+
+type RegularPrep = NeutronNovaPrepZkSNARK<E, NeutronNovaStepMatvecs<E>, bool>;
+type SmallValuePrep = NeutronNovaPrepZkSNARK<E, SmallValueNeutronNovaStepMatvecs<E>, usize>;
+
+enum PreparedBenchCase {
+  Regular {
+    pk: NeutronNovaProverKey<E>,
+    vk: NeutronNovaVerifierKey<E>,
+    step_circuits: Vec<Sha256StepCircuit<E>>,
+    core_circuit: CoreCircuit<E>,
+    prep: RegularPrep,
+    nifs_input: bool,
+  },
+  SmallValue {
+    pk: NeutronNovaProverKey<E>,
+    vk: NeutronNovaVerifierKey<E>,
+    step_circuits: Vec<Sha256StepCircuit<E>>,
+    core_circuit: CoreCircuit<E>,
+    prep: SmallValuePrep,
+    l0: usize,
+  },
+}
+
+fn prove_prepared(
+  case: PreparedBenchCase,
+) -> Result<(NeutronNovaZkSNARK<E>, NeutronNovaVerifierKey<E>), SpartanError> {
+  match case {
+    PreparedBenchCase::Regular {
+      pk,
+      vk,
+      step_circuits,
+      core_circuit,
+      prep,
+      nifs_input,
+    } => {
+      let (proof, _) = prove_with_backend::<NeutronNovaNIFS<E>>(
+        &pk,
+        &step_circuits,
+        &core_circuit,
+        prep,
+        &nifs_input,
+      )?;
+      Ok((proof, vk))
+    }
+    PreparedBenchCase::SmallValue {
+      pk,
+      vk,
+      step_circuits,
+      core_circuit,
+      prep,
+      l0,
+    } => {
+      let (proof, _) = prove_with_backend::<SmallValueNeutronNovaNIFS<E>>(
+        &pk,
+        &step_circuits,
+        &core_circuit,
+        prep,
+        &l0,
+      )?;
+      Ok((proof, vk))
+    }
+  }
+}
+
 fn make_step_circuits(num_steps: usize) -> Vec<Sha256StepCircuit<E>> {
   (0..num_steps)
     .map(|i| Sha256StepCircuit::<E>::new([i as u8; BLOCK_BYTES]))
     .collect()
 }
 
+fn prepare_case(num_steps: usize, backend: BenchBackend) -> PreparedBenchCase {
+  let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
+  let core_proto = CoreCircuit::<E>::new();
+  let (pk, vk) = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
+  let step_circuits = make_step_circuits(num_steps);
+  let core_circuit = CoreCircuit::<E>::new();
+  match backend {
+    BenchBackend::RegularField | BenchBackend::RegularSmallRound0 => {
+      let nifs_input = matches!(backend, BenchBackend::RegularSmallRound0);
+      let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
+        &pk,
+        &step_circuits,
+        &core_circuit,
+        &nifs_input,
+      )
+      .unwrap();
+      PreparedBenchCase::Regular {
+        pk,
+        vk,
+        step_circuits,
+        core_circuit,
+        prep,
+        nifs_input,
+      }
+    }
+    BenchBackend::SmallValue { l0 } => {
+      let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
+        &pk,
+        &step_circuits,
+        &core_circuit,
+        &l0,
+      )
+      .unwrap();
+      PreparedBenchCase::SmallValue {
+        pk,
+        vk,
+        step_circuits,
+        core_circuit,
+        prep,
+        l0,
+      }
+    }
+  }
+}
+
 fn neutronnova_benches(c: &mut Criterion) {
   let thread_counts = thread_counts();
+  let backends = bench_backends();
+  for &backend in &backends {
+    for &size in SIZES {
+      validate_backend_for_case(backend, size, num_steps_for_size(size));
+    }
+  }
 
   // Report proof sizes once per size (outside measurements).
-  for &size in SIZES {
-    let num_steps = num_steps_for_size(size);
-    let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
-    let core_proto = CoreCircuit::<E>::new();
-    let (pk, _vk) = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
-    let step_circuits = make_step_circuits(num_steps);
-    let core_circuit = CoreCircuit::<E>::new();
-    let prep =
-      NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true).unwrap();
-    let (proof, _) =
-      NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true).unwrap();
-    let proof_bytes = bincode::serialize(&proof).unwrap();
-    println!(
-      "NeutronNova SHA-256 size={}B num_steps={} (= {} compressions): proof_size={} bytes",
-      size,
-      num_steps,
-      num_steps,
-      proof_bytes.len()
-    );
+  for &backend in &backends {
+    let backend_label = backend.label();
+    for &size in SIZES {
+      let num_steps = num_steps_for_size(size);
+      let (proof, _) = prove_prepared(prepare_case(num_steps, backend)).unwrap();
+      let proof_bytes = bincode::serialize(&proof).unwrap();
+      println!(
+        "NeutronNova SHA-256 backend={} size={}B num_steps={} (= {} compressions): proof_size={} bytes",
+        backend_label,
+        size,
+        num_steps,
+        num_steps,
+        proof_bytes.len()
+      );
+    }
   }
 
   let mut g = c.benchmark_group("neutronnova_sha256");
@@ -272,87 +500,122 @@ fn neutronnova_benches(c: &mut Criterion) {
         });
       });
 
-      g.bench_function(format!("prep_prove/{size}/t{nthreads}"), |b| {
-        b.iter_batched(
-          || {
-            pool.install(|| {
-              let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
-              let core_proto = CoreCircuit::<E>::new();
-              NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps)
-                .unwrap()
-                .0
-            })
-          },
-          |pk| {
-            pool.install(|| {
-              let step_circuits = make_step_circuits(num_steps);
-              let core_circuit = CoreCircuit::<E>::new();
-              let _ = NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true)
-                .unwrap();
-            });
-          },
-          BatchSize::LargeInput,
-        );
-      });
+      for &backend in &backends {
+        let backend_label = backend.label();
 
-      g.bench_function(format!("prove/{size}/t{nthreads}"), |b| {
-        b.iter_batched(
-          || {
-            pool.install(|| {
-              let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
-              let core_proto = CoreCircuit::<E>::new();
-              let (pk, _vk) =
-                NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
-              let step_circuits = make_step_circuits(num_steps);
-              let core_circuit = CoreCircuit::<E>::new();
-              let prep =
-                NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true)
-                  .unwrap();
-              // Warm-up prove
-              let (_proof, prep_back) =
-                NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true)
-                  .unwrap();
-              (pk, step_circuits, core_circuit, prep_back)
-            })
+        g.bench_function(
+          format!("prep_prove/{backend_label}/{size}/t{nthreads}"),
+          |b| {
+            b.iter_batched(
+              || {
+                pool.install(|| {
+                  let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
+                  let core_proto = CoreCircuit::<E>::new();
+                  NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps)
+                    .unwrap()
+                    .0
+                })
+              },
+              |pk| {
+                pool.install(|| {
+                  let step_circuits = make_step_circuits(num_steps);
+                  let core_circuit = CoreCircuit::<E>::new();
+                  match backend {
+                    BenchBackend::RegularField | BenchBackend::RegularSmallRound0 => {
+                      let nifs_input = matches!(backend, BenchBackend::RegularSmallRound0);
+                      let _ = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
+                        &pk,
+                        &step_circuits,
+                        &core_circuit,
+                        &nifs_input,
+                      )
+                      .unwrap();
+                    }
+                    BenchBackend::SmallValue { l0 } => {
+                      let _ = NeutronNovaZkSNARK::<E>::prep_prove::<
+                        _,
+                        _,
+                        SmallValueNeutronNovaNIFS<E>,
+                      >(&pk, &step_circuits, &core_circuit, &l0)
+                      .unwrap();
+                    }
+                  }
+                });
+              },
+              BatchSize::LargeInput,
+            );
           },
-          |(pk, step_circuits, core_circuit, prep)| {
-            pool.install(|| {
-              let _ =
-                NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true)
-                  .unwrap();
-            });
-          },
-          BatchSize::LargeInput,
         );
-      });
 
-      g.bench_function(format!("verify/{size}/t{nthreads}"), |b| {
-        b.iter_batched(
-          || {
-            pool.install(|| {
-              let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
-              let core_proto = CoreCircuit::<E>::new();
-              let (pk, vk) =
-                NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
-              let step_circuits = make_step_circuits(num_steps);
-              let core_circuit = CoreCircuit::<E>::new();
-              let prep =
-                NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true)
+        g.bench_function(format!("prove/{backend_label}/{size}/t{nthreads}"), |b| {
+          b.iter_batched(
+            || pool.install(|| prepare_case(num_steps, backend)),
+            |case| {
+              pool.install(|| {
+                let _ = prove_prepared(case).unwrap();
+              });
+            },
+            BatchSize::LargeInput,
+          );
+        });
+
+        g.bench_function(format!("total/{backend_label}/{size}/t{nthreads}"), |b| {
+          b.iter_batched(
+            || {
+              pool.install(|| {
+                let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
+                let core_proto = CoreCircuit::<E>::new();
+                let (pk, _) =
+                  NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
+                let step_circuits = make_step_circuits(num_steps);
+                let core_circuit = CoreCircuit::<E>::new();
+                (pk, step_circuits, core_circuit)
+              })
+            },
+            |(pk, step_circuits, core_circuit)| {
+              pool.install(|| match backend {
+                BenchBackend::RegularField | BenchBackend::RegularSmallRound0 => {
+                  let nifs_input = matches!(backend, BenchBackend::RegularSmallRound0);
+                  let _ = prep_and_prove_with_backend::<NeutronNovaNIFS<E>>(
+                    &pk,
+                    &step_circuits,
+                    &core_circuit,
+                    &nifs_input,
+                  )
                   .unwrap();
-              let (proof, _) =
-                NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true)
+                }
+                BenchBackend::SmallValue { l0 } => {
+                  let _ = prep_and_prove_with_backend::<SmallValueNeutronNovaNIFS<E>>(
+                    &pk,
+                    &step_circuits,
+                    &core_circuit,
+                    &l0,
+                  )
                   .unwrap();
-              (vk, proof)
-            })
-          },
-          |(vk, proof)| {
-            pool.install(|| {
-              proof.verify(&vk, num_steps).unwrap();
-            });
-          },
-          BatchSize::LargeInput,
-        );
-      });
+                }
+              });
+            },
+            BatchSize::LargeInput,
+          );
+        });
+
+        g.bench_function(format!("verify/{backend_label}/{size}/t{nthreads}"), |b| {
+          b.iter_batched(
+            || {
+              pool.install(|| {
+                let (proof, vk) = prove_prepared(prepare_case(num_steps, backend)).unwrap();
+                (vk, proof)
+              })
+            },
+            |(vk, proof)| {
+              pool.install(|| {
+                proof.verify(&vk, num_steps).unwrap();
+              });
+            },
+            BatchSize::LargeInput,
+          );
+        });
+      }
     }
   }
   g.finish();

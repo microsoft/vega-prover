@@ -9,19 +9,23 @@
 //! This module provides:
 //! - [`build_accumulators_spartan`]: Optimized builder for Spartan's cubic relation
 
-#[cfg(test)]
-use super::extension::{bit_rev_prefix_table, gather_and_extend_prefix};
+use std::ops::{Add, Mul, Sub};
+
+use super::extension::{bit_rev_prefix_table, extend_to_lagrange_domain, gather_and_extend_prefix};
 use super::{
-  accumulator::LagrangeAccumulators, csr::Csr, domain::LagrangeIndex,
-  extension::extend_to_lagrange_domain, extension_bound::ExtensionBoundedPoly,
-  index::AccumulatorPrefixIndex, thread_state::SpartanThreadState,
+  accumulator::LagrangeAccumulators,
+  csr::Csr,
+  domain::LagrangeIndex,
+  extension_bound::ExtensionBoundedPoly,
+  index::AccumulatorPrefixIndex,
+  thread_state::{PrefixExtensionScratch, SpartanThreadState},
 };
 use crate::{
   big_num::{DelayedReduction, SmallValue, SmallValueEngine, WideMul},
+  errors::SpartanError,
   polys::{eq::build_eq_pyramid, eq::compute_suffix_eq_pyramid},
+  r1cs::weights_from_r,
 };
-#[cfg(test)]
-use crate::{errors::SpartanError, r1cs::weights_from_r};
 use ff::PrimeField;
 use num_traits::Zero;
 use rayon::prelude::*;
@@ -188,24 +192,24 @@ where
           #[allow(clippy::needless_range_loop)]
           for prefix in 0..prefix_size {
             let idx = (prefix << suffix_vars) | suffix;
-            state.az_prefix_boolean_evals[prefix] = az.Z[idx];
-            state.bz_prefix_boolean_evals[prefix] = bz.Z[idx];
+            state.ext.a_prefix[prefix] = az.Z[idx];
+            state.ext.b_prefix[prefix] = bz.Z[idx];
           }
 
           // Extend Az and Bz to Lagrange domain in-place (zero allocation)
           let az_size = extend_to_lagrange_domain::<SV, SMALL_VALUE_T_DEGREE>(
-            &state.az_prefix_boolean_evals,
-            &mut state.az_extended_evals,
-            &mut state.az_extended_scratch,
+            &state.ext.a_prefix,
+            &mut state.ext.a_ext,
+            &mut state.ext.a_scratch,
           );
-          let az_ext = &state.az_extended_evals[..az_size];
+          let az_ext = &state.ext.a_ext[..az_size];
 
           let bz_size = extend_to_lagrange_domain::<SV, SMALL_VALUE_T_DEGREE>(
-            &state.bz_prefix_boolean_evals,
-            &mut state.bz_extended_evals,
-            &mut state.bz_extended_scratch,
+            &state.ext.b_prefix,
+            &mut state.ext.b_ext,
+            &mut state.ext.b_scratch,
           );
-          let bz_ext = &state.bz_extended_evals[..bz_size];
+          let bz_ext = &state.ext.b_ext[..bz_size];
 
           // Only process betas with ∞ - binary betas contribute 0 for satisfying witnesses
           // Uses delayed modular reduction: accumulates into unreduced wide-limb form.
@@ -271,6 +275,101 @@ where
   )
 }
 
+/// Thread-local field scratch for sparse large-position corrections.
+struct NeutronNovaFieldCorrectionState<F, const D: usize>
+where
+  F: Copy + Default + DelayedReduction<F>,
+{
+  acc: LagrangeAccumulators<<F as DelayedReduction<F>>::Accumulator, D>,
+  ext: PrefixExtensionScratch<F>,
+}
+
+impl<F, const D: usize> NeutronNovaFieldCorrectionState<F, D>
+where
+  F: Copy + Default + DelayedReduction<F>,
+{
+  fn new(l0: usize, prefix_size: usize, ext_size: usize) -> Self {
+    Self {
+      acc: LagrangeAccumulators::new(l0),
+      ext: PrefixExtensionScratch::new(prefix_size, ext_size),
+    }
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn for_each_extended_ab_at_idx<T, F, const D: usize>(
+  a_layers: &[&[T]],
+  b_layers: &[&[T]],
+  bit_rev: &[usize],
+  suffix_weights: &[F],
+  idx: usize,
+  e_inner_val: F,
+  l0: usize,
+  betas_with_infty: &[usize],
+  scratch: &mut PrefixExtensionScratch<T>,
+  mut accumulate_beta: impl FnMut(usize, F, T, T),
+) where
+  T: Copy + Default + Add<Output = T> + Sub<Output = T>,
+  F: Copy + Mul<Output = F>,
+{
+  for (suffix_idx, &suffix_weight) in suffix_weights.iter().enumerate() {
+    let layer_base = suffix_idx << l0;
+    let a_size = gather_and_extend_prefix::<T, D>(
+      a_layers,
+      bit_rev,
+      layer_base,
+      idx,
+      &mut scratch.a_prefix,
+      &mut scratch.a_ext,
+      &mut scratch.a_scratch,
+    );
+    let b_size = gather_and_extend_prefix::<T, D>(
+      b_layers,
+      bit_rev,
+      layer_base,
+      idx,
+      &mut scratch.b_prefix,
+      &mut scratch.b_ext,
+      &mut scratch.b_scratch,
+    );
+    debug_assert_eq!(a_size, b_size);
+
+    let weighted_inner = e_inner_val * suffix_weight;
+    for &beta_idx in betas_with_infty {
+      accumulate_beta(
+        beta_idx,
+        weighted_inner,
+        scratch.a_ext[beta_idx],
+        scratch.b_ext[beta_idx],
+      );
+    }
+  }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scatter_beta_value<F, const D: usize>(
+  acc: &mut LagrangeAccumulators<<F as DelayedReduction<F>>::Accumulator, D>,
+  beta_idx: usize,
+  val: &F,
+  x_outer: usize,
+  beta_prefix_cache: &Csr<AccumulatorPrefixIndex>,
+  num_y_per_round: &[usize],
+  e_cache: &[Vec<F>],
+) where
+  F: PrimeField + DelayedReduction<F>,
+{
+  for pref in &beta_prefix_cache[beta_idx] {
+    let round = pref.round_0 as usize;
+    let num_y = num_y_per_round[round];
+    let e_val = e_cache[round][x_outer * num_y + pref.y_idx as usize];
+    <F as DelayedReduction<F>>::unreduced_multiply_accumulate(
+      &mut acc.rounds[round].data_mut()[pref.v_idx as usize][pref.u_idx as usize],
+      val,
+      &e_val,
+    );
+  }
+}
+
 /// Builds the table accumulators used by NeutronNova's small-value NIFS.
 ///
 /// Handles both modes uniformly:
@@ -279,25 +378,34 @@ where
 /// - partial-small (`0 < l0 < ell_b`): the first `l0` instance bits use the
 ///   accumulator path, while the suffix bits are summed with Boolean equality
 ///   weights from `rhos[l0..]`.
-#[cfg(test)]
-pub(crate) fn build_accumulators_neutronnova<'poly, F, SV, const LB: usize>(
-  a_layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
-  b_layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
+pub(crate) fn build_accumulators_neutronnova<F, SV>(
+  a_evals: &[&[SV]],
+  b_evals: &[&[SV]],
+  a_field_evals: &[&[F]],
+  b_field_evals: &[&[F]],
+  large_positions: &[usize],
   e_eq: &[F],
   left: usize,
   right: usize,
   rhos: &[F],
+  l0: usize,
 ) -> Result<LagrangeAccumulators<F, SMALL_VALUE_T_DEGREE>, SpartanError>
 where
-  F: PrimeField + DelayedReduction<SV::Product> + DelayedReduction<F> + Send + Sync,
+  F: PrimeField + Default + DelayedReduction<SV::Product> + DelayedReduction<F> + Send + Sync,
   SV: SmallValue,
 {
-  let l0 = LB;
-  let n = a_layers.len();
+  let n = a_evals.len();
   if n == 0 || !n.is_power_of_two() {
     return Err(invalid_input(format!(
       "build_accumulators_neutronnova requires a non-empty power-of-two layer count; got {}",
       n
+    )));
+  }
+  if b_evals.len() != n {
+    return Err(invalid_input(format!(
+      "A/B layer count mismatch: {} vs {}",
+      n,
+      b_evals.len()
     )));
   }
   let ell_b = n.trailing_zeros() as usize;
@@ -313,13 +421,6 @@ where
       "rhos length {} does not match ell_b {}",
       rhos.len(),
       ell_b
-    )));
-  }
-  if b_layers.len() != n {
-    return Err(invalid_input(format!(
-      "A/B layer counts do not match: A has {}, B has {}",
-      n,
-      b_layers.len()
     )));
   }
   let expected_eq_len = left
@@ -338,25 +439,49 @@ where
   if expected_layer_len == 0 {
     return Err(invalid_input("left * right must be non-zero"));
   }
-  let a_evals = layer_evals(a_layers);
-  let b_evals = layer_evals(b_layers);
+  if !large_positions.windows(2).all(|pair| pair[0] < pair[1]) {
+    return Err(invalid_input("large positions must be sorted and unique"));
+  }
+  if let Some(pos) = large_positions
+    .iter()
+    .copied()
+    .find(|&pos| pos >= expected_layer_len)
+  {
+    return Err(invalid_input(format!(
+      "large position {} is out of range for layer length {}",
+      pos, expected_layer_len
+    )));
+  }
   if !a_evals
     .iter()
+    .chain(b_evals.iter())
     .all(|layer| layer.len() == expected_layer_len)
   {
     return Err(invalid_input(format!(
-      "all A layers must have length left * right ({})",
+      "all A/B layers must have length left * right {}",
       expected_layer_len
     )));
   }
-  if !b_evals
-    .iter()
-    .all(|layer| layer.len() == expected_layer_len)
-  {
-    return Err(invalid_input(format!(
-      "all B layers must have length left * right ({})",
-      expected_layer_len
-    )));
+
+  if !large_positions.is_empty() {
+    if a_field_evals.len() != n || b_field_evals.len() != n {
+      return Err(invalid_input(format!(
+        "field correction layers must match layer count {}; got A={} B={}",
+        n,
+        a_field_evals.len(),
+        b_field_evals.len()
+      )));
+    }
+    if !a_field_evals
+      .iter()
+      .chain(b_field_evals.iter())
+      .all(|layer| layer.len() == expected_layer_len)
+    {
+      return Err(invalid_input(format!(
+        "all field correction layers must have length left * right {}",
+        expected_layer_len
+      )));
+    }
   }
 
   // Partition the instance bits into the Lagrange prefix handled here and the
@@ -431,40 +556,25 @@ where
         x_outer * left + x_inner
       };
 
-      for (suffix_idx, &suffix_weight) in suffix_weights.iter().enumerate() {
-        let layer_base = suffix_idx << l0;
-        let az_size = gather_and_extend_prefix(
-          &a_evals,
-          &bit_rev,
-          layer_base,
-          idx,
-          &mut state.az_prefix_boolean_evals,
-          &mut state.az_extended_evals,
-          &mut state.az_extended_scratch,
-        );
-        let az_ext = &state.az_extended_evals[..az_size];
-
-        let bz_size = gather_and_extend_prefix(
-          &b_evals,
-          &bit_rev,
-          layer_base,
-          idx,
-          &mut state.bz_prefix_boolean_evals,
-          &mut state.bz_extended_evals,
-          &mut state.bz_extended_scratch,
-        );
-        let bz_ext = &state.bz_extended_evals[..bz_size];
-        let weighted_inner = e_inner_val * suffix_weight;
-
-        for &beta_idx in &betas_with_infty {
-          let prod = SV::wide_mul(az_ext[beta_idx], bz_ext[beta_idx]);
+      for_each_extended_ab_at_idx::<SV, F, SMALL_VALUE_T_DEGREE>(
+        &a_evals,
+        &b_evals,
+        &bit_rev,
+        &suffix_weights,
+        idx,
+        e_inner_val,
+        l0,
+        &betas_with_infty,
+        &mut state.ext,
+        |beta_idx, weighted_inner, a_beta, b_beta| {
+          let prod = SV::wide_mul(a_beta, b_beta);
           F::unreduced_multiply_accumulate(
             &mut state.partial_sums[beta_idx],
             &weighted_inner,
             &prod,
           );
-        }
-      }
+        },
+      );
     }
 
     // Reduce each beta once, then route it into the affected round buckets.
@@ -481,21 +591,20 @@ where
 
     // Apply the cached equality weights while scattering into accumulator cells.
     for &(beta_idx, ref val) in &state.beta_values {
-      for pref in &beta_prefix_cache[beta_idx] {
-        let round = pref.round_0 as usize;
-        let num_y = num_y_per_round[round];
-        let e_val = e_cache[round][x_outer * num_y + pref.y_idx as usize];
-        <F as DelayedReduction<F>>::unreduced_multiply_accumulate(
-          &mut state.acc.rounds[round].data_mut()[pref.v_idx as usize][pref.u_idx as usize],
-          val,
-          &e_val,
-        );
-      }
+      scatter_beta_value::<F, SMALL_VALUE_T_DEGREE>(
+        &mut state.acc,
+        beta_idx,
+        val,
+        x_outer,
+        &beta_prefix_cache,
+        &num_y_per_round,
+        &e_cache,
+      );
     }
   };
 
   // Merge the thread-local accumulator buckets produced by the outer loop.
-  let merged = (0..outer_dim)
+  let mut merged = (0..outer_dim)
     .into_par_iter()
     .fold(
       || State::<F, SV>::new(l0, num_betas, prefix_size, ext_size),
@@ -510,25 +619,65 @@ where
     })
     .unwrap_or_else(|| State::<F, SV>::new(l0, num_betas, prefix_size, ext_size));
 
+  if !large_positions.is_empty() {
+    type CorrectionState<F2> = NeutronNovaFieldCorrectionState<F2, SMALL_VALUE_T_DEGREE>;
+    let correction = large_positions
+      .par_iter()
+      .fold(
+        || CorrectionState::<F>::new(l0, prefix_size, ext_size),
+        |mut state, &idx| {
+          debug_assert!(idx < expected_layer_len);
+          let (x_outer, x_inner) = if swap_loops {
+            (idx % left, idx / left)
+          } else {
+            (idx / left, idx % left)
+          };
+          let e_inner_val = e_inner[x_inner];
+
+          for_each_extended_ab_at_idx::<F, F, SMALL_VALUE_T_DEGREE>(
+            a_field_evals,
+            b_field_evals,
+            &bit_rev,
+            &suffix_weights,
+            idx,
+            e_inner_val,
+            l0,
+            &betas_with_infty,
+            &mut state.ext,
+            |beta_idx, weighted_inner, a_beta, b_beta| {
+              let val = weighted_inner * a_beta * b_beta;
+              if val == F::ZERO {
+                return;
+              }
+              scatter_beta_value::<F, SMALL_VALUE_T_DEGREE>(
+                &mut state.acc,
+                beta_idx,
+                &val,
+                x_outer,
+                &beta_prefix_cache,
+                &num_y_per_round,
+                &e_cache,
+              );
+            },
+          );
+
+          state
+        },
+      )
+      .reduce_with(|mut a, b| {
+        a.acc.merge(&b.acc);
+        a
+      })
+      .unwrap_or_else(|| CorrectionState::<F>::new(l0, prefix_size, ext_size));
+    merged.acc.merge(&correction.acc);
+  }
+
   // Convert merged wide accumulators back into field elements.
   Ok(
     merged
       .acc
       .map(|acc| <F as DelayedReduction<F>>::reduce(acc)),
   )
-}
-
-#[cfg(test)]
-fn layer_evals<'poly, SV, const LB: usize>(
-  layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
-) -> Vec<&'poly [SV]>
-where
-  SV: SmallValue,
-{
-  layers
-    .iter()
-    .map(|layer| layer.as_poly().Z.as_slice())
-    .collect()
 }
 
 /// Precomputed eq polynomial pyramids with balanced split.
@@ -596,7 +745,6 @@ pub(crate) fn build_beta_cache<const D: usize>(l0: usize) -> BetaPrefixCache {
   BetaPrefixCache { cache, num_betas }
 }
 
-#[cfg(test)]
 fn invalid_input(reason: impl Into<String>) -> SpartanError {
   SpartanError::InvalidInputLength {
     reason: reason.into(),
