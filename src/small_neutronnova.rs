@@ -147,7 +147,7 @@ where
       ws,
       &step_mles.field,
       &step_mles.small_abc,
-      &e_eq,
+      e_eq,
       left,
       right,
       &rhos,
@@ -394,7 +394,7 @@ pub(crate) fn prove_small<E, SV, const L0: usize>(
     ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
     ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
   >,
-  e_eq: &[E::Scalar],
+  e_eq: Vec<E::Scalar>,
   left: usize,
   right: usize,
   rhos: &[E::Scalar],
@@ -448,7 +448,7 @@ where
     &c_field_evals,
     &small_abc.ab.field_positions,
     &small_abc.c_field_positions,
-    e_eq,
+    &e_eq,
     left,
     right,
     rhos,
@@ -475,7 +475,7 @@ where
     &a_field_evals,
     &b_field_evals,
     &small_abc.ab.field_positions,
-    e_eq,
+    &e_eq,
     left,
     right,
     rhos,
@@ -531,7 +531,7 @@ where
       &small_abc.c_field_positions,
       &prefix_weights,
       prefix_size,
-      e_eq,
+      &e_eq,
       left,
       right,
     )?;
@@ -540,7 +540,7 @@ where
       &mut a_layers,
       &mut b_layers,
       &mut c_claims,
-      e_eq,
+      &e_eq,
       left,
       right,
       rhos,
@@ -579,7 +579,7 @@ where
   let (folded_w, folded_u) =
     fold_witness_and_instance(s, ck, us, ws, num_instances, n_padded, &r_bs)?;
 
-  Ok((e_eq.to_vec(), az_step, bz_step, cz_step, folded_w, folded_u))
+  Ok((e_eq, az_step, bz_step, cz_step, folded_w, folded_u))
 }
 
 fn empty_fold_error() -> SpartanError {
@@ -1056,36 +1056,35 @@ where
       }
     })
     .collect::<Vec<_>>();
-  let weighted_layer_claims = (0..c_layers.len())
-    .into_par_iter()
-    .map(|layer_idx| {
-      let prefix_idx = layer_idx % prefix_size;
-      let mut layer_claim =
-        dot_small_layer_with_split_eq::<E, SV>(c_layers[layer_idx], e_left, e_right, left);
-
-      if !large_eq.is_empty() {
-        let mut large_acc = <E::Scalar as DelayedReduction<E::Scalar>>::Accumulator::zero();
-        for &(k, eq_k) in &large_eq {
-          <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
-            &mut large_acc,
-            &eq_k,
-            &c_field_layers[layer_idx][k],
-          );
-        }
-        layer_claim += <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&large_acc);
-      }
-
-      prefix_weights[prefix_idx] * layer_claim
-    })
-    .collect::<Vec<_>>();
-
+  let suffix_groups = c_layers.len() / prefix_size;
   Ok(
-    weighted_layer_claims
-      .chunks(prefix_size)
-      .map(|claims| {
-        claims
+    (0..suffix_groups)
+      .into_par_iter()
+      .map(|suffix_idx| {
+        let layer_base = suffix_idx * prefix_size;
+        prefix_weights
           .iter()
-          .fold(E::Scalar::ZERO, |acc, claim| acc + *claim)
+          .enumerate()
+          .fold(E::Scalar::ZERO, |acc, (prefix_idx, weight)| {
+            let layer_idx = layer_base + prefix_idx;
+            let mut layer_claim =
+              dot_small_layer_with_split_eq::<E, SV>(c_layers[layer_idx], e_left, e_right, left);
+
+            if !large_eq.is_empty() {
+              let c_field = c_field_layers[layer_idx];
+              let mut large_acc = <E::Scalar as DelayedReduction<E::Scalar>>::Accumulator::zero();
+              for &(k, eq_k) in &large_eq {
+                <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
+                  &mut large_acc,
+                  &eq_k,
+                  &c_field[k],
+                );
+              }
+              layer_claim += <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&large_acc);
+            }
+
+            acc + *weight * layer_claim
+          })
       })
       .collect(),
   )

@@ -2664,8 +2664,9 @@ where
   /// Prove the folding of a batch of R1CS instances and a core circuit with this proof type's
   /// NIFS strategy.
   /// Takes ownership of `prep_snark` to avoid cloning large witness vectors (~66MB).
-  /// Returns the proof and the consumed prep state. Cached step MLEs are one-shot:
-  /// rerun `prep_prove` to rebuild the cache before proving again.
+  /// Returns the proof and the consumed prep state. The first proof may consume
+  /// cached step MLEs; later proofs with the returned prep state rebuild them
+  /// from the generated instances/witnesses rather than cloning the cache.
   pub fn prove<C1, C2>(
     pk: &NeutronNovaProverKey<E>,
     step_circuits: &[C1],
@@ -2702,43 +2703,28 @@ where
     // Validate that cached MLE matches current step circuit public values.
     // The cache computed in prep_prove includes public_values in the z vector;
     // if the circuits changed, the cache is stale and would produce incorrect proofs.
-    match (
-      prep_snark.cached_step_mles.is_some(),
-      prep_snark.cached_step_public_values.is_empty(),
-    ) {
-      (true, false) => {
-        if prep_snark.cached_step_public_values.len() != step_circuits.len() {
-          return Err(SpartanError::InternalError {
-            reason: format!(
-              "Cached MLE was computed for {} step circuits, but prove received {}",
-              prep_snark.cached_step_public_values.len(),
-              step_circuits.len()
-            ),
-          });
-        }
-        for (i, circuit) in step_circuits.iter().enumerate() {
-          let current_pv = circuit
-            .public_values()
-            .map_err(|e| SpartanError::SynthesisError {
-              reason: format!("Circuit does not provide public IO: {e}"),
-            })?;
-          if prep_snark.cached_step_public_values[i] != current_pv {
-            return Err(SpartanError::InternalError {
-              reason: format!(
-                "Step circuit {i} public values changed between prep_prove and prove"
-              ),
-            });
-          }
-        }
-      }
-      (false, false) => {
+    if !prep_snark.cached_step_public_values.is_empty() {
+      if prep_snark.cached_step_public_values.len() != step_circuits.len() {
         return Err(SpartanError::InternalError {
-          reason:
-            "Cached step MLEs were consumed by a previous prove; rerun prep_prove to rebuild them"
-              .to_string(),
+          reason: format!(
+            "Cached MLE was computed for {} step circuits, but prove received {}",
+            prep_snark.cached_step_public_values.len(),
+            step_circuits.len()
+          ),
         });
       }
-      _ => {}
+      for (i, circuit) in step_circuits.iter().enumerate() {
+        let current_pv = circuit
+          .public_values()
+          .map_err(|e| SpartanError::SynthesisError {
+            reason: format!("Circuit does not provide public IO: {e}"),
+          })?;
+        if prep_snark.cached_step_public_values[i] != current_pv {
+          return Err(SpartanError::InternalError {
+            reason: format!("Step circuit {i} public values changed between prep_prove and prove"),
+          });
+        }
+      }
     }
 
     // Parallel generation of instances and witnesses
@@ -3747,6 +3733,52 @@ mod tests {
     )?;
     let (step_public, _core_public) = snark.verify(&vk, NUM_CIRCUITS)?;
     assert_eq!(step_public.len(), NUM_CIRCUITS);
+
+    Ok(())
+  }
+
+  #[test]
+  fn test_cacheable_prep_rebuilds_mles_after_cache_consumption() -> Result<(), SpartanError> {
+    type E = T256HyraxEngine;
+    const NUM_CIRCUITS: usize = 2;
+
+    let step_proto = CacheablePublicCircuit::<E> {
+      value: <E as Engine>::Scalar::ZERO,
+    };
+    let core_proto = step_proto.clone();
+    let (pk, vk) = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, NUM_CIRCUITS)?;
+    let step_circuits = (0..NUM_CIRCUITS)
+      .map(|i| CacheablePublicCircuit::<E> {
+        value: <E as Engine>::Scalar::from(i as u64),
+      })
+      .collect::<Vec<_>>();
+    let core_circuit = CacheablePublicCircuit::<E> {
+      value: <E as Engine>::Scalar::ZERO,
+    };
+
+    let nifs_input = false;
+    let prep =
+      NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(&pk, &step_circuits, &core_circuit, &nifs_input)?;
+    assert!(prep.cached_step_mles.is_some());
+
+    let (first_snark, prep) = NeutronNovaZkSNARK::<E>::prove::<_, _>(
+      &pk,
+      &step_circuits,
+      &core_circuit,
+      prep,
+      &nifs_input,
+    )?;
+    first_snark.verify(&vk, NUM_CIRCUITS)?;
+    assert!(prep.cached_step_mles.is_none());
+
+    let (second_snark, _prep) = NeutronNovaZkSNARK::<E>::prove::<_, _>(
+      &pk,
+      &step_circuits,
+      &core_circuit,
+      prep,
+      &nifs_input,
+    )?;
+    second_snark.verify(&vk, NUM_CIRCUITS)?;
 
     Ok(())
   }
