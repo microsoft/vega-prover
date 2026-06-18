@@ -912,7 +912,13 @@ where
 
       if use_round0_small_optimization {
         if ell_b == 1 {
-          fold_ab_c_claim_pairs::<E>(&mut A_layers, &mut B_layers, &mut c_claims, pairs, r_b);
+          fold_ab_c_claim_pairs_in_range::<E>(
+            &mut A_layers,
+            &mut B_layers,
+            &mut c_claims,
+            0..pairs,
+            r_b,
+          );
           A_layers.truncate(pairs);
           B_layers.truncate(pairs);
           c_claims.truncate(pairs);
@@ -1040,7 +1046,7 @@ where
         }
       } else {
         if ell_b == 1 {
-          fold_abc_pairs(&mut A_layers, &mut B_layers, &mut C_layers, pairs, r_b);
+          fold_abc_pairs_in_range(&mut A_layers, &mut B_layers, &mut C_layers, 0..pairs, r_b);
           A_layers.truncate(pairs);
           B_layers.truncate(pairs);
           C_layers.truncate(pairs);
@@ -1118,11 +1124,11 @@ where
           }
 
           let final_pairs = m / 2;
-          fold_abc_pairs(
+          fold_abc_pairs_in_range(
             &mut A_layers,
             &mut B_layers,
             &mut C_layers,
-            final_pairs,
+            0..final_pairs,
             prev_r_b,
           );
           A_layers.truncate(final_pairs);
@@ -1816,16 +1822,6 @@ pub(crate) fn fold_abc_pair_into<F: Field>(
   fold_layer_pair_into(c_layers, src_even, src_odd, dest, r);
 }
 
-fn fold_abc_pairs<F: Field>(
-  a_layers: &mut [Vec<F>],
-  b_layers: &mut [Vec<F>],
-  c_layers: &mut [Vec<F>],
-  pairs: usize,
-  r: F,
-) {
-  fold_abc_pairs_in_range(a_layers, b_layers, c_layers, 0..pairs, r);
-}
-
 fn fold_abc_pairs_in_range<F: Field>(
   a_layers: &mut [Vec<F>],
   b_layers: &mut [Vec<F>],
@@ -2446,18 +2442,6 @@ where
   Ok(folded)
 }
 
-fn fold_ab_c_claim_pairs<E>(
-  a_layers: &mut [Vec<E::Scalar>],
-  b_layers: &mut [Vec<E::Scalar>],
-  c_claims: &mut [E::Scalar],
-  pairs: usize,
-  r: E::Scalar,
-) where
-  E: Engine,
-{
-  fold_ab_c_claim_pairs_in_range::<E>(a_layers, b_layers, c_claims, 0..pairs, r);
-}
-
 fn fold_ab_c_claim_pairs_in_range<E>(
   a_layers: &mut [Vec<E::Scalar>],
   b_layers: &mut [Vec<E::Scalar>],
@@ -2637,7 +2621,7 @@ where
 
   validate_scalar_c_fold_inputs(a_layers, b_layers, c_claims)?;
   let final_pairs = layer_count / 2;
-  fold_ab_c_claim_pairs::<E>(a_layers, b_layers, c_claims, final_pairs, pending_r_b);
+  fold_ab_c_claim_pairs_in_range::<E>(a_layers, b_layers, c_claims, 0..final_pairs, pending_r_b);
   a_layers.truncate(final_pairs);
   b_layers.truncate(final_pairs);
   c_claims.truncate(final_pairs);
