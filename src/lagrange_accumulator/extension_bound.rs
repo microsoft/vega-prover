@@ -6,7 +6,11 @@
 
 //! Bounds certificate for native small-value Lagrange extension.
 
-use std::{fmt::Display, marker::PhantomData};
+use std::{
+  collections::BTreeSet,
+  fmt::{self, Debug, Display, Formatter},
+  marker::PhantomData,
+};
 
 use super::accumulator_builder::SMALL_VALUE_T_DEGREE;
 use crate::{
@@ -19,6 +23,7 @@ use num_traits::{
   Bounded, CheckedDiv, CheckedMul, CheckedNeg, CheckedSub, FromPrimitive, NumCast, One, Signed,
   ToPrimitive, Zero,
 };
+use serde::{Deserialize, Serialize};
 
 /// Numeric operations needed to compute native extension/product bounds.
 pub(crate) trait ExtensionMagnitude:
@@ -203,12 +208,47 @@ where
   limit.checked_div(&growth).unwrap_or_else(Product::zero)
 }
 
+/// Maximum absolute MLE evaluation safe for native Lagrange extension only.
+///
+/// This is the linear-term analogue of [`max_extension_input_abs_for_rounds`]:
+/// it guarantees that `LB` rounds of extension over `U_D` fit back into `SV`,
+/// but it does not reserve headroom for a following native product.
+pub(crate) fn max_extension_fit_input_abs_for_rounds<SV, Magnitude, const D: usize>(
+  rounds: usize,
+) -> Magnitude
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Magnitude: ExtensionMagnitude,
+{
+  let Some(growth) =
+    extension_step_growth::<Magnitude, D>().and_then(|base| checked_pow(base, rounds))
+  else {
+    return Magnitude::zero();
+  };
+
+  let limit = max_abs::<SV, Magnitude>().unwrap_or_else(Magnitude::max_value);
+  if growth > limit {
+    return Magnitude::zero();
+  }
+
+  limit.checked_div(&growth).unwrap_or_else(Magnitude::zero)
+}
+
 pub(crate) fn max_extension_input_abs<SV, Product, const D: usize, const LB: usize>() -> Product
 where
   SV: SmallValue + Bounded + ToPrimitive,
   Product: ExtensionMagnitude,
 {
   max_extension_input_abs_for_rounds::<SV, Product, D>(LB)
+}
+
+pub(crate) fn max_extension_fit_input_abs<SV, Magnitude, const D: usize, const LB: usize>()
+-> Magnitude
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Magnitude: ExtensionMagnitude,
+{
+  max_extension_fit_input_abs_for_rounds::<SV, Magnitude, D>(LB)
 }
 
 /// Check that original MLE evaluations are safe for native extension.
@@ -227,24 +267,76 @@ where
   Product: ExtensionBoundProduct,
 {
   let max_abs = max_extension_input_abs_for_rounds::<SV, Product, D>(rounds);
+  check_extension_values_against_bound::<SV, Product, D>(
+    values,
+    max_abs,
+    rounds,
+    context,
+    "extension/product",
+  )
+}
 
-  if let Some(value) = values
-    .into_iter()
-    .find(|&value| abs_as::<SV, Product>(value).is_none_or(|value_abs| value_abs > max_abs))
-  {
-    return Err(SpartanError::SmallValueOverflow {
-      value: abs_as::<SV, Product>(value).map_or_else(
-        || "magnitude exceeds product type".to_string(),
-        |value_abs| value_abs.to_string(),
-      ),
-      context: format!(
-        "{}: small-value Lagrange extension/product bound exceeded: max_abs={}, D={}, rounds={}",
-        context, max_abs, D, rounds
-      ),
-    });
+pub(crate) fn check_extension_fit_bound_values_for_rounds<SV, Magnitude, const D: usize>(
+  values: impl IntoIterator<Item = SV>,
+  rounds: usize,
+  context: impl Display,
+) -> Result<(), SpartanError>
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Magnitude: ExtensionBoundProduct,
+{
+  let max_abs = max_extension_fit_input_abs_for_rounds::<SV, Magnitude, D>(rounds);
+  check_extension_values_against_bound::<SV, Magnitude, D>(
+    values,
+    max_abs,
+    rounds,
+    context,
+    "extension",
+  )
+}
+
+fn check_extension_values_against_bound<SV, Magnitude, const D: usize>(
+  values: impl IntoIterator<Item = SV>,
+  max_abs: Magnitude,
+  rounds: usize,
+  context: impl Display,
+  bound_name: &str,
+) -> Result<(), SpartanError>
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Magnitude: ExtensionBoundProduct,
+{
+  for value in values {
+    let Some(value_abs) = abs_as::<SV, Magnitude>(value) else {
+      return Err(SpartanError::SmallValueOverflow {
+        value: "magnitude exceeds bound type".to_string(),
+        context: format!(
+          "{}: small-value Lagrange {} bound exceeded: max_abs={}, D={}, rounds={}",
+          context, bound_name, max_abs, D, rounds
+        ),
+      });
+    };
+    if value_abs > max_abs {
+      return Err(SpartanError::SmallValueOverflow {
+        value: value_abs.to_string(),
+        context: format!(
+          "{}: small-value Lagrange {} bound exceeded: max_abs={}, D={}, rounds={}",
+          context, bound_name, max_abs, D, rounds
+        ),
+      });
+    }
   }
 
   Ok(())
+}
+
+#[inline]
+pub(crate) fn small_value_fits_abs_bound<SV, Magnitude>(value: SV, max_abs: Magnitude) -> bool
+where
+  SV: ToPrimitive,
+  Magnitude: ExtensionBoundProduct,
+{
+  abs_as::<SV, Magnitude>(value).is_some_and(|value_abs| value_abs <= max_abs)
 }
 
 pub(crate) fn check_extension_bound<SV, Product, const D: usize, const LB: usize>(
@@ -255,6 +347,20 @@ where
   Product: ExtensionBoundProduct,
 {
   check_extension_bound_values_for_rounds::<SV, Product, D>(
+    poly.Z.iter().copied(),
+    LB,
+    "small-value polynomial",
+  )
+}
+
+pub(crate) fn check_extension_fit_bound<SV, Magnitude, const D: usize, const LB: usize>(
+  poly: &MultilinearPolynomial<SV>,
+) -> Result<(), SpartanError>
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Magnitude: ExtensionBoundProduct,
+{
+  check_extension_fit_bound_values_for_rounds::<SV, Magnitude, D>(
     poly.Z.iter().copied(),
     LB,
     "small-value polynomial",
@@ -300,13 +406,27 @@ where
 /// Use [`ExtensionBoundedPoly::new`] to scan and verify the bound, or
 /// [`ExtensionBoundedPoly::new_unchecked`] when the caller has established the
 /// bound through some other path and wants to avoid the O(n) scan.
-#[derive(Clone, Copy)]
-pub(crate) struct ExtensionBoundedPoly<'a, SV, Product, const D: usize, const LB: usize> {
-  poly: &'a MultilinearPolynomial<SV>,
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(bound(serialize = "SV: Serialize", deserialize = "SV: Deserialize<'de>"))]
+pub struct ExtensionBoundedPoly<SV, Product, const D: usize, const LB: usize> {
+  poly: MultilinearPolynomial<SV>,
   _product: PhantomData<fn() -> Product>,
 }
 
-impl<'a, SV, Product, const D: usize, const LB: usize> ExtensionBoundedPoly<'a, SV, Product, D, LB>
+impl<SV, Product, const D: usize, const LB: usize> Debug
+  for ExtensionBoundedPoly<SV, Product, D, LB>
+where
+  SV: Debug,
+{
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    f.debug_struct("ExtensionBoundedPoly")
+      .field("poly", &self.poly)
+      .finish()
+  }
+}
+
+#[allow(private_bounds)]
+impl<SV, Product, const D: usize, const LB: usize> ExtensionBoundedPoly<SV, Product, D, LB>
 where
   SV: SmallValue + Bounded + ToPrimitive,
   Product: ExtensionBoundProduct,
@@ -316,9 +436,79 @@ where
   /// This scans the full polynomial and rejects any original evaluation that
   /// could overflow during native extension or the following pairwise native
   /// product.
-  pub(crate) fn new(poly: &'a MultilinearPolynomial<SV>) -> Result<Self, SpartanError> {
-    check_extension_bound::<SV, Product, D, LB>(poly)?;
+  pub(crate) fn new(poly: MultilinearPolynomial<SV>) -> Result<Self, SpartanError> {
+    check_extension_bound::<SV, Product, D, LB>(&poly)?;
     Ok(Self::new_unchecked(poly))
+  }
+
+  /// Construct a certificate for native Lagrange extension only.
+  ///
+  /// This is used for linear terms such as `Cz`, which must fit during native
+  /// extension but are not multiplied by another native small value.
+  pub(crate) fn new_extension_only(poly: MultilinearPolynomial<SV>) -> Result<Self, SpartanError> {
+    check_extension_fit_bound::<SV, Product, D, LB>(&poly)?;
+    Ok(Self::new_unchecked(poly))
+  }
+
+  /// Construct a bounded small polynomial plus positions that must use field values.
+  ///
+  /// Any input value that cannot satisfy the extension/product bound is replaced
+  /// with zero in the returned certificate and its index is returned.
+  pub(crate) fn try_new_with_field_positions(
+    poly: &MultilinearPolynomial<SV>,
+  ) -> (Self, BTreeSet<usize>) {
+    Self::new_with_positions(
+      poly.clone(),
+      max_extension_input_abs::<SV, Product, D, LB>(),
+    )
+  }
+
+  /// Construct a bounded small polynomial from owned evaluations plus field-backed positions.
+  ///
+  /// This is the allocation-friendly variant for callers that just produced the
+  /// small polynomial and do not need to keep the unchecked copy.
+  pub(crate) fn try_new_owned_with_field_positions(
+    poly: MultilinearPolynomial<SV>,
+  ) -> (Self, BTreeSet<usize>) {
+    Self::new_with_positions(poly, max_extension_input_abs::<SV, Product, D, LB>())
+  }
+
+  /// Construct an extension-bounded small polynomial plus field-backed positions.
+  ///
+  /// Any input value that cannot satisfy the extension-only bound is replaced
+  /// with zero in the returned certificate and its index is returned.
+  pub(crate) fn try_new_extension_only_with_field_positions(
+    poly: &MultilinearPolynomial<SV>,
+  ) -> (Self, BTreeSet<usize>) {
+    Self::new_with_positions(
+      poly.clone(),
+      max_extension_fit_input_abs::<SV, Product, D, LB>(),
+    )
+  }
+
+  /// Construct an extension-bounded small polynomial from owned evaluations.
+  ///
+  /// This is used for linear terms such as `Cz` when the caller can transfer
+  /// ownership of freshly converted small values.
+  pub(crate) fn try_new_owned_extension_only_with_field_positions(
+    poly: MultilinearPolynomial<SV>,
+  ) -> (Self, BTreeSet<usize>) {
+    Self::new_with_positions(poly, max_extension_fit_input_abs::<SV, Product, D, LB>())
+  }
+
+  fn new_with_positions(
+    mut poly: MultilinearPolynomial<SV>,
+    max_abs: Product,
+  ) -> (Self, BTreeSet<usize>) {
+    let mut field_positions = BTreeSet::new();
+    for (idx, value) in poly.Z.iter_mut().enumerate() {
+      if !small_value_fits_abs_bound::<SV, Product>(*value, max_abs) {
+        *value = SV::zero();
+        field_positions.insert(idx);
+      }
+    }
+
+    (Self::new_unchecked(poly), field_positions)
   }
 
   /// Construct a certificate without scanning the polynomial.
@@ -327,7 +517,7 @@ where
   /// `max_extension_input_abs::<SV, Product, D, LB>()` by construction or by an
   /// earlier check. Passing an out-of-bound polynomial invalidates the native
   /// extension/product safety guarantee carried by this certificate.
-  pub(crate) fn new_unchecked(poly: &'a MultilinearPolynomial<SV>) -> Self {
+  pub(crate) fn new_unchecked(poly: MultilinearPolynomial<SV>) -> Self {
     Self {
       poly,
       _product: PhantomData,
@@ -335,8 +525,20 @@ where
   }
 
   /// Return the checked polynomial.
-  pub(crate) fn as_poly(&self) -> &'a MultilinearPolynomial<SV> {
+  pub(crate) fn as_poly(&self) -> &MultilinearPolynomial<SV> {
+    &self.poly
+  }
+
+  /// Consume and return the checked polynomial.
+  pub(crate) fn into_poly(self) -> MultilinearPolynomial<SV> {
     self.poly
+  }
+
+  /// Zero field-backed positions in this certified polynomial.
+  pub(crate) fn zero_positions(&mut self, positions: &BTreeSet<usize>) {
+    for &idx in positions {
+      self.poly.Z[idx] = SV::zero();
+    }
   }
 }
 
@@ -396,7 +598,7 @@ mod tests {
     let bound = max_extension_input_abs::<i32, i64, D, LB>();
     let poly = MultilinearPolynomial::new(vec![bound as i32, -(bound as i32), 0, 1]);
 
-    assert!(ExtensionBoundedPoly::<i32, i64, D, LB>::new(&poly).is_ok());
+    assert!(ExtensionBoundedPoly::<i32, i64, D, LB>::new(poly).is_ok());
   }
 
   #[test]
@@ -469,7 +671,7 @@ mod tests {
     let poly = MultilinearPolynomial::new(vec![(bound + 1) as i32]);
 
     assert!(matches!(
-      ExtensionBoundedPoly::<i32, i64, D, LB>::new(&poly),
+      ExtensionBoundedPoly::<i32, i64, D, LB>::new(poly),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
   }
@@ -481,8 +683,64 @@ mod tests {
     let bound = max_extension_input_abs::<i32, i64, D, LB>();
     let poly = MultilinearPolynomial::new(vec![(bound + 1) as i32]);
 
-    let bounded = ExtensionBoundedPoly::<i32, i64, D, LB>::new_unchecked(&poly);
-    assert!(std::ptr::eq(bounded.as_poly(), &poly));
+    let bounded = ExtensionBoundedPoly::<i32, i64, D, LB>::new_unchecked(poly.clone());
+    assert_eq!(bounded.as_poly().Z, poly.Z);
+  }
+
+  #[test]
+  fn test_try_new_with_field_positions_keeps_in_bound_values() {
+    const D: usize = 2;
+    const LB: usize = 1;
+    let bound = max_extension_input_abs::<i32, i16, D, LB>() as i32;
+    let poly = MultilinearPolynomial::new(vec![bound, -bound, 0, 1]);
+    let (bounded, field_positions) =
+      ExtensionBoundedPoly::<i32, i16, D, LB>::try_new_with_field_positions(&poly);
+
+    assert!(field_positions.is_empty());
+    assert_eq!(bounded.as_poly().Z, poly.Z);
+  }
+
+  #[test]
+  fn test_try_new_with_field_positions_zeroes_out_of_bound_values() {
+    const D: usize = 2;
+    const LB: usize = 1;
+    let bound = max_extension_input_abs::<i32, i16, D, LB>() as i32;
+    let poly = MultilinearPolynomial::new(vec![bound, bound + 1, -(bound + 1), 7]);
+    let (bounded, field_positions) =
+      ExtensionBoundedPoly::<i32, i16, D, LB>::try_new_with_field_positions(&poly);
+
+    assert_eq!(field_positions.into_iter().collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(bounded.as_poly().Z, vec![bound, 0, 0, 7]);
+    assert_eq!(poly.Z, vec![bound, bound + 1, -(bound + 1), 7]);
+  }
+
+  #[test]
+  fn test_extension_only_bound_is_weaker_than_product_bound() {
+    const D: usize = 1;
+    const LB: usize = 1;
+    let product_bound = max_extension_input_abs::<i32, i16, D, LB>() as i32;
+    let extension_only_bound = max_extension_fit_input_abs::<i32, i16, D, LB>() as i32;
+    assert!(product_bound < extension_only_bound);
+
+    let poly = MultilinearPolynomial::new(vec![product_bound + 1]);
+    assert!(matches!(
+      ExtensionBoundedPoly::<i32, i16, D, LB>::new(poly.clone()),
+      Err(SpartanError::SmallValueOverflow { .. })
+    ));
+    assert!(ExtensionBoundedPoly::<i32, i16, D, LB>::new_extension_only(poly).is_ok());
+  }
+
+  #[test]
+  fn test_try_new_extension_only_with_field_positions_uses_extension_bound() {
+    const D: usize = 1;
+    const LB: usize = 1;
+    let bound = max_extension_fit_input_abs::<i32, i16, D, LB>() as i32;
+    let poly = MultilinearPolynomial::new(vec![bound, bound + 1]);
+    let (bounded, field_positions) =
+      ExtensionBoundedPoly::<i32, i16, D, LB>::try_new_extension_only_with_field_positions(&poly);
+
+    assert_eq!(field_positions.into_iter().collect::<Vec<_>>(), vec![1]);
+    assert_eq!(bounded.as_poly().Z, vec![bound, 0]);
   }
 
   #[test]
@@ -516,7 +774,7 @@ mod tests {
     let bound = max_extension_input_abs::<i64, i128, D, LB>();
     let poly = MultilinearPolynomial::new(vec![bound as i64, -(bound as i64), 0, 1]);
 
-    assert!(ExtensionBoundedPoly::<i64, i128, D, LB>::new(&poly).is_ok());
+    assert!(ExtensionBoundedPoly::<i64, i128, D, LB>::new(poly).is_ok());
   }
 
   #[test]

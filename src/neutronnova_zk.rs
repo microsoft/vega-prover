@@ -21,12 +21,15 @@ use crate::{
     solver::SatisfyingAssignment,
   },
   big_num::{
-    DelayedReduction, SmallValueEngine, SmallValueField,
+    DelayedReduction, SmallValue, SmallValueEngine, SmallValueField, WideMul,
     small_value_conversion::to_small_vec_or_zero,
   },
   digest::DigestComputer,
   errors::SpartanError,
-  lagrange_accumulator::field_to_i64_or_zero_for_l0,
+  lagrange_accumulator::{
+    ExtensionBoundProduct, ExtensionBoundedPoly, field_to_i64_or_zero_for_l0,
+    max_extension_fit_input_abs, max_extension_input_abs, small_value_fits_abs_bound,
+  },
   math::Math,
   nifs::NovaNIFS,
   polys::{
@@ -50,10 +53,11 @@ use crate::{
   zk::NeutronNovaVerifierCircuit,
 };
 use ff::{Field, PrimeField};
+use num_traits::{Bounded, ToPrimitive};
 use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
-use std::marker::PhantomData;
+use std::{collections::BTreeSet, marker::PhantomData};
 use tracing::{debug, info};
 
 pub(crate) fn compute_tensor_decomp(n: usize) -> (usize, usize, usize) {
@@ -75,8 +79,16 @@ pub struct NeutronNovaNIFS<E: Engine> {
 }
 
 /// A small-value NeutronNova NIFS backend.
-pub struct SmallValueNeutronNovaNIFS<E: Engine> {
-  _p: PhantomData<E>,
+pub struct SmallValueNeutronNovaNIFS<E: Engine, SV, const L0: usize> {
+  _p: PhantomData<(E, SV)>,
+}
+
+impl<E: Engine, SV, const L0: usize> std::fmt::Debug for SmallValueNeutronNovaNIFS<E, SV, L0> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("SmallValueNeutronNovaNIFS")
+      .field("L0", &L0)
+      .finish()
+  }
 }
 
 /// Full field-valued step-circuit Az/Bz/Cz tables.
@@ -112,29 +124,27 @@ impl<E: Engine> FieldStepMatvecs<E> {
 
 /// Small-value Az/Bz tables and the global positions that must use field corrections.
 ///
-/// Invariant: for every index in `large_positions`, every layer's small Az/Bz
+/// Invariant: for every index in `field_positions`, every layer's small Az/Bz
 /// table stores zero at that index.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SmallAbStepMatvecs {
+pub struct SmallAbStepMatvecs<AbLayer> {
   /// Small Az tables; global large positions are zeroed.
-  pub az_small: Vec<Vec<i64>>,
+  pub az_small: Vec<AbLayer>,
   /// Small Bz tables; global large positions are zeroed.
-  pub bz_small: Vec<Vec<i64>>,
-  /// Positions where any cached value did not fit in the small representation.
-  pub large_positions: Vec<usize>,
-  /// Number of small-value Lagrange accumulator rounds used to bound Az/Bz.
-  pub l0: usize,
+  pub bz_small: Vec<AbLayer>,
+  /// Sorted positions where any cached value did not fit in the small representation.
+  pub field_positions: Vec<usize>,
 }
 
 /// Small-value Az/Bz/Cz tables and the global positions that must use field corrections.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SmallAbcStepMatvecs {
+pub struct SmallAbcStepMatvecs<AbLayer, CLayer> {
   /// Small Az/Bz tables and their large-position metadata.
-  pub ab: SmallAbStepMatvecs,
+  pub ab: SmallAbStepMatvecs<AbLayer>,
   /// Small Cz tables; global large positions are zeroed.
-  pub cz_small: Vec<Vec<i64>>,
-  /// Positions where any cached C value did not fit in the small representation.
-  pub c_large_positions: Vec<usize>,
+  pub cz_small: Vec<CLayer>,
+  /// Sorted positions where any cached C value did not fit in the small representation.
+  pub c_field_positions: Vec<usize>,
 }
 
 /// Regular NeutronNova step matvecs.
@@ -148,17 +158,23 @@ pub struct NeutronNovaStepMatvecs<E: Engine> {
   /// Full field-valued step matvec tables.
   pub field: FieldStepMatvecs<E>,
   /// Optional small Az/Bz/Cz tables for the regular small-value optimization.
-  pub small_abc: Option<SmallAbcStepMatvecs>,
+  pub small_abc: Option<SmallAbcStepMatvecs<Vec<i64>, Vec<i64>>>,
 }
 
 /// Small-value accumulator NeutronNova step matvecs.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct SmallValueNeutronNovaStepMatvecs<E: Engine> {
+#[serde(bound(serialize = "SV: Serialize", deserialize = "SV: Deserialize<'de>"))]
+pub struct SmallValueNeutronNovaStepMatvecs<E: Engine, SV, const L0: usize>
+where
+  SV: WideMul,
+{
   /// Full field-valued step matvec tables used for large-position corrections.
   pub field: FieldStepMatvecs<E>,
   /// Small Az/Bz/Cz tables used by the small-value accumulator.
-  pub small_abc: SmallAbcStepMatvecs,
+  pub small_abc: SmallAbcStepMatvecs<
+    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
+    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
+  >,
 }
 
 /// Output of a NeutronNova NIFS backend.
@@ -208,15 +224,31 @@ where
       });
     }
 
-    let matvec: Vec<_> = (0..instances.len())
-      .into_par_iter()
-      .map(|i| {
-        let mut z = Vec::with_capacity(witnesses[i].W.len() + 1 + instances[i].X.len());
-        z.extend_from_slice(&witnesses[i].W);
-        z.push(E::Scalar::ONE);
-        z.extend_from_slice(&instances[i].X);
-        shape.multiply_vec(&z)
-      })
+    let zs = (0..instances.len()).into_par_iter().map(|i| {
+      let mut z = Vec::with_capacity(witnesses[i].W.len() + 1 + instances[i].X.len());
+      z.extend_from_slice(&witnesses[i].W);
+      z.push(E::Scalar::ONE);
+      z.extend_from_slice(&instances[i].X);
+      z
+    });
+
+    Self::build_step_matvecs_from_prepared_zs(shape, zs, input)
+  }
+
+  /// Builds backend-specific step matvecs from fully prepared step `z` vectors.
+  ///
+  /// This is the cache-building entrypoint used by `prep_prove`, so strategies
+  /// can construct richer representations than field-only matvec tables.
+  fn build_step_matvecs_from_prepared_zs<Zs>(
+    shape: &SplitR1CSShape<E>,
+    zs: Zs,
+    input: &Self::Input,
+  ) -> Result<Self::StepMatvecs, SpartanError>
+  where
+    Zs: ParallelIterator<Item = Vec<E::Scalar>>,
+  {
+    let matvec: Vec<_> = zs
+      .map(|z| shape.multiply_vec(&z))
       .collect::<Result<Vec<_>, _>>()?;
 
     Self::build_step_matvecs_from_field(matvec, input)
@@ -730,20 +762,22 @@ where
         reason: "regular small optimization requested but small A/B/C matvecs are missing"
           .to_string(),
       })?;
-      if small_abc.ab.l0 != 1 {
-        return Err(SpartanError::InvalidInputLength {
-          reason: format!(
-            "regular NeutronNova small path requires l0=1 but received {}",
-            small_abc.ab.l0
-          ),
-        });
-      }
+      let SmallAbcStepMatvecs {
+        ab:
+          SmallAbStepMatvecs {
+            az_small,
+            bz_small,
+            field_positions: ab_field_positions,
+          },
+        cz_small,
+        c_field_positions,
+      } = small_abc;
       (
-        small_abc.ab.az_small,
-        small_abc.ab.bz_small,
-        small_abc.cz_small,
-        small_abc.ab.large_positions,
-        small_abc.c_large_positions,
+        az_small,
+        bz_small,
+        cz_small,
+        ab_field_positions,
+        c_field_positions,
       )
     } else {
       (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new())
@@ -1129,7 +1163,7 @@ where
 fn build_small_ab_from_field<E>(
   field: &FieldStepMatvecs<E>,
   l0: usize,
-) -> Result<SmallAbStepMatvecs, SpartanError>
+) -> Result<SmallAbStepMatvecs<Vec<i64>>, SpartanError>
 where
   E: Engine,
 {
@@ -1141,21 +1175,20 @@ where
 
   let mut az_small = Vec::with_capacity(field.len());
   let mut bz_small = Vec::with_capacity(field.len());
-  let mut large_pos_set = std::collections::BTreeSet::new();
+  let mut field_positions = BTreeSet::new();
 
   for (az_layer, bz_layer) in field.az.iter().zip(&field.bz) {
     let (az_small_layer, az_large_indices) = field_to_i64_or_zero_for_l0(az_layer, l0);
     let (bz_small_layer, bz_large_indices) = field_to_i64_or_zero_for_l0(bz_layer, l0);
-    large_pos_set.extend(az_large_indices);
-    large_pos_set.extend(bz_large_indices);
+    field_positions.extend(az_large_indices);
+    field_positions.extend(bz_large_indices);
     az_small.push(az_small_layer);
     bz_small.push(bz_small_layer);
   }
 
-  let large_positions: Vec<usize> = large_pos_set.into_iter().collect();
-  if !large_positions.is_empty() {
+  if !field_positions.is_empty() {
     for (az_small, bz_small) in az_small.iter_mut().zip(bz_small.iter_mut()) {
-      for &pos in &large_positions {
+      for &pos in &field_positions {
         az_small[pos] = 0;
         bz_small[pos] = 0;
       }
@@ -1165,33 +1198,31 @@ where
   Ok(SmallAbStepMatvecs {
     az_small,
     bz_small,
-    large_positions,
-    l0,
+    field_positions: field_positions.into_iter().collect(),
   })
 }
 
 fn build_small_abc_from_field<E>(
   field: &FieldStepMatvecs<E>,
   l0: usize,
-) -> Result<SmallAbcStepMatvecs, SpartanError>
+) -> Result<SmallAbcStepMatvecs<Vec<i64>, Vec<i64>>, SpartanError>
 where
   E: Engine,
   E::Scalar: SmallValueField<i64>,
 {
   let ab = build_small_ab_from_field(field, l0)?;
   let mut cz_small = Vec::with_capacity(field.len());
-  let mut c_large_pos_set = std::collections::BTreeSet::new();
+  let mut c_field_positions = BTreeSet::new();
 
   for cz_layer in &field.cz {
     let (cz_small_layer, cz_large_indices) = to_small_vec_or_zero(cz_layer);
-    c_large_pos_set.extend(cz_large_indices);
+    c_field_positions.extend(cz_large_indices);
     cz_small.push(cz_small_layer);
   }
 
-  let c_large_positions = c_large_pos_set.into_iter().collect::<Vec<_>>();
-  if !c_large_positions.is_empty() {
+  if !c_field_positions.is_empty() {
     for cz_small in &mut cz_small {
-      for &pos in &c_large_positions {
+      for &pos in &c_field_positions {
         cz_small[pos] = 0;
       }
     }
@@ -1200,26 +1231,132 @@ where
   let small_abc = SmallAbcStepMatvecs {
     ab,
     cz_small,
-    c_large_positions,
+    c_field_positions: c_field_positions.into_iter().collect(),
   };
   #[cfg(debug_assertions)]
-  debug_validate_small_abc_cache::<E>(field, &small_abc);
+  debug_validate_regular_small_abc_cache::<E>(field, &small_abc);
+  Ok(small_abc)
+}
+
+fn field_layer_to_bounded_small_poly<E, SV, Product, const D: usize, const L0: usize>(
+  layer: &[E::Scalar],
+  max_abs: Product,
+) -> (ExtensionBoundedPoly<SV, Product, D, L0>, BTreeSet<usize>)
+where
+  E: Engine,
+  SV: SmallValue + Bounded + ToPrimitive,
+  Product: ExtensionBoundProduct,
+  E::Scalar: SmallValueField<SV>,
+{
+  let mut values = Vec::with_capacity(layer.len());
+  let mut field_positions = BTreeSet::new();
+
+  for (idx, value) in layer.iter().enumerate() {
+    let Some(small) = <E::Scalar as SmallValueField<SV>>::try_field_to_small(value) else {
+      values.push(SV::zero());
+      field_positions.insert(idx);
+      continue;
+    };
+    if small_value_fits_abs_bound::<SV, Product>(small, max_abs) {
+      values.push(small);
+    } else {
+      values.push(SV::zero());
+      field_positions.insert(idx);
+    }
+  }
+
+  (
+    ExtensionBoundedPoly::new_unchecked(MultilinearPolynomial::new(values)),
+    field_positions,
+  )
+}
+
+fn build_certified_small_abc_from_field<E, SV, const L0: usize>(
+  field: &FieldStepMatvecs<E>,
+) -> Result<
+  SmallAbcStepMatvecs<
+    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
+    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
+  >,
+  SpartanError,
+>
+where
+  E: Engine,
+  SV: SmallValue + Bounded + ToPrimitive,
+  E::Scalar: SmallValueField<SV>,
+{
+  if L0 == 0 {
+    return Err(SpartanError::InvalidInputLength {
+      reason: "small-value NeutronNova NIFS requires L0 > 0".to_string(),
+    });
+  }
+
+  let mut az_small = Vec::with_capacity(field.len());
+  let mut bz_small = Vec::with_capacity(field.len());
+  let mut cz_small = Vec::with_capacity(field.len());
+  let mut ab_field_positions = BTreeSet::new();
+  let mut c_field_positions = BTreeSet::new();
+
+  let ab_max_abs = max_extension_input_abs::<SV, <SV as WideMul>::Product, 2, L0>();
+  let c_max_abs = max_extension_fit_input_abs::<SV, <SV as WideMul>::Product, 1, L0>();
+
+  for az_layer in &field.az {
+    let (cert, field_positions) =
+      field_layer_to_bounded_small_poly::<E, SV, <SV as WideMul>::Product, 2, L0>(
+        az_layer, ab_max_abs,
+      );
+    ab_field_positions.extend(field_positions);
+    az_small.push(cert);
+  }
+
+  for bz_layer in &field.bz {
+    let (cert, field_positions) =
+      field_layer_to_bounded_small_poly::<E, SV, <SV as WideMul>::Product, 2, L0>(
+        bz_layer, ab_max_abs,
+      );
+    ab_field_positions.extend(field_positions);
+    bz_small.push(cert);
+  }
+
+  for cz_layer in &field.cz {
+    let (cert, field_positions) =
+      field_layer_to_bounded_small_poly::<E, SV, <SV as WideMul>::Product, 1, L0>(
+        cz_layer, c_max_abs,
+      );
+    c_field_positions.extend(field_positions);
+    cz_small.push(cert);
+  }
+
+  if !ab_field_positions.is_empty() {
+    for cert in az_small.iter_mut().chain(bz_small.iter_mut()) {
+      cert.zero_positions(&ab_field_positions);
+    }
+  }
+  if !c_field_positions.is_empty() {
+    for cert in &mut cz_small {
+      cert.zero_positions(&c_field_positions);
+    }
+  }
+
+  let small_abc = SmallAbcStepMatvecs {
+    ab: SmallAbStepMatvecs {
+      az_small,
+      bz_small,
+      field_positions: ab_field_positions.into_iter().collect(),
+    },
+    cz_small,
+    c_field_positions: c_field_positions.into_iter().collect(),
+  };
+  #[cfg(debug_assertions)]
+  debug_validate_certified_small_abc_cache::<E, SV, L0>(field, &small_abc);
   Ok(small_abc)
 }
 
 #[cfg(debug_assertions)]
-pub(crate) fn debug_validate_small_value_step_matvecs<E>(
-  step_matvecs: &SmallValueNeutronNovaStepMatvecs<E>,
+fn debug_validate_regular_small_abc_cache<E>(
+  field: &FieldStepMatvecs<E>,
+  small_abc: &SmallAbcStepMatvecs<Vec<i64>, Vec<i64>>,
 ) where
-  E: Engine,
-  E::Scalar: SmallValueField<i64>,
-{
-  debug_validate_small_abc_cache::<E>(&step_matvecs.field, &step_matvecs.small_abc);
-}
-
-#[cfg(debug_assertions)]
-fn debug_validate_small_abc_cache<E>(field: &FieldStepMatvecs<E>, small_abc: &SmallAbcStepMatvecs)
-where
   E: Engine,
   E::Scalar: SmallValueField<i64>,
 {
@@ -1253,15 +1390,7 @@ where
     return;
   };
   let layer_len = first_layer.len();
-  debug_assert!(
-    small_abc
-      .ab
-      .large_positions
-      .windows(2)
-      .all(|pair| pair[0] < pair[1]),
-    "A/B large positions must be sorted and unique"
-  );
-  for &pos in &small_abc.ab.large_positions {
+  for &pos in &small_abc.ab.field_positions {
     debug_assert!(
       pos < layer_len,
       "A/B large position {} is out of range for layer length {}",
@@ -1269,14 +1398,7 @@ where
       layer_len
     );
   }
-  debug_assert!(
-    small_abc
-      .c_large_positions
-      .windows(2)
-      .all(|pair| pair[0] < pair[1]),
-    "C large positions must be sorted and unique"
-  );
-  for &pos in &small_abc.c_large_positions {
+  for &pos in &small_abc.c_field_positions {
     debug_assert!(
       pos < layer_len,
       "C large position {} is out of range for layer length {}",
@@ -1284,18 +1406,6 @@ where
       layer_len
     );
   }
-
-  let ab_large_positions = small_abc
-    .ab
-    .large_positions
-    .iter()
-    .copied()
-    .collect::<std::collections::BTreeSet<_>>();
-  let c_large_positions = small_abc
-    .c_large_positions
-    .iter()
-    .copied()
-    .collect::<std::collections::BTreeSet<_>>();
 
   for layer_idx in 0..field.az.len() {
     let az_field = &field.az[layer_idx];
@@ -1343,7 +1453,7 @@ where
     );
 
     for k in 0..layer_len {
-      if ab_large_positions.contains(&k) {
+      if small_abc.ab.field_positions.contains(&k) {
         debug_assert_eq!(
           az_small[k], 0,
           "A/B large-position small Az entry must be zero at layer {} index {}",
@@ -1371,7 +1481,7 @@ where
         );
       }
 
-      if c_large_positions.contains(&k) {
+      if small_abc.c_field_positions.contains(&k) {
         debug_assert_eq!(
           cz_small[k], 0,
           "C large-position small Cz entry must be zero at layer {} index {}",
@@ -1398,14 +1508,162 @@ where
   }
 }
 
-impl<E> NeutronNovaNifsStrategy<E> for SmallValueNeutronNovaNIFS<E>
+#[cfg(debug_assertions)]
+pub(crate) fn debug_validate_small_value_step_matvecs<E, SV, const L0: usize>(
+  step_matvecs: &SmallValueNeutronNovaStepMatvecs<E, SV, L0>,
+) where
+  E: Engine,
+  SV: SmallValue + Bounded + ToPrimitive,
+  E::Scalar: SmallValueField<SV>,
+{
+  debug_validate_certified_small_abc_cache::<E, SV, L0>(
+    &step_matvecs.field,
+    &step_matvecs.small_abc,
+  );
+}
+
+#[cfg(debug_assertions)]
+fn debug_validate_certified_small_abc_cache<E, SV, const L0: usize>(
+  field: &FieldStepMatvecs<E>,
+  small_abc: &SmallAbcStepMatvecs<
+    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
+    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
+  >,
+) where
+  E: Engine,
+  SV: SmallValue + Bounded + ToPrimitive,
+  E::Scalar: SmallValueField<SV>,
+{
+  debug_assert_eq!(
+    field.az.len(),
+    field.bz.len(),
+    "field Az/Bz layer count mismatch"
+  );
+  debug_assert_eq!(
+    field.az.len(),
+    field.cz.len(),
+    "field Az/Cz layer count mismatch"
+  );
+  debug_assert_eq!(
+    field.az.len(),
+    small_abc.ab.az_small.len(),
+    "small Az layer count mismatch"
+  );
+  debug_assert_eq!(
+    field.az.len(),
+    small_abc.ab.bz_small.len(),
+    "small Bz layer count mismatch"
+  );
+  debug_assert_eq!(
+    field.az.len(),
+    small_abc.cz_small.len(),
+    "small Cz layer count mismatch"
+  );
+
+  let Some(first_layer) = field.az.first() else {
+    return;
+  };
+  let layer_len = first_layer.len();
+  for &pos in &small_abc.ab.field_positions {
+    debug_assert!(
+      pos < layer_len,
+      "A/B field position {} is out of range for layer length {}",
+      pos,
+      layer_len
+    );
+  }
+  for &pos in &small_abc.c_field_positions {
+    debug_assert!(
+      pos < layer_len,
+      "C field position {} is out of range for layer length {}",
+      pos,
+      layer_len
+    );
+  }
+
+  for layer_idx in 0..field.az.len() {
+    let az_field = &field.az[layer_idx];
+    let bz_field = &field.bz[layer_idx];
+    let cz_field = &field.cz[layer_idx];
+    let az_small = &small_abc.ab.az_small[layer_idx].as_poly().Z;
+    let bz_small = &small_abc.ab.bz_small[layer_idx].as_poly().Z;
+    let cz_small = &small_abc.cz_small[layer_idx].as_poly().Z;
+
+    debug_assert_eq!(az_field.len(), layer_len);
+    debug_assert_eq!(bz_field.len(), layer_len);
+    debug_assert_eq!(cz_field.len(), layer_len);
+    debug_assert_eq!(az_small.len(), layer_len);
+    debug_assert_eq!(bz_small.len(), layer_len);
+    debug_assert_eq!(cz_small.len(), layer_len);
+
+    for k in 0..layer_len {
+      if small_abc.ab.field_positions.contains(&k) {
+        debug_assert!(
+          az_small[k].is_zero(),
+          "A/B field-position small Az entry must be zero at layer {} index {}",
+          layer_idx,
+          k
+        );
+        debug_assert!(
+          bz_small[k].is_zero(),
+          "A/B field-position small Bz entry must be zero at layer {} index {}",
+          layer_idx,
+          k
+        );
+      } else {
+        debug_assert_eq!(
+          <E::Scalar as SmallValueField<SV>>::small_to_field(az_small[k]),
+          az_field[k],
+          "small Az cache mismatch at layer {} index {}",
+          layer_idx,
+          k
+        );
+        debug_assert_eq!(
+          <E::Scalar as SmallValueField<SV>>::small_to_field(bz_small[k]),
+          bz_field[k],
+          "small Bz cache mismatch at layer {} index {}",
+          layer_idx,
+          k
+        );
+      }
+
+      if small_abc.c_field_positions.contains(&k) {
+        debug_assert!(
+          cz_small[k].is_zero(),
+          "C field-position small Cz entry must be zero at layer {} index {}",
+          layer_idx,
+          k
+        );
+      } else {
+        debug_assert_eq!(
+          <E::Scalar as SmallValueField<SV>>::small_to_field(cz_small[k]),
+          cz_field[k],
+          "small Cz cache mismatch at layer {} index {}",
+          layer_idx,
+          k
+        );
+      }
+
+      debug_assert_eq!(
+        az_field[k] * bz_field[k],
+        cz_field[k],
+        "field Az*Bz != Cz at layer {} index {}",
+        layer_idx,
+        k
+      );
+    }
+  }
+}
+
+impl<E, SV, const L0: usize> NeutronNovaNifsStrategy<E> for SmallValueNeutronNovaNIFS<E, SV, L0>
 where
   E: Engine,
   E::PCS: FoldingEngineTrait<E>,
-  E::Scalar: SmallValueEngine<i64> + Default,
+  SV: SmallValue + Bounded + ToPrimitive,
+  E::Scalar: SmallValueEngine<SV> + Default,
 {
-  type Input = usize;
-  type StepMatvecs = SmallValueNeutronNovaStepMatvecs<E>;
+  type Input = ();
+  type StepMatvecs = SmallValueNeutronNovaStepMatvecs<E, SV, L0>;
 
   fn is_small(_: &Self::Input) -> bool {
     true
@@ -1413,16 +1671,10 @@ where
 
   fn build_step_matvecs_from_field(
     field_matvecs: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
-    input: &Self::Input,
+    _input: &Self::Input,
   ) -> Result<Self::StepMatvecs, SpartanError> {
-    if *input == 0 {
-      return Err(SpartanError::InvalidInputLength {
-        reason: "small-value NeutronNova NIFS requires l0 > 0".to_string(),
-      });
-    }
-
     let field = FieldStepMatvecs::from_triples(field_matvecs);
-    let small_abc = build_small_abc_from_field(&field, *input)?;
+    let small_abc = build_certified_small_abc_from_field::<E, SV, L0>(&field)?;
     Ok(SmallValueNeutronNovaStepMatvecs { field, small_abc })
   }
 
@@ -1433,20 +1685,19 @@ where
     us: Vec<R1CSInstance<E>>,
     ws: Vec<R1CSWitness<E>>,
     step_matvecs: Self::StepMatvecs,
-    nifs_input: &Self::Input,
+    _nifs_input: &Self::Input,
     vc: &mut NeutronNovaVerifierCircuit<E>,
     vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
     vc_ck: &CommitmentKey<E>,
     transcript: &mut E::TE,
   ) -> Result<NeutronNovaNifsOutput<E>, SpartanError> {
-    crate::small_neutronnova::prove::<E>(
+    crate::small_neutronnova::prove::<E, SV, L0>(
       s,
       ck,
       us,
       ws,
       &step_matvecs,
-      *nifs_input,
       vc,
       vc_state,
       vc_shape,
@@ -2571,19 +2822,25 @@ impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
 /// A type that holds the pre-processed state for proving
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(
-  serialize = "M: Serialize, I: Serialize",
-  deserialize = "M: Deserialize<'de>, I: Deserialize<'de>"
+  serialize = "Nifs::StepMatvecs: Serialize, Nifs::Input: Serialize",
+  deserialize = "Nifs::StepMatvecs: Deserialize<'de>, Nifs::Input: Deserialize<'de>"
 ))]
-pub struct NeutronNovaPrepZkSNARK<E: Engine, M, I> {
+pub struct NeutronNovaPrepZkSNARK<E, Nifs>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  Nifs: NeutronNovaNifsStrategy<E>,
+{
   ps_step: Vec<PrecommittedState<E>>,
   ps_core: PrecommittedState<E>,
   /// Cached strategy-specific Az/Bz/Cz layers for step circuits.
-  cached_step_matvecs: Option<M>,
+  cached_step_matvecs: Option<Nifs::StepMatvecs>,
   /// Public values used when computing cached_step_matvecs, for validation in prove.
   /// Non-empty when the matvec cache is active; prove checks that step circuits produce the same values.
   cached_step_public_values: Vec<Vec<E::Scalar>>,
   /// Backend input used to build this prep state.
-  nifs_input: I,
+  nifs_input: Nifs::Input,
+  _nifs: PhantomData<fn() -> Nifs>,
 }
 
 /// Holds the proof produced by the NeutronNova folding scheme followed by NeutronNova SNARK
@@ -2696,7 +2953,7 @@ where
     step_circuits: &[C1],
     core_circuit: &C2,
     nifs_input: &Nifs::Input,
-  ) -> Result<NeutronNovaPrepZkSNARK<E, Nifs::StepMatvecs, Nifs::Input>, SpartanError>
+  ) -> Result<NeutronNovaPrepZkSNARK<E, Nifs>, SpartanError>
   where
     C1: SpartanCircuit<E>,
     C2: SpartanCircuit<E>,
@@ -2757,21 +3014,22 @@ where
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-      let matvec: Vec<_> = (0..ps_step.len())
-        .into_par_iter()
-        .map(|i| {
-          let ps_i = &ps_step[i];
-          let public_values = &step_public_values[i];
-          let mut z = Vec::with_capacity(ps_i.W.len() + 1 + public_values.len());
-          z.extend_from_slice(&ps_i.W);
-          z.push(E::Scalar::ONE);
-          z.extend_from_slice(public_values);
-          pk.S_step.multiply_vec(&z)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-      let total = matvec.first().map(|(az, _, _)| az.len()).unwrap_or(0);
-      let step_matvecs = Nifs::build_step_matvecs_from_field(matvec, nifs_input)?;
-      info!(total = total, "cached_step_matvecs_built");
+      let z_len = ps_step
+        .first()
+        .zip(step_public_values.first())
+        .map(|(ps_i, public_values)| ps_i.W.len() + 1 + public_values.len())
+        .unwrap_or(0);
+      let zs = (0..ps_step.len()).into_par_iter().map(|i| {
+        let ps_i = &ps_step[i];
+        let public_values = &step_public_values[i];
+        let mut z = Vec::with_capacity(ps_i.W.len() + 1 + public_values.len());
+        z.extend_from_slice(&ps_i.W);
+        z.push(E::Scalar::ONE);
+        z.extend_from_slice(public_values);
+        z
+      });
+      let step_matvecs = Nifs::build_step_matvecs_from_prepared_zs(&pk.S_step, zs, nifs_input)?;
+      info!(total = z_len, "cached_step_matvecs_built");
       (Some(step_matvecs), step_public_values)
     } else {
       info!(
@@ -2788,6 +3046,7 @@ where
       cached_step_matvecs,
       cached_step_public_values,
       nifs_input: nifs_input.clone(),
+      _nifs: PhantomData,
     })
   }
 
@@ -2799,15 +3058,9 @@ where
     pk: &NeutronNovaProverKey<E>,
     step_circuits: &[C1],
     core_circuit: &C2,
-    mut prep_snark: NeutronNovaPrepZkSNARK<E, Nifs::StepMatvecs, Nifs::Input>,
+    mut prep_snark: NeutronNovaPrepZkSNARK<E, Nifs>,
     nifs_input: &Nifs::Input,
-  ) -> Result<
-    (
-      Self,
-      NeutronNovaPrepZkSNARK<E, Nifs::StepMatvecs, Nifs::Input>,
-    ),
-    SpartanError,
-  >
+  ) -> Result<(Self, NeutronNovaPrepZkSNARK<E, Nifs>), SpartanError>
   where
     C1: SpartanCircuit<E>,
     C2: SpartanCircuit<E>,
@@ -3810,7 +4063,7 @@ mod tests {
 
     let (pk, vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
     let regular_input = false;
-    let small_input = 1usize;
+    let small_input = ();
     let normal_outputs = prove_and_verify_neutron::<E, _, _, NeutronNovaNIFS<E>>(
       &pk,
       &vk,
@@ -3826,7 +4079,7 @@ mod tests {
       &circuits[0],
       &regular_small_input,
     )?;
-    let small_outputs = prove_and_verify_neutron::<E, _, _, SmallValueNeutronNovaNIFS<E>>(
+    let small_outputs = prove_and_verify_neutron::<E, _, _, SmallValueNeutronNovaNIFS<E, i64, 1>>(
       &pk,
       &vk,
       &circuits,
@@ -3849,15 +4102,14 @@ mod tests {
     const SMALL_VALUE_L0: usize = 3;
 
     let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
-      &pk,
-      &circuits,
-      &circuits[0],
-      &SMALL_VALUE_L0,
-    )?;
+    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<
+      _,
+      _,
+      SmallValueNeutronNovaNIFS<E, i64, SMALL_VALUE_L0>,
+    >(&pk, &circuits, &circuits[0], &())?;
 
     assert!(prep.cached_step_matvecs.is_none());
-    assert_eq!(prep.nifs_input, SMALL_VALUE_L0);
+    assert_eq!(prep.nifs_input, ());
 
     Ok(())
   }
@@ -3945,10 +4197,67 @@ mod tests {
       .as_ref()
       .expect("regular true should build small A/B/C matvecs");
 
-    assert_eq!(small_abc.ab.l0, 1);
     assert_eq!(small_abc.ab.az_small.len(), NUM_CIRCUITS);
     assert_eq!(small_abc.ab.bz_small.len(), NUM_CIRCUITS);
     assert_eq!(small_abc.cz_small.len(), NUM_CIRCUITS);
+
+    Ok(())
+  }
+
+  #[test]
+  fn test_small_value_cached_and_uncached_paths_match() -> Result<(), SpartanError> {
+    type E = T256HyraxEngine;
+    const NUM_CIRCUITS: usize = 4;
+    const L0: usize = 2;
+
+    let step_proto = CacheablePublicCircuit::<E> {
+      value: <E as Engine>::Scalar::ZERO,
+    };
+    let core_proto = step_proto.clone();
+    let (pk, vk) = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, NUM_CIRCUITS)?;
+    let step_circuits = (0..NUM_CIRCUITS)
+      .map(|i| CacheablePublicCircuit::<E> {
+        value: <E as Engine>::Scalar::from(i as u64),
+      })
+      .collect::<Vec<_>>();
+    let core_circuit = CacheablePublicCircuit::<E> {
+      value: <E as Engine>::Scalar::ZERO,
+    };
+    let nifs_input = ();
+
+    let cached_prep = NeutronNovaZkSNARK::<E>::prep_prove::<
+      _,
+      _,
+      SmallValueNeutronNovaNIFS<E, i64, L0>,
+    >(&pk, &step_circuits, &core_circuit, &nifs_input)?;
+    assert!(cached_prep.cached_step_matvecs.is_some());
+
+    let mut uncached_prep = NeutronNovaZkSNARK::<E>::prep_prove::<
+      _,
+      _,
+      SmallValueNeutronNovaNIFS<E, i64, L0>,
+    >(&pk, &step_circuits, &core_circuit, &nifs_input)?;
+    assert!(uncached_prep.cached_step_matvecs.take().is_some());
+    uncached_prep.cached_step_public_values.clear();
+
+    let (cached_snark, _) = NeutronNovaZkSNARK::<E>::prove::<
+      _,
+      _,
+      SmallValueNeutronNovaNIFS<E, i64, L0>,
+    >(&pk, &step_circuits, &core_circuit, cached_prep, &nifs_input)?;
+    let (uncached_snark, _) =
+      NeutronNovaZkSNARK::<E>::prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, L0>>(
+        &pk,
+        &step_circuits,
+        &core_circuit,
+        uncached_prep,
+        &nifs_input,
+      )?;
+
+    assert_eq!(
+      cached_snark.verify(&vk, NUM_CIRCUITS)?,
+      uncached_snark.verify(&vk, NUM_CIRCUITS)?
+    );
 
     Ok(())
   }
@@ -4164,14 +4473,14 @@ mod tests {
     const LEN: usize = 32;
 
     let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let nifs_input = 0usize;
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
+    let nifs_input = ();
+    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, 0>>(
       &pk,
       &circuits,
       &circuits[0],
       &nifs_input,
     )?;
-    let err = NeutronNovaZkSNARK::<E>::prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
+    let err = NeutronNovaZkSNARK::<E>::prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, 0>>(
       &pk,
       &circuits,
       &circuits[0],
@@ -4183,7 +4492,7 @@ mod tests {
     assert!(matches!(
       err,
       SpartanError::InvalidInputLength { reason }
-        if reason.contains("small-value NeutronNova NIFS requires l0 > 0")
+        if reason.contains("small-value NeutronNova NIFS requires L0 > 0")
     ));
 
     Ok(())
@@ -4196,15 +4505,15 @@ mod tests {
     const LEN: usize = 32;
 
     let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let prep_input = 2usize;
-    let prove_input = 1usize;
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
+    let prep_input = true;
+    let prove_input = false;
+    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
       &pk,
       &circuits,
       &circuits[0],
       &prep_input,
     )?;
-    let err = NeutronNovaZkSNARK::<E>::prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
+    let err = NeutronNovaZkSNARK::<E>::prove::<_, _, NeutronNovaNIFS<E>>(
       &pk,
       &circuits,
       &circuits[0],
@@ -4223,30 +4532,28 @@ mod tests {
   }
 
   #[test]
-  fn test_small_value_neutronnova_nifs_accepts_runtime_small_value_l0() -> Result<(), SpartanError>
-  {
+  fn test_small_value_neutronnova_nifs_accepts_const_small_value_l0() -> Result<(), SpartanError> {
     type E = T256HyraxEngine;
     const NUM_CIRCUITS: usize = 4;
     const LEN: usize = 32;
+    const L0: usize = 2;
 
     let (pk, vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let nifs_input = 2usize;
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
+    let nifs_input = ();
+    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, L0>>(
       &pk,
       &circuits,
       &circuits[0],
       &nifs_input,
     )?;
-    assert_eq!(prep.nifs_input, 2);
+    assert_eq!(prep.nifs_input, ());
     assert!(prep.cached_step_matvecs.is_none());
 
-    let (snark, _prep) = NeutronNovaZkSNARK::<E>::prove::<_, _, SmallValueNeutronNovaNIFS<E>>(
-      &pk,
-      &circuits,
-      &circuits[0],
-      prep,
-      &nifs_input,
-    )?;
+    let (snark, _prep) = NeutronNovaZkSNARK::<E>::prove::<
+      _,
+      _,
+      SmallValueNeutronNovaNIFS<E, i64, L0>,
+    >(&pk, &circuits, &circuits[0], prep, &nifs_input)?;
     let (step_public, _core_public) = snark.verify(&vk, NUM_CIRCUITS)?;
     assert_eq!(step_public.len(), NUM_CIRCUITS);
 

@@ -9,13 +9,17 @@
 use crate::{
   CommitmentKey,
   bellpepper::{r1cs::MultiRoundSpartanWitness, solver::SatisfyingAssignment},
-  big_num::{DelayedReduction, SmallValue, SmallValueEngine},
+  big_num::{DelayedReduction, SmallValue, SmallValueEngine, WideMul},
   errors::SpartanError,
-  lagrange_accumulator::{SMALL_VALUE_T_DEGREE, build_accumulators_neutronnova},
+  lagrange_accumulator::{
+    ExtensionBoundProduct, ExtensionBoundedPoly, SMALL_VALUE_T_DEGREE,
+    build_accumulators_neutronnova,
+  },
   neutronnova_zk::{
-    NeutronNovaNIFS, NeutronNovaNifsOutput, NifsTranscriptState, SmallValueNeutronNovaStepMatvecs,
-    continue_ab_suffix_with_c_claims, finalize_nifs_step_claim, fold_witness_and_instance,
-    invalid_input, padded_layer_slices, prepare_nifs_transcript, process_nifs_round,
+    FieldStepMatvecs, NeutronNovaNIFS, NeutronNovaNifsOutput, NifsTranscriptState,
+    SmallAbcStepMatvecs, SmallValueNeutronNovaStepMatvecs, continue_ab_suffix_with_c_claims,
+    finalize_nifs_step_claim, fold_witness_and_instance, invalid_input, padded_layer_slices,
+    padded_map_by_repeating_first, prepare_nifs_transcript, process_nifs_round,
     validate_instance_witness_counts,
   },
   r1cs::{R1CSInstance, R1CSWitness, SplitMultiRoundR1CSShape, SplitR1CSShape, weights_from_r},
@@ -25,21 +29,19 @@ use crate::{
 };
 #[cfg(test)]
 use crate::{
-  lagrange_accumulator::SmallValueExtensionBoundedPoly,
-  neutronnova_zk::padded_map_by_repeating_first, polys::multilinear::MultilinearPolynomial,
+  lagrange_accumulator::SmallValueExtensionBoundedPoly, polys::multilinear::MultilinearPolynomial,
 };
 use ff::Field;
-use num_traits::Zero;
+use num_traits::{Bounded, ToPrimitive, Zero};
 use rayon::prelude::*;
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn prove<E>(
+pub(crate) fn prove<E, SV, const L0: usize>(
   s: &SplitR1CSShape<E>,
   ck: &CommitmentKey<E>,
   us: Vec<R1CSInstance<E>>,
   ws: Vec<R1CSWitness<E>>,
-  step_matvecs: &SmallValueNeutronNovaStepMatvecs<E>,
-  l0: usize,
+  step_matvecs: &SmallValueNeutronNovaStepMatvecs<E, SV, L0>,
   vc: &mut NeutronNovaVerifierCircuit<E>,
   vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
   vc_shape: &SplitMultiRoundR1CSShape<E>,
@@ -49,7 +51,8 @@ pub(crate) fn prove<E>(
 where
   E: Engine,
   E::PCS: FoldingEngineTrait<E>,
-  E::Scalar: SmallValueEngine<i64> + Default,
+  SV: SmallValue + Bounded + ToPrimitive,
+  E::Scalar: SmallValueEngine<SV> + Default,
 {
   let num_instances = us.len();
   if num_instances == 0 {
@@ -71,22 +74,16 @@ where
       num_instances
     )));
   }
-  if l0 == 0 {
+  if L0 == 0 {
     return Err(invalid_input(
-      "small-value NeutronNova NIFS requires l0 > 0",
+      "small-value NeutronNova NIFS requires L0 > 0",
     ));
   }
-  if step_matvecs.small_abc.ab.l0 != l0 {
-    return Err(invalid_input(format!(
-      "small-value NeutronNova NIFS expected l0 {} but cache has {}",
-      l0, step_matvecs.small_abc.ab.l0
-    )));
-  }
   #[cfg(debug_assertions)]
-  crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E>(step_matvecs);
+  crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E, SV, L0>(step_matvecs);
 
   let NifsTranscriptState {
-    n_padded,
+    n_padded: _,
     e_eq,
     left,
     right,
@@ -94,33 +91,17 @@ where
     ..
   } = prepare_nifs_transcript(s, &us, transcript)?;
 
-  let a_small = padded_layer_slices(&step_matvecs.small_abc.ab.az_small, num_instances, n_padded);
-  let b_small = padded_layer_slices(&step_matvecs.small_abc.ab.bz_small, num_instances, n_padded);
-  let c_small = padded_layer_slices(&step_matvecs.small_abc.cz_small, num_instances, n_padded);
-  let a_field = padded_layer_slices(&step_matvecs.field.az, num_instances, n_padded);
-  let b_field = padded_layer_slices(&step_matvecs.field.bz, num_instances, n_padded);
-  let c_field = padded_layer_slices(&step_matvecs.field.cz, num_instances, n_padded);
-  let ab_large_positions = &step_matvecs.small_abc.ab.large_positions;
-  let c_large_positions = &step_matvecs.small_abc.c_large_positions;
-
-  NeutronNovaNIFS::<E>::prove_small::<i64>(
+  NeutronNovaNIFS::<E>::prove_small::<SV, L0>(
     s,
     ck,
     us,
     ws,
-    &a_small,
-    &b_small,
-    &c_small,
-    &a_field,
-    &b_field,
-    &c_field,
-    ab_large_positions,
-    c_large_positions,
+    &step_matvecs.field,
+    &step_matvecs.small_abc,
     &e_eq,
     left,
     right,
     &rhos,
-    l0,
     vc,
     vc_state,
     vc_shape,
@@ -135,24 +116,20 @@ where
 {
   /// Prove small-value NeutronNova NIFS, deriving round challenges from the verifier circuit.
   #[allow(clippy::too_many_arguments)]
-  pub(crate) fn prove_small<SV>(
+  pub(crate) fn prove_small<SV, const L0: usize>(
     s: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     us: Vec<R1CSInstance<E>>,
     ws: Vec<R1CSWitness<E>>,
-    a_small_evals: &[&[SV]],
-    b_small_evals: &[&[SV]],
-    c_small_evals: &[&[SV]],
-    a_field_evals: &[&[E::Scalar]],
-    b_field_evals: &[&[E::Scalar]],
-    c_field_evals: &[&[E::Scalar]],
-    ab_large_positions: &[usize],
-    c_large_positions: &[usize],
+    field: &FieldStepMatvecs<E>,
+    small_abc: &SmallAbcStepMatvecs<
+      ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
+      ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
+    >,
     e_eq: &[E::Scalar],
     left: usize,
     right: usize,
     rhos: &[E::Scalar],
-    l0: usize,
     vc: &mut NeutronNovaVerifierCircuit<E>,
     vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
@@ -170,9 +147,105 @@ where
     SpartanError,
   >
   where
-    SV: SmallValue,
+    SV: SmallValue + Bounded + ToPrimitive,
     E::Scalar: SmallValueEngine<SV> + Default,
   {
+    let num_instances = us.len();
+    if num_instances == 0 {
+      return Err(invalid_input(
+        "small NeutronNova NIFS requires at least one instance",
+      ));
+    }
+    if field.az.len() != num_instances
+      || field.bz.len() != num_instances
+      || field.cz.len() != num_instances
+      || small_abc.ab.az_small.len() != num_instances
+      || small_abc.ab.bz_small.len() != num_instances
+      || small_abc.cz_small.len() != num_instances
+    {
+      return Err(invalid_input(
+        "small NeutronNova matvec layer counts must match instance count",
+      ));
+    }
+
+    let n_padded = num_instances.next_power_of_two();
+    let a_bounded = padded_bounded_layers(&small_abc.ab.az_small, num_instances, n_padded);
+    let b_bounded = padded_bounded_layers(&small_abc.ab.bz_small, num_instances, n_padded);
+    let a_small_evals = bounded_layer_evals(&a_bounded);
+    let b_small_evals = bounded_layer_evals(&b_bounded);
+    let c_small_evals = padded_bounded_layer_evals(&small_abc.cz_small, num_instances, n_padded);
+    let a_field_evals = padded_layer_slices(&field.az, num_instances, n_padded);
+    let b_field_evals = padded_layer_slices(&field.bz, num_instances, n_padded);
+    let c_field_evals = padded_layer_slices(&field.cz, num_instances, n_padded);
+
+    Self::prove_small_from_evals::<SV, L0>(
+      s,
+      ck,
+      us,
+      ws,
+      &a_bounded,
+      &b_bounded,
+      &a_small_evals,
+      &b_small_evals,
+      &c_small_evals,
+      &a_field_evals,
+      &b_field_evals,
+      &c_field_evals,
+      &small_abc.ab.field_positions,
+      &small_abc.c_field_positions,
+      e_eq,
+      left,
+      right,
+      rhos,
+      vc,
+      vc_state,
+      vc_shape,
+      vc_ck,
+      transcript,
+    )
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  fn prove_small_from_evals<SV, const L0: usize>(
+    s: &SplitR1CSShape<E>,
+    ck: &CommitmentKey<E>,
+    us: Vec<R1CSInstance<E>>,
+    ws: Vec<R1CSWitness<E>>,
+    a_bounded_evals: &[&ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>],
+    b_bounded_evals: &[&ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>],
+    a_small_evals: &[&[SV]],
+    b_small_evals: &[&[SV]],
+    c_small_evals: &[&[SV]],
+    a_field_evals: &[&[E::Scalar]],
+    b_field_evals: &[&[E::Scalar]],
+    c_field_evals: &[&[E::Scalar]],
+    ab_large_positions: &[usize],
+    c_large_positions: &[usize],
+    e_eq: &[E::Scalar],
+    left: usize,
+    right: usize,
+    rhos: &[E::Scalar],
+    vc: &mut NeutronNovaVerifierCircuit<E>,
+    vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+    vc_shape: &SplitMultiRoundR1CSShape<E>,
+    vc_ck: &CommitmentKey<E>,
+    transcript: &mut E::TE,
+  ) -> Result<
+    (
+      Vec<E::Scalar>,
+      Vec<E::Scalar>,
+      Vec<E::Scalar>,
+      Vec<E::Scalar>,
+      R1CSWitness<E>,
+      R1CSInstance<E>,
+    ),
+    SpartanError,
+  >
+  where
+    SV: SmallValue + Bounded + ToPrimitive,
+    E::Scalar: SmallValueEngine<SV> + Default,
+  {
+    let l0 = L0;
     let n_padded = validate_layer_arrays::<E, SV>(
       a_small_evals,
       b_small_evals,
@@ -204,9 +277,9 @@ where
       )));
     }
 
-    let accumulators = build_accumulators_neutronnova::<E::Scalar, SV>(
-      a_small_evals,
-      b_small_evals,
+    let accumulators = build_accumulators_neutronnova::<E::Scalar, SV, L0>(
+      a_bounded_evals,
+      b_bounded_evals,
       a_field_evals,
       b_field_evals,
       ab_large_positions,
@@ -214,7 +287,6 @@ where
       left,
       right,
       rhos,
-      l0,
     )?;
     let mut small_value =
       SmallValueSumCheck::<E::Scalar, SMALL_VALUE_T_DEGREE>::from_accumulators(accumulators);
@@ -252,11 +324,12 @@ where
       let prefix_size = 1usize << l0;
       let prefix_weights = weights_from_r::<E::Scalar>(&r_bs, prefix_size);
 
-      let PrefixAbWithCClaims {
+      let PrefixAbcWithCClaims {
         mut a_layers,
         mut b_layers,
+        c_layers,
         mut c_claims,
-      } = materialize_prefix_ab_with_c_claims::<E, SV>(
+      } = materialize_prefix_abc_with_c_claims::<E, SV>(
         a_small_evals,
         b_small_evals,
         c_small_evals,
@@ -291,13 +364,8 @@ where
         &mut acc_eq,
       )?;
 
-      let final_weights = weights_from_r::<E::Scalar>(&r_bs, n_padded);
-      let c_folded = fold_final_c_with_weights::<E, SV>(
-        c_small_evals,
-        c_field_evals,
-        c_large_positions,
-        &final_weights,
-      )?;
+      let suffix_weights = weights_from_r::<E::Scalar>(&r_bs[l0..], c_layers.len());
+      let c_folded = fold_field_layers_with_weights::<E>(&c_layers, &suffix_weights)?;
 
       (
         a_layers.pop().ok_or_else(empty_fold_error)?,
@@ -447,29 +515,38 @@ where
   Ok(n_padded)
 }
 
-#[cfg(test)]
-fn padded_small_layers<'poly, SV, const LB: usize>(
-  layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
+fn padded_bounded_layers<SV, Product, const D: usize, const L0: usize>(
+  layers: &[ExtensionBoundedPoly<SV, Product, D, L0>],
   num_instances: usize,
   n_padded: usize,
-) -> Vec<SmallValueExtensionBoundedPoly<'poly, SV, LB>>
-where
-  SV: SmallValue,
-{
-  padded_map_by_repeating_first(layers, num_instances, n_padded, |layer| *layer)
+) -> Vec<&ExtensionBoundedPoly<SV, Product, D, L0>> {
+  padded_map_by_repeating_first(layers, num_instances, n_padded, |layer| layer)
 }
 
-#[cfg(test)]
-fn make_layer_evals<'poly, SV, const LB: usize>(
-  layers: &[SmallValueExtensionBoundedPoly<'poly, SV, LB>],
-) -> Vec<&'poly [SV]>
+fn bounded_layer_evals<'a, SV, Product, const D: usize, const L0: usize>(
+  layers: &[&'a ExtensionBoundedPoly<SV, Product, D, L0>],
+) -> Vec<&'a [SV]>
 where
-  SV: SmallValue,
+  SV: SmallValue + Bounded + ToPrimitive,
+  Product: ExtensionBoundProduct,
 {
   layers
     .iter()
     .map(|layer| layer.as_poly().Z.as_slice())
     .collect()
+}
+
+fn padded_bounded_layer_evals<SV, Product, const D: usize, const L0: usize>(
+  layers: &[ExtensionBoundedPoly<SV, Product, D, L0>],
+  num_instances: usize,
+  n_padded: usize,
+) -> Vec<&[SV]>
+where
+  SV: SmallValue + Bounded + ToPrimitive,
+  Product: ExtensionBoundProduct,
+{
+  let bounded_layers = padded_bounded_layers(layers, num_instances, n_padded);
+  bounded_layer_evals(&bounded_layers)
 }
 
 #[cfg(test)]
@@ -484,14 +561,15 @@ where
   padded_map_by_repeating_first(layers, num_instances, n_padded, |layer| layer.Z.as_slice())
 }
 
-struct PrefixAbWithCClaims<F> {
+struct PrefixAbcWithCClaims<F> {
   a_layers: Vec<Vec<F>>,
   b_layers: Vec<Vec<F>>,
+  c_layers: Vec<Vec<F>>,
   c_claims: Vec<F>,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn materialize_prefix_ab_with_c_claims<E, SV>(
+fn materialize_prefix_abc_with_c_claims<E, SV>(
   a_layers: &[&[SV]],
   b_layers: &[&[SV]],
   c_layers: &[&[SV]],
@@ -505,12 +583,18 @@ fn materialize_prefix_ab_with_c_claims<E, SV>(
   e_eq: &[E::Scalar],
   left: usize,
   right: usize,
-) -> Result<PrefixAbWithCClaims<E::Scalar>, SpartanError>
+) -> Result<PrefixAbcWithCClaims<E::Scalar>, SpartanError>
 where
   E: Engine,
   SV: SmallValue,
   E::Scalar: SmallValueEngine<SV>,
 {
+  if a_layers.is_empty() {
+    return Err(invalid_input("cannot materialize empty prefix layer list"));
+  }
+  if b_layers.len() != a_layers.len() || c_layers.len() != a_layers.len() {
+    return Err(invalid_input("A/B/C prefix layer counts must match"));
+  }
   if prefix_size == 0 || !a_layers.len().is_multiple_of(prefix_size) {
     return Err(invalid_input("invalid small prefix group size"));
   }
@@ -521,27 +605,125 @@ where
       prefix_size
     )));
   }
-  let a_folded = fold_small_layers_with_weights::<E, SV>(a_layers, prefix_weights, prefix_size)?;
-  let b_folded = fold_small_layers_with_weights::<E, SV>(b_layers, prefix_weights, prefix_size)?;
-  let mut c_claims: Vec<E::Scalar> = c_layers
+  if left == 0 || right == 0 {
+    return Err(invalid_input(
+      "prefix materialization requires non-empty tensor factors",
+    ));
+  }
+  let layer_len = a_layers[0].len();
+  if !a_layers
+    .iter()
+    .chain(b_layers.iter())
+    .chain(c_layers.iter())
+    .all(|layer| layer.len() == layer_len)
+  {
+    return Err(invalid_input("all prefix layers must have the same length"));
+  }
+  if left.checked_mul(right) != Some(layer_len) {
+    return Err(invalid_input(format!(
+      "prefix layer length {} does not match left * right {}",
+      layer_len,
+      left.saturating_mul(right)
+    )));
+  }
+  let expected_eq_len = left
+    .checked_add(right)
+    .ok_or_else(|| invalid_input("left + right overflows"))?;
+  if e_eq.len() != expected_eq_len {
+    return Err(invalid_input(format!(
+      "e_eq length {} does not match left + right {}",
+      e_eq.len(),
+      expected_eq_len
+    )));
+  }
+
+  let e_left = &e_eq[..left];
+  let e_right = &e_eq[left..];
+  let grouped: Vec<_> = a_layers
     .par_chunks(prefix_size)
-    .map(|c_group| {
-      let mut acc = <E::Scalar as DelayedReduction<E::Scalar>>::Accumulator::zero();
-      for (weight, c_layer) in prefix_weights.iter().zip(c_group.iter()) {
-        let c_claim = dot_small_layer_with_split_eq::<E, SV>(c_layer, e_eq, left, right);
-        <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
-          &mut acc, weight, &c_claim,
-        );
-      }
-      <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&acc)
+    .zip(b_layers.par_chunks(prefix_size))
+    .zip(c_layers.par_chunks(prefix_size))
+    .map(|((a_group, b_group), c_group)| {
+      let mut a_out = vec![E::Scalar::ZERO; layer_len];
+      let mut b_out = vec![E::Scalar::ZERO; layer_len];
+      let mut c_out = vec![E::Scalar::ZERO; layer_len];
+
+      let c_claim = a_out
+        .par_chunks_mut(left)
+        .zip(b_out.par_chunks_mut(left))
+        .zip(c_out.par_chunks_mut(left))
+        .enumerate()
+        .map(|(row, ((a_row, b_row), c_row))| {
+          let mut row_acc = <E::Scalar as DelayedReduction<E::Scalar>>::Accumulator::zero();
+          for col in 0..left {
+            let k = row * left + col;
+            let mut a_acc = <E::Scalar as DelayedReduction<SV>>::Accumulator::zero();
+            let mut b_acc = <E::Scalar as DelayedReduction<SV>>::Accumulator::zero();
+            let mut c_acc = <E::Scalar as DelayedReduction<SV>>::Accumulator::zero();
+            for (((weight, a_layer), b_layer), c_layer) in prefix_weights
+              .iter()
+              .zip(a_group.iter())
+              .zip(b_group.iter())
+              .zip(c_group.iter())
+            {
+              <E::Scalar as DelayedReduction<SV>>::unreduced_multiply_accumulate(
+                &mut a_acc,
+                weight,
+                &a_layer[k],
+              );
+              <E::Scalar as DelayedReduction<SV>>::unreduced_multiply_accumulate(
+                &mut b_acc,
+                weight,
+                &b_layer[k],
+              );
+              <E::Scalar as DelayedReduction<SV>>::unreduced_multiply_accumulate(
+                &mut c_acc,
+                weight,
+                &c_layer[k],
+              );
+            }
+
+            let c_val = <E::Scalar as DelayedReduction<SV>>::reduce(&c_acc);
+            a_row[col] = <E::Scalar as DelayedReduction<SV>>::reduce(&a_acc);
+            b_row[col] = <E::Scalar as DelayedReduction<SV>>::reduce(&b_acc);
+            c_row[col] = c_val;
+            <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
+              &mut row_acc,
+              &e_left[col],
+              &c_val,
+            );
+          }
+
+          let row_inner = <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&row_acc);
+          let mut claim_acc = <E::Scalar as DelayedReduction<E::Scalar>>::Accumulator::zero();
+          <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
+            &mut claim_acc,
+            &e_right[row],
+            &row_inner,
+          );
+          <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&claim_acc)
+        })
+        .reduce(|| E::Scalar::ZERO, |acc, row_claim| acc + row_claim);
+
+      (a_out, b_out, c_out, c_claim)
     })
     .collect();
-  let mut a_folded = a_folded;
-  let mut b_folded = b_folded;
+
+  let mut a_folded = Vec::with_capacity(grouped.len());
+  let mut b_folded = Vec::with_capacity(grouped.len());
+  let mut c_folded = Vec::with_capacity(grouped.len());
+  let mut c_claims = Vec::with_capacity(grouped.len());
+  for (a_out, b_out, c_out, c_claim) in grouped {
+    a_folded.push(a_out);
+    b_folded.push(b_out);
+    c_folded.push(c_out);
+    c_claims.push(c_claim);
+  }
 
   apply_large_prefix_corrections::<E>(
     &mut a_folded,
     &mut b_folded,
+    &mut c_folded,
     &mut c_claims,
     a_field_layers,
     b_field_layers,
@@ -555,9 +737,10 @@ where
     right,
   );
 
-  Ok(PrefixAbWithCClaims {
+  Ok(PrefixAbcWithCClaims {
     a_layers: a_folded,
     b_layers: b_folded,
+    c_layers: c_folded,
     c_claims,
   })
 }
@@ -566,6 +749,7 @@ where
 fn apply_large_prefix_corrections<E>(
   a_folded: &mut [Vec<E::Scalar>],
   b_folded: &mut [Vec<E::Scalar>],
+  c_folded: &mut [Vec<E::Scalar>],
   c_claims: &mut [E::Scalar],
   a_field_layers: &[&[E::Scalar]],
   b_field_layers: &[&[E::Scalar]],
@@ -587,9 +771,10 @@ fn apply_large_prefix_corrections<E>(
   let e_right = &e_eq[left..];
   let total = left * right;
 
-  for (suffix_idx, ((a_out, b_out), c_claim)) in a_folded
+  for (suffix_idx, (((a_out, b_out), c_out), c_claim)) in a_folded
     .iter_mut()
     .zip(b_folded.iter_mut())
+    .zip(c_folded.iter_mut())
     .zip(c_claims.iter_mut())
     .enumerate()
   {
@@ -632,46 +817,11 @@ fn apply_large_prefix_corrections<E>(
         let layer_idx = suffix_idx * prefix_size + prefix_idx;
         c_val += *weight * c_field_layers[layer_idx][k];
       }
-      *c_claim += eq_k * c_val;
+      let old_c_val = c_out[k];
+      c_out[k] = c_val;
+      *c_claim += eq_k * (c_val - old_c_val);
     }
   }
-}
-
-fn dot_small_layer_with_split_eq<E, SV>(
-  layer: &[SV],
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-) -> E::Scalar
-where
-  E: Engine,
-  SV: SmallValue,
-  E::Scalar: SmallValueEngine<SV>,
-{
-  let e_left = &e_eq[..left];
-  let e_right = &e_eq[left..];
-  let mut acc = <E::Scalar as DelayedReduction<E::Scalar>>::Accumulator::zero();
-
-  #[allow(clippy::needless_range_loop)]
-  for i in 0..right {
-    let base = i * left;
-    let mut inner = <E::Scalar as DelayedReduction<SV>>::Accumulator::zero();
-    for j in 0..left {
-      <E::Scalar as DelayedReduction<SV>>::unreduced_multiply_accumulate(
-        &mut inner,
-        &e_left[j],
-        &layer[base + j],
-      );
-    }
-    let inner_red = <E::Scalar as DelayedReduction<SV>>::reduce(&inner);
-    <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
-      &mut acc,
-      &e_right[i],
-      &inner_red,
-    );
-  }
-
-  <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&acc)
 }
 
 fn fold_final_abc_with_weights<E, SV>(
@@ -704,34 +854,6 @@ where
     weights,
   );
   Ok((a_final, b_final, c_final))
-}
-
-fn fold_final_c_with_weights<E, SV>(
-  c_layers: &[&[SV]],
-  c_field_layers: &[&[E::Scalar]],
-  c_large_positions: &[usize],
-  weights: &[E::Scalar],
-) -> Result<Vec<E::Scalar>, SpartanError>
-where
-  E: Engine,
-  SV: SmallValue,
-  E::Scalar: SmallValueEngine<SV>,
-{
-  let mut c_final = fold_small_layers_with_weights::<E, SV>(c_layers, weights, weights.len())?
-    .pop()
-    .ok_or_else(empty_fold_error)?;
-  apply_large_final_corrections::<E>(
-    None,
-    None,
-    &mut c_final,
-    &[],
-    &[],
-    c_field_layers,
-    &[],
-    c_large_positions,
-    weights,
-  );
-  Ok(c_final)
 }
 
 fn apply_large_final_corrections<E>(
@@ -861,52 +983,39 @@ where
   Ok((a_final, b_final, c_final))
 }
 
-fn fold_small_layers_with_weights<E, SV>(
-  layers: &[&[SV]],
+fn fold_field_layers_with_weights<E>(
+  layers: &[Vec<E::Scalar>],
   weights: &[E::Scalar],
-  group_size: usize,
-) -> Result<Vec<Vec<E::Scalar>>, SpartanError>
+) -> Result<Vec<E::Scalar>, SpartanError>
 where
   E: Engine,
-  SV: SmallValue,
-  E::Scalar: SmallValueEngine<SV>,
 {
   if layers.is_empty() {
-    return Err(invalid_input("cannot fold empty small layer list"));
+    return Err(invalid_input("cannot fold empty field layer list"));
   }
-  if group_size == 0 || !layers.len().is_multiple_of(group_size) {
-    return Err(invalid_input("invalid small-layer fold group size"));
-  }
-  if weights.len() != group_size {
+  if weights.len() != layers.len() {
     return Err(invalid_input(format!(
-      "weight length {} does not match group size {}",
+      "weight length {} does not match field layer count {}",
       weights.len(),
-      group_size
+      layers.len()
     )));
   }
   let layer_len = layers[0].len();
   if !layers.iter().all(|layer| layer.len() == layer_len) {
-    return Err(invalid_input("all small layers must have the same length"));
+    return Err(invalid_input("all field layers must have the same length"));
   }
 
   Ok(
-    layers
-      .par_chunks(group_size)
-      .map(|group| {
-        (0..layer_len)
-          .into_par_iter()
-          .map(|k| {
-            let mut acc = <E::Scalar as DelayedReduction<SV>>::Accumulator::zero();
-            for (weight, layer) in weights.iter().zip(group.iter()) {
-              <E::Scalar as DelayedReduction<SV>>::unreduced_multiply_accumulate(
-                &mut acc,
-                weight,
-                &(*layer)[k],
-              );
-            }
-            <E::Scalar as DelayedReduction<SV>>::reduce(&acc)
-          })
-          .collect()
+    (0..layer_len)
+      .into_par_iter()
+      .map(|k| {
+        let mut acc = <E::Scalar as DelayedReduction<E::Scalar>>::Accumulator::zero();
+        for (weight, layer) in weights.iter().zip(layers.iter()) {
+          <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
+            &mut acc, weight, &layer[k],
+          );
+        }
+        <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&acc)
       })
       .collect(),
   )
@@ -922,10 +1031,9 @@ mod tests {
       shape_cs::ShapeCS,
       solver::SatisfyingAssignment,
     },
-    big_num::{SmallValueField, small_value_conversion::to_small_vec_or_zero},
-    lagrange_accumulator::field_to_i64_or_zero_for_l0,
+    big_num::SmallValueField,
     neutronnova_zk::{
-      FieldStepMatvecs, SmallAbStepMatvecs, SmallAbcStepMatvecs, SmallValueNeutronNovaStepMatvecs,
+      NeutronNovaNifsStrategy, SmallValueNeutronNovaNIFS, SmallValueNeutronNovaStepMatvecs,
       compute_ab_c_claim_round, compute_field_round_claim, fold_layer_pair_into,
       generate_nifs_field_round_polynomial,
     },
@@ -975,14 +1083,14 @@ mod tests {
 
   fn certify_layers<SV, const LB: usize>(
     layers: &[MultilinearPolynomial<SV>],
-  ) -> Vec<SmallValueExtensionBoundedPoly<'_, SV, LB>>
+  ) -> Vec<SmallValueExtensionBoundedPoly<SV, LB>>
   where
-    SV: SmallValue,
+    SV: SmallValue + Bounded + ToPrimitive,
   {
     layers
       .iter()
       .map(|layer| {
-        SmallValueExtensionBoundedPoly::<_, LB>::new(layer)
+        SmallValueExtensionBoundedPoly::<_, LB>::new(layer.clone())
           .expect("synthetic layer should be extension-bounded")
       })
       .collect()
@@ -1137,10 +1245,10 @@ mod tests {
       synthetic_small_abc_polys::<SV>(num_instances, num_constraints);
     let a_certs = certify_layers::<SV, LB>(&a_polys);
     let b_certs = certify_layers::<SV, LB>(&b_polys);
-    let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
-    let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
-    let a_small_evals = make_layer_evals(&a_small);
-    let b_small_evals = make_layer_evals(&b_small);
+    let a_small = padded_bounded_layers(&a_certs, num_instances, n_padded);
+    let b_small = padded_bounded_layers(&b_certs, num_instances, n_padded);
+    let a_small_evals = bounded_layer_evals(&a_small);
+    let b_small_evals = bounded_layer_evals(&b_small);
     let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
     let (mut a_layers, mut b_layers, mut c_layers) =
       field_layers_from_small_evals(&a_small_evals, &b_small_evals, &c_small_evals);
@@ -1161,9 +1269,9 @@ mod tests {
       .map(|round| F::from((2 * round + 7) as u64))
       .collect::<Vec<_>>();
 
-    let accumulators = build_accumulators_neutronnova::<F, SV>(
-      &a_small_evals,
-      &b_small_evals,
+    let accumulators = build_accumulators_neutronnova::<F, SV, LB>(
+      &a_small,
+      &b_small,
       &a_field_refs,
       &b_field_refs,
       &[],
@@ -1171,7 +1279,6 @@ mod tests {
       left,
       right,
       &rhos,
-      LB,
     )
     .expect("small accumulator construction should succeed");
     let mut small_value =
@@ -1217,11 +1324,12 @@ mod tests {
     if LB < ell_b {
       let prefix_size = 1usize << LB;
       let prefix_weights = weights_from_r::<F>(&r_bs[..LB], prefix_size);
-      let PrefixAbWithCClaims {
+      let PrefixAbcWithCClaims {
         a_layers: mut small_a_layers,
         b_layers: mut small_b_layers,
+        c_layers: mut small_c_layers,
         mut c_claims,
-      } = materialize_prefix_ab_with_c_claims::<E, SV>(
+      } = materialize_prefix_abc_with_c_claims::<E, SV>(
         &a_small_evals,
         &b_small_evals,
         &c_small_evals,
@@ -1240,7 +1348,8 @@ mod tests {
 
       assert_eq!(small_a_layers, a_layers);
       assert_eq!(small_b_layers, b_layers);
-      assert_c_claims_match_layers(&c_claims, &c_layers, &e_eq, left, right);
+      assert_eq!(small_c_layers, c_layers);
+      assert_c_claims_match_layers(&c_claims, &small_c_layers, &e_eq, left, right);
 
       for (round, (&rho, &r_b)) in rhos.iter().zip(&r_bs).enumerate().skip(LB) {
         let (standard_e0, standard_quad_coeff) = compute_field_round_claim::<E>(
@@ -1282,12 +1391,15 @@ mod tests {
         fold_materialized_layers(&mut c_layers, r_b);
         fold_materialized_layers(&mut small_a_layers, r_b);
         fold_materialized_layers(&mut small_b_layers, r_b);
+        fold_materialized_layers(&mut small_c_layers, r_b);
         fold_c_claims(&mut c_claims, r_b);
-        assert_c_claims_match_layers(&c_claims, &c_layers, &e_eq, left, right);
+        assert_eq!(small_c_layers, c_layers);
+        assert_c_claims_match_layers(&c_claims, &small_c_layers, &e_eq, left, right);
       }
 
       assert_eq!(small_a_layers, a_layers);
       assert_eq!(small_b_layers, b_layers);
+      assert_eq!(small_c_layers, c_layers);
     }
 
     let final_weights = weights_from_r::<F>(&r_bs, n_padded);
@@ -1334,12 +1446,11 @@ mod tests {
     COnly,
   }
 
-  fn synthetic_step_matvecs_with_large_position(
+  fn synthetic_step_matvecs_with_large_position<const L0: usize>(
     num_instances: usize,
     num_constraints: usize,
     large_case: LargeCase,
-    small_value_l0: usize,
-  ) -> SmallValueNeutronNovaStepMatvecs<E> {
+  ) -> SmallValueNeutronNovaStepMatvecs<E, i64, L0> {
     let large_k = 3usize;
     let mut a_field = Vec::with_capacity(num_instances);
     let mut b_field = Vec::with_capacity(num_instances);
@@ -1373,62 +1484,15 @@ mod tests {
       c_field.push(c);
     }
 
-    let mut small = Vec::with_capacity(num_instances);
-    let mut ab_large_positions = std::collections::BTreeSet::new();
-    let mut c_large_positions = std::collections::BTreeSet::new();
-    for ((a, b), c) in a_field.iter().zip(&b_field).zip(&c_field) {
-      let (a_small, a_large) = field_to_i64_or_zero_for_l0(a, small_value_l0);
-      let (b_small, b_large) = field_to_i64_or_zero_for_l0(b, small_value_l0);
-      let (c_small, c_large) = to_small_vec_or_zero(c);
-      ab_large_positions.extend(a_large);
-      ab_large_positions.extend(b_large);
-      c_large_positions.extend(c_large);
-      small.push((a_small, b_small, c_small));
-    }
+    let field_matvecs = a_field
+      .into_iter()
+      .zip(b_field)
+      .zip(c_field)
+      .map(|((az, bz), cz)| (az, bz, cz))
+      .collect::<Vec<_>>();
 
-    let ab_large_positions = ab_large_positions.into_iter().collect::<Vec<_>>();
-    let c_large_positions = c_large_positions.into_iter().collect::<Vec<_>>();
-    for (a_small, b_small, c_small) in &mut small {
-      for &k in &ab_large_positions {
-        a_small[k] = 0;
-        b_small[k] = 0;
-      }
-      for &k in &c_large_positions {
-        c_small[k] = 0;
-      }
-    }
-
-    let (az_small, bz_small, cz_small) = small.into_iter().fold(
-      (
-        Vec::with_capacity(num_instances),
-        Vec::with_capacity(num_instances),
-        Vec::with_capacity(num_instances),
-      ),
-      |(mut az_acc, mut bz_acc, mut cz_acc), (az, bz, cz)| {
-        az_acc.push(az);
-        bz_acc.push(bz);
-        cz_acc.push(cz);
-        (az_acc, bz_acc, cz_acc)
-      },
-    );
-
-    SmallValueNeutronNovaStepMatvecs {
-      field: FieldStepMatvecs {
-        az: a_field,
-        bz: b_field,
-        cz: c_field,
-      },
-      small_abc: SmallAbcStepMatvecs {
-        ab: SmallAbStepMatvecs {
-          az_small,
-          bz_small,
-          large_positions: ab_large_positions,
-          l0: small_value_l0,
-        },
-        cz_small,
-        c_large_positions,
-      },
-    }
+    SmallValueNeutronNovaNIFS::<E, i64, L0>::build_step_matvecs_from_field(field_matvecs, &())
+      .expect("synthetic field layers should build certified small matvecs")
   }
 
   fn run_large_position_accumulator_case<const LB: usize>(large_case: LargeCase) {
@@ -1437,20 +1501,34 @@ mod tests {
     let right = 2usize;
     let num_constraints = left * right;
     let step_matvecs =
-      synthetic_step_matvecs_with_large_position(num_instances, num_constraints, large_case, LB);
+      synthetic_step_matvecs_with_large_position::<LB>(num_instances, num_constraints, large_case);
     match large_case {
       LargeCase::Ab => {
-        assert_eq!(step_matvecs.small_abc.ab.large_positions, vec![3]);
-        assert_eq!(step_matvecs.small_abc.c_large_positions, vec![3]);
+        assert_eq!(step_matvecs.small_abc.ab.field_positions, vec![3]);
+        assert_eq!(step_matvecs.small_abc.c_field_positions, vec![3]);
       }
       LargeCase::COnly => {
-        assert!(step_matvecs.small_abc.ab.large_positions.is_empty());
-        assert_eq!(step_matvecs.small_abc.c_large_positions, vec![3]);
+        assert!(step_matvecs.small_abc.ab.field_positions.is_empty());
+        assert_eq!(step_matvecs.small_abc.c_field_positions, vec![3]);
       }
     }
-    let a_small = layer_refs(&step_matvecs.small_abc.ab.az_small);
-    let b_small = layer_refs(&step_matvecs.small_abc.ab.bz_small);
-    let c_small = layer_refs(&step_matvecs.small_abc.cz_small);
+    let a_bounded = padded_bounded_layers(
+      &step_matvecs.small_abc.ab.az_small,
+      num_instances,
+      num_instances,
+    );
+    let b_bounded = padded_bounded_layers(
+      &step_matvecs.small_abc.ab.bz_small,
+      num_instances,
+      num_instances,
+    );
+    let a_small = bounded_layer_evals(&a_bounded);
+    let b_small = bounded_layer_evals(&b_bounded);
+    let c_small = padded_bounded_layer_evals(
+      &step_matvecs.small_abc.cz_small,
+      num_instances,
+      num_instances,
+    );
     let a_field_refs = layer_refs(&step_matvecs.field.az);
     let b_field_refs = layer_refs(&step_matvecs.field.bz);
     let c_field_refs = layer_refs(&step_matvecs.field.cz);
@@ -1468,17 +1546,16 @@ mod tests {
       .map(|round| F::from((7 * round + 13) as u64))
       .collect::<Vec<_>>();
 
-    let accumulators = build_accumulators_neutronnova::<F, i64>(
-      &a_small,
-      &b_small,
+    let accumulators = build_accumulators_neutronnova::<F, i64, LB>(
+      &a_bounded,
+      &b_bounded,
       &a_field_refs,
       &b_field_refs,
-      &step_matvecs.small_abc.ab.large_positions,
+      &step_matvecs.small_abc.ab.field_positions,
       &e_eq,
       left,
       right,
       &rhos,
-      LB,
     )
     .expect("mixed accumulator construction should succeed");
     let mut small_value =
@@ -1526,14 +1603,106 @@ mod tests {
       &a_field_refs,
       &b_field_refs,
       &c_field_refs,
-      &step_matvecs.small_abc.ab.large_positions,
-      &step_matvecs.small_abc.c_large_positions,
+      &step_matvecs.small_abc.ab.field_positions,
+      &step_matvecs.small_abc.c_field_positions,
       &final_weights,
     )
     .expect("mixed final fold should succeed");
     assert_eq!(az, a_layers[0]);
     assert_eq!(bz, b_layers[0]);
     assert_eq!(cz, c_layers[0]);
+  }
+
+  #[test]
+  fn test_prefix_materialization_corrects_c_field_positions_and_suffix_fold()
+  -> Result<(), SpartanError> {
+    const LB: usize = 1;
+    let num_instances = 8usize;
+    let left = 4usize;
+    let right = 2usize;
+    let num_constraints = left * right;
+    let step_matvecs = synthetic_step_matvecs_with_large_position::<LB>(
+      num_instances,
+      num_constraints,
+      LargeCase::COnly,
+    );
+    assert_eq!(step_matvecs.small_abc.c_field_positions, vec![3]);
+
+    let a_bounded = padded_bounded_layers(
+      &step_matvecs.small_abc.ab.az_small,
+      num_instances,
+      num_instances,
+    );
+    let b_bounded = padded_bounded_layers(
+      &step_matvecs.small_abc.ab.bz_small,
+      num_instances,
+      num_instances,
+    );
+    let a_small = bounded_layer_evals(&a_bounded);
+    let b_small = bounded_layer_evals(&b_bounded);
+    let c_small = padded_bounded_layer_evals(
+      &step_matvecs.small_abc.cz_small,
+      num_instances,
+      num_instances,
+    );
+    let a_field_refs = layer_refs(&step_matvecs.field.az);
+    let b_field_refs = layer_refs(&step_matvecs.field.bz);
+    let c_field_refs = layer_refs(&step_matvecs.field.cz);
+    let ell_b = num_instances.trailing_zeros() as usize;
+    let (ell_cons, derived_left, derived_right) = tensor_decomp(num_constraints);
+    assert_eq!((derived_left, derived_right), (left, right));
+    let e_eq = PowPolynomial::split_evals(F::from(29u64), ell_cons, left, right);
+    let r_bs = (0..ell_b)
+      .map(|round| F::from((11 * round + 17) as u64))
+      .collect::<Vec<_>>();
+    let prefix_size = 1usize << LB;
+    let prefix_weights = weights_from_r::<F>(&r_bs[..LB], prefix_size);
+
+    let prefix = materialize_prefix_abc_with_c_claims::<E, i64>(
+      &a_small,
+      &b_small,
+      &c_small,
+      &a_field_refs,
+      &b_field_refs,
+      &c_field_refs,
+      &[],
+      &step_matvecs.small_abc.c_field_positions,
+      &prefix_weights,
+      prefix_size,
+      &e_eq,
+      left,
+      right,
+    )?;
+
+    for (suffix_idx, c_layer) in prefix.c_layers.iter().enumerate() {
+      for &k in &step_matvecs.small_abc.c_field_positions {
+        let mut expected = F::ZERO;
+        for (prefix_idx, weight) in prefix_weights.iter().enumerate() {
+          let layer_idx = suffix_idx * prefix_size + prefix_idx;
+          expected += *weight * c_field_refs[layer_idx][k];
+        }
+        assert_eq!(c_layer[k], expected);
+      }
+    }
+    assert_c_claims_match_layers(&prefix.c_claims, &prefix.c_layers, &e_eq, left, right);
+
+    let final_weights = weights_from_r::<F>(&r_bs, num_instances);
+    let (_, _, expected_c) = fold_final_abc_with_weights::<E, i64>(
+      &a_small,
+      &b_small,
+      &c_small,
+      &a_field_refs,
+      &b_field_refs,
+      &c_field_refs,
+      &[],
+      &step_matvecs.small_abc.c_field_positions,
+      &final_weights,
+    )?;
+    let suffix_weights = weights_from_r::<F>(&r_bs[LB..], prefix.c_layers.len());
+    let c_folded = fold_field_layers_with_weights::<E>(&prefix.c_layers, &suffix_weights)?;
+    assert_eq!(c_folded, expected_c);
+
+    Ok(())
   }
 
   fn dot_field_with_split_eq(layer: &[F], e_eq: &[F], left: usize, right: usize) -> F {
@@ -1594,10 +1763,10 @@ mod tests {
       synthetic_small_abc_polys::<i32>(num_instances, num_constraints);
     let a_certs = certify_layers::<i32, LB>(&a_polys);
     let b_certs = certify_layers::<i32, LB>(&b_polys);
-    let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
-    let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
-    let a_small_evals = make_layer_evals(&a_small);
-    let b_small_evals = make_layer_evals(&b_small);
+    let a_small = padded_bounded_layers(&a_certs, num_instances, n_padded);
+    let b_small = padded_bounded_layers(&b_certs, num_instances, n_padded);
+    let a_small_evals = bounded_layer_evals(&a_small);
+    let b_small_evals = bounded_layer_evals(&b_small);
     let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
     let (a_field_layers, b_field_layers, c_field_layers) =
       field_layers_from_small_evals(&a_small_evals, &b_small_evals, &c_small_evals);
@@ -1611,7 +1780,7 @@ mod tests {
     let prefix_size = 1usize << LB;
     let prefix_weights = weights_from_r::<F>(&r_bs, prefix_size);
 
-    let prefix = materialize_prefix_ab_with_c_claims::<E, i32>(
+    let prefix = materialize_prefix_abc_with_c_claims::<E, i32>(
       &a_small_evals,
       &b_small_evals,
       &c_small_evals,
@@ -1627,12 +1796,9 @@ mod tests {
       right,
     )
     .expect("prefix materialization should succeed");
-    let c_layers =
-      fold_small_layers_with_weights::<E, i32>(&c_small_evals, &prefix_weights, prefix_size)
-        .expect("materialized C fold should succeed");
 
-    assert_eq!(prefix.c_claims.len(), c_layers.len());
-    for (claim, c_layer) in prefix.c_claims.iter().zip(c_layers.iter()) {
+    assert_eq!(prefix.c_claims.len(), prefix.c_layers.len());
+    for (claim, c_layer) in prefix.c_claims.iter().zip(prefix.c_layers.iter()) {
       assert_eq!(*claim, dot_field_with_split_eq(c_layer, &e_eq, left, right));
     }
   }
@@ -1649,10 +1815,10 @@ mod tests {
       synthetic_small_abc_polys::<i32>(num_instances, num_constraints);
     let a_certs = certify_layers::<i32, LB>(&a_polys);
     let b_certs = certify_layers::<i32, LB>(&b_polys);
-    let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
-    let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
-    let a_small_evals = make_layer_evals(&a_small);
-    let b_small_evals = make_layer_evals(&b_small);
+    let a_small = padded_bounded_layers(&a_certs, num_instances, n_padded);
+    let b_small = padded_bounded_layers(&b_certs, num_instances, n_padded);
+    let a_small_evals = bounded_layer_evals(&a_small);
+    let b_small_evals = bounded_layer_evals(&b_small);
     let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
     let (a_field_layers, b_field_layers, c_field_layers) =
       field_layers_from_small_evals(&a_small_evals, &b_small_evals, &c_small_evals);
@@ -1667,13 +1833,12 @@ mod tests {
     let prefix_size = 1usize << LB;
     let prefix_weights = weights_from_r::<F>(&r_bs, prefix_size);
 
-    let mut c_layers_materialized =
-      fold_small_layers_with_weights::<E, i32>(&c_small_evals, &prefix_weights, prefix_size)?;
-    let PrefixAbWithCClaims {
+    let PrefixAbcWithCClaims {
       a_layers,
       b_layers,
+      c_layers: mut c_layers_materialized,
       mut c_claims,
-    } = materialize_prefix_ab_with_c_claims::<E, i32>(
+    } = materialize_prefix_abc_with_c_claims::<E, i32>(
       &a_small_evals,
       &b_small_evals,
       &c_small_evals,
@@ -1732,10 +1897,10 @@ mod tests {
       synthetic_small_abc_polys::<i32>(num_instances, num_constraints);
     let a_certs = certify_layers::<i32, LB>(&a_polys);
     let b_certs = certify_layers::<i32, LB>(&b_polys);
-    let a_small = padded_small_layers(&a_certs, num_instances, n_padded);
-    let b_small = padded_small_layers(&b_certs, num_instances, n_padded);
-    let a_small_evals = make_layer_evals(&a_small);
-    let b_small_evals = make_layer_evals(&b_small);
+    let a_small = padded_bounded_layers(&a_certs, num_instances, n_padded);
+    let b_small = padded_bounded_layers(&b_certs, num_instances, n_padded);
+    let a_small_evals = bounded_layer_evals(&a_small);
+    let b_small_evals = bounded_layer_evals(&b_small);
     let c_small_evals = padded_plain_layer_evals(&c_polys, num_instances, n_padded);
     let (a_field_layers, b_field_layers, c_field_layers) =
       field_layers_from_small_evals(&a_small_evals, &b_small_evals, &c_small_evals);
@@ -1756,11 +1921,13 @@ mod tests {
 
     assert_eq!(derived_left, left);
     assert_eq!(derived_right, right);
-    NeutronNovaNIFS::<E>::prove_small::<i32>(
+    NeutronNovaNIFS::<E>::prove_small_from_evals::<i32, LB>(
       &s,
       &vc_ck,
       instances,
       witnesses,
+      &a_small,
+      &b_small,
       &a_small_evals,
       &b_small_evals,
       &c_small_evals,
@@ -1773,7 +1940,6 @@ mod tests {
       derived_left,
       derived_right,
       &rhos,
-      LB,
       &mut vc,
       &mut vc_state,
       &vc_shape,
@@ -1822,10 +1988,21 @@ mod tests {
     let left = 4usize;
     let right = 2usize;
     let num_constraints = left * right;
-    let step_matvecs =
-      synthetic_step_matvecs_with_large_position(num_instances, num_constraints, LargeCase::Ab, L0);
-    let a_small = layer_refs(&step_matvecs.small_abc.ab.az_small);
-    let b_small = layer_refs(&step_matvecs.small_abc.ab.bz_small);
+    let step_matvecs = synthetic_step_matvecs_with_large_position::<L0>(
+      num_instances,
+      num_constraints,
+      LargeCase::Ab,
+    );
+    let a_bounded = padded_bounded_layers(
+      &step_matvecs.small_abc.ab.az_small,
+      num_instances,
+      num_instances,
+    );
+    let b_bounded = padded_bounded_layers(
+      &step_matvecs.small_abc.ab.bz_small,
+      num_instances,
+      num_instances,
+    );
     let a_field_refs = layer_refs(&step_matvecs.field.az);
     let b_field_refs = layer_refs(&step_matvecs.field.bz);
     let ell_b = num_instances.trailing_zeros() as usize;
@@ -1836,9 +2013,9 @@ mod tests {
       .map(|round| F::from((5 * round + 11) as u64))
       .collect::<Vec<_>>();
 
-    let err = match build_accumulators_neutronnova::<F, i64>(
-      &a_small,
-      &b_small,
+    let err = match build_accumulators_neutronnova::<F, i64, L0>(
+      &a_bounded,
+      &b_bounded,
       &a_field_refs,
       &b_field_refs,
       &[num_constraints],
@@ -1846,7 +2023,6 @@ mod tests {
       left,
       right,
       &rhos,
-      L0,
     ) {
       Ok(_) => panic!("out-of-range large position should be rejected"),
       Err(err) => err,
@@ -1861,34 +2037,45 @@ mod tests {
   #[test]
   #[should_panic(expected = "small Az cache mismatch")]
   fn test_debug_cache_validation_rejects_non_large_small_entry_corruption() {
-    let mut step_matvecs = synthetic_step_matvecs_with_large_position(4, 8, LargeCase::Ab, 1);
-    assert!(!step_matvecs.small_abc.ab.large_positions.contains(&0));
-    step_matvecs.small_abc.ab.az_small[0][0] += 1;
+    const L0: usize = 1;
+    let mut step_matvecs = synthetic_step_matvecs_with_large_position::<L0>(4, 8, LargeCase::Ab);
+    assert!(!step_matvecs.small_abc.ab.field_positions.contains(&0));
+    let mut poly = step_matvecs.small_abc.ab.az_small[0].clone().into_poly();
+    poly.Z[0] += 1;
+    step_matvecs.small_abc.ab.az_small[0] =
+      SmallValueExtensionBoundedPoly::<_, L0>::new_unchecked(poly);
 
-    crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E>(&step_matvecs);
+    crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E, i64, L0>(&step_matvecs);
   }
 
   #[cfg(debug_assertions)]
   #[test]
-  #[should_panic(expected = "large-position small Az entry must be zero")]
+  #[should_panic(expected = "field-position small Az entry must be zero")]
   fn test_debug_cache_validation_rejects_large_position_small_entry_corruption() {
-    let mut step_matvecs = synthetic_step_matvecs_with_large_position(4, 8, LargeCase::Ab, 1);
-    let large_position = step_matvecs.small_abc.ab.large_positions[0];
-    step_matvecs.small_abc.ab.az_small[0][large_position] = 1;
+    const L0: usize = 1;
+    let mut step_matvecs = synthetic_step_matvecs_with_large_position::<L0>(4, 8, LargeCase::Ab);
+    let large_position = step_matvecs.small_abc.ab.field_positions[0];
+    let mut poly = step_matvecs.small_abc.ab.az_small[0].clone().into_poly();
+    poly.Z[large_position] = 1;
+    step_matvecs.small_abc.ab.az_small[0] =
+      SmallValueExtensionBoundedPoly::<_, L0>::new_unchecked(poly);
 
-    crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E>(&step_matvecs);
+    crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E, i64, L0>(&step_matvecs);
   }
 
   #[cfg(debug_assertions)]
   #[test]
   #[should_panic(expected = "field Az*Bz != Cz")]
   fn test_debug_cache_validation_rejects_field_cz_relation_corruption() {
-    let mut step_matvecs = synthetic_step_matvecs_with_large_position(4, 8, LargeCase::Ab, 1);
-    assert!(!step_matvecs.small_abc.ab.large_positions.contains(&0));
+    const L0: usize = 1;
+    let mut step_matvecs = synthetic_step_matvecs_with_large_position::<L0>(4, 8, LargeCase::Ab);
+    assert!(!step_matvecs.small_abc.ab.field_positions.contains(&0));
     step_matvecs.field.cz[0][0] += F::ONE;
-    step_matvecs.small_abc.cz_small[0][0] += 1;
+    let mut poly = step_matvecs.small_abc.cz_small[0].clone().into_poly();
+    poly.Z[0] += 1;
+    step_matvecs.small_abc.cz_small[0] = ExtensionBoundedPoly::new_unchecked(poly);
 
-    crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E>(&step_matvecs);
+    crate::neutronnova_zk::debug_validate_small_value_step_matvecs::<E, i64, L0>(&step_matvecs);
   }
 
   #[test]
@@ -1896,7 +2083,7 @@ mod tests {
     const L0: usize = 1;
     let poly = MultilinearPolynomial::new(vec![i32::MAX, 0, 0, 0]);
     assert!(matches!(
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&poly),
+      SmallValueExtensionBoundedPoly::<_, L0>::new(poly),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
   }

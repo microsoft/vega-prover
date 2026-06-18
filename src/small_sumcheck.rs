@@ -90,8 +90,8 @@ pub(crate) struct SmallValueSumCheck<Scalar: PrimeField, const D: usize> {
 pub(crate) fn prove_spartan_outer_cubic_small_value<E, SV, const LB: usize>(
   claim: &E::Scalar,
   taus: Vec<E::Scalar>,
-  poly_A_small: SmallValueExtensionBoundedPoly<'_, SV, LB>,
-  poly_B_small: SmallValueExtensionBoundedPoly<'_, SV, LB>,
+  poly_A_small: &SmallValueExtensionBoundedPoly<SV, LB>,
+  poly_B_small: &SmallValueExtensionBoundedPoly<SV, LB>,
   poly_C_small: &MultilinearPolynomial<SV>,
   transcript: &mut E::TE,
 ) -> Result<(SumcheckProof<E>, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError>
@@ -132,7 +132,7 @@ where
   // Uses: small × small → intermediate (for Az·Bz products),
   // then intermediate × field (for eq weighting via DelayedReduction).
   let (accumulators, mut e_in_pyramid, e_xout_pyramid) =
-    build_accumulators_spartan::<E::Scalar, SV, LB>(&poly_A_small, &poly_B_small, &taus);
+    build_accumulators_spartan::<E::Scalar, SV, LB>(poly_A_small, poly_B_small, &taus);
 
   let mut small_value_sumcheck =
     SmallValueSumCheck::<E::Scalar, SMALL_VALUE_T_DEGREE>::from_accumulators(accumulators);
@@ -525,9 +525,9 @@ mod tests {
     // Claim = 0 for satisfying witness (Az·Bz = Cz)
     let mut claim = F::ZERO;
 
-    let az_bound = SmallValueExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(&az_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(az_poly.clone())
       .expect("Az should be extension-bounded");
-    let bz_bound = SmallValueExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(&bz_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, SMALL_VALUE_ROUNDS>::new(bz_poly.clone())
       .expect("Bz should be extension-bounded");
 
     // Build accumulators using the checked API
@@ -681,17 +681,17 @@ mod tests {
     )
     .expect("standard prove should succeed");
 
-    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(az_small_poly.clone())
       .expect("Az should be extension-bounded");
-    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(bz_small_poly.clone())
       .expect("Bz should be extension-bounded");
 
     // Run small-value method
     let (proof2, r2, evals2) = prove_spartan_outer_cubic_small_value::<E, SV, 3>(
       &claim,
       taus.clone(),
-      az_bound,
-      bz_bound,
+      &az_bound,
+      &bz_bound,
       &cz_small_poly,
       &mut transcript2,
     )
@@ -750,9 +750,9 @@ mod tests {
     let az_small_poly = MultilinearPolynomial::new(vec![1i32; n]);
     let bz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
     let cz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
-    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(az_small_poly.clone())
       .expect("Az should be extension-bounded");
-    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(bz_small_poly.clone())
       .expect("Bz should be extension-bounded");
     let taus = vec![F::from(2u64), F::from(3u64), F::from(4u64)];
     let mut transcript = <E as Engine>::TE::new(b"test");
@@ -760,8 +760,8 @@ mod tests {
     let result = prove_spartan_outer_cubic_small_value::<E, i32, 3>(
       &F::ZERO,
       taus,
-      az_bound,
-      bz_bound,
+      &az_bound,
+      &bz_bound,
       &cz_small_poly,
       &mut transcript,
     );
@@ -779,9 +779,9 @@ mod tests {
     let az_small_poly = MultilinearPolynomial::new(vec![1i32; n]);
     let bz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
     let cz_small_poly = MultilinearPolynomial::new(vec![2i32; n]);
-    let az_bound = SmallValueExtensionBoundedPoly::<_, 0>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 0>::new(az_small_poly.clone())
       .expect("Az should be extension-bounded");
-    let bz_bound = SmallValueExtensionBoundedPoly::<_, 0>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 0>::new(bz_small_poly.clone())
       .expect("Bz should be extension-bounded");
     let taus = vec![F::from(2u64)];
     let mut transcript = <E as Engine>::TE::new(b"test");
@@ -789,8 +789,8 @@ mod tests {
     let result = prove_spartan_outer_cubic_small_value::<E, i32, 0>(
       &F::ZERO,
       taus,
-      az_bound,
-      bz_bound,
+      &az_bound,
+      &bz_bound,
       &cz_small_poly,
       &mut transcript,
     );
@@ -823,17 +823,17 @@ mod tests {
     let az_small_poly = MultilinearPolynomial::new(az_small);
     let bz_small_poly = MultilinearPolynomial::new(bz_small);
     let cz_small_poly = MultilinearPolynomial::new(cz_small);
-    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_small_poly)
+    let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(az_small_poly.clone())
       .expect("Az should be extension-bounded");
-    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_small_poly)
+    let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(bz_small_poly.clone())
       .expect("Bz should be extension-bounded");
     let mut transcript = <E as Engine>::TE::new(b"test");
 
     let result = prove_spartan_outer_cubic_small_value::<E, i32, 3>(
       &claim,
       taus,
-      az_bound,
-      bz_bound,
+      &az_bound,
+      &bz_bound,
       &cz_small_poly,
       &mut transcript,
     );
@@ -887,9 +887,9 @@ mod perf_tests {
       let az_poly = MultilinearPolynomial::new(az_small);
       let bz_poly = MultilinearPolynomial::new(bz_small);
       let cz_poly = MultilinearPolynomial::new(cz_small);
-      let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&az_poly)
+      let az_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(az_poly.clone())
         .expect("Az should be extension-bounded");
-      let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(&bz_poly)
+      let bz_bound = SmallValueExtensionBoundedPoly::<_, 3>::new(bz_poly.clone())
         .expect("Bz should be extension-bounded");
 
       let taus: Vec<E::Scalar> = (0..num_vars).map(|_| E::Scalar::random(&mut rng)).collect();
@@ -904,8 +904,8 @@ mod perf_tests {
       let (proof, _r, _evals) = prove_spartan_outer_cubic_small_value::<E, _, 3>(
         &E::Scalar::ZERO,
         taus.clone(),
-        az_bound,
-        bz_bound,
+        &az_bound,
+        &bz_bound,
         &cz_poly,
         &mut transcript,
       )

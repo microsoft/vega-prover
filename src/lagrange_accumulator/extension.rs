@@ -135,11 +135,11 @@ where
 /// `bit_rev[p]` reverses the low `l0` bits of `p`. NeutronNova accumulator
 /// builders use it to map prefix positions to instance-layer indices.
 #[inline]
-pub(crate) fn bit_rev_prefix_table(l0: usize) -> Vec<usize> {
-  debug_assert!(l0 >= 1, "bit_rev_prefix_table requires l0 >= 1");
-  let prefix_size = 1usize << l0;
+pub(crate) fn bit_rev_prefix_table<const L0: usize>() -> Vec<usize> {
+  debug_assert!(L0 >= 1, "bit_rev_prefix_table requires L0 >= 1");
+  let prefix_size = 1usize << L0;
   (0..prefix_size)
-    .map(|p| p.reverse_bits() >> (usize::BITS as usize - l0))
+    .map(|p| p.reverse_bits() >> (usize::BITS as usize - L0))
     .collect()
 }
 

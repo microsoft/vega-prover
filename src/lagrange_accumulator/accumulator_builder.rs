@@ -16,7 +16,7 @@ use super::{
   accumulator::LagrangeAccumulators,
   csr::Csr,
   domain::LagrangeIndex,
-  extension_bound::ExtensionBoundedPoly,
+  extension_bound::{ExtensionBoundProduct, ExtensionBoundedPoly},
   index::AccumulatorPrefixIndex,
   thread_state::{PrefixExtensionScratch, SpartanThreadState},
 };
@@ -37,8 +37,8 @@ use super::index::compute_idx4;
 pub(crate) const SMALL_VALUE_T_DEGREE: usize = 2;
 
 /// Extension-bound certificate specialized to pairwise small-value products.
-pub(crate) type SmallValueExtensionBoundedPoly<'a, SV, const LB: usize> =
-  ExtensionBoundedPoly<'a, SV, <SV as WideMul>::Product, SMALL_VALUE_T_DEGREE, LB>;
+pub(crate) type SmallValueExtensionBoundedPoly<SV, const LB: usize> =
+  ExtensionBoundedPoly<SV, <SV as WideMul>::Product, SMALL_VALUE_T_DEGREE, LB>;
 
 /// Builds the table accumulators `A_i(v, u)` used in Spartan's first `l0`
 /// outer sumcheck rounds.
@@ -101,8 +101,8 @@ pub(crate) type SmallValueExtensionBoundedPoly<'a, SV, const LB: usize> =
 /// - Only process betas containing ∞: these are exactly the points where the
 ///   highest-degree `Az·Bz` term can contribute after the `Cz` term drops out
 pub(crate) fn build_accumulators_spartan<F, SV, const LB: usize>(
-  az: &SmallValueExtensionBoundedPoly<'_, SV, LB>,
-  bz: &SmallValueExtensionBoundedPoly<'_, SV, LB>,
+  az: &SmallValueExtensionBoundedPoly<SV, LB>,
+  bz: &SmallValueExtensionBoundedPoly<SV, LB>,
   taus: &[F],
 ) -> (
   LagrangeAccumulators<F, SMALL_VALUE_T_DEGREE>,
@@ -146,7 +146,7 @@ where
   let BetaPrefixCache {
     cache: beta_prefix_cache,
     num_betas,
-  } = build_beta_cache::<SMALL_VALUE_T_DEGREE>(l0);
+  } = build_beta_cache::<SMALL_VALUE_T_DEGREE, LB>();
 
   // Only betas containing at least one ∞ coordinate contribute non-zero values.
   // On binary inputs {0,1}^n, Az·Bz = Cz (R1CS identity), so Az·Bz - Cz = 0.
@@ -288,23 +288,22 @@ impl<F, const D: usize> NeutronNovaFieldCorrectionState<F, D>
 where
   F: Copy + Default + DelayedReduction<F>,
 {
-  fn new(l0: usize, prefix_size: usize, ext_size: usize) -> Self {
+  fn new<const L0: usize>(prefix_size: usize, ext_size: usize) -> Self {
     Self {
-      acc: LagrangeAccumulators::new(l0),
+      acc: LagrangeAccumulators::new(L0),
       ext: PrefixExtensionScratch::new(prefix_size, ext_size),
     }
   }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn for_each_extended_ab_at_idx<T, F, const D: usize>(
+fn for_each_extended_ab_at_idx<T, F, const D: usize, const L0: usize>(
   a_layers: &[&[T]],
   b_layers: &[&[T]],
   bit_rev: &[usize],
   suffix_weights: &[F],
   idx: usize,
   e_inner_val: F,
-  l0: usize,
   betas_with_infty: &[usize],
   scratch: &mut PrefixExtensionScratch<T>,
   mut accumulate_beta: impl FnMut(usize, F, T, T),
@@ -313,7 +312,7 @@ fn for_each_extended_ab_at_idx<T, F, const D: usize>(
   F: Copy + Mul<Output = F>,
 {
   for (suffix_idx, &suffix_weight) in suffix_weights.iter().enumerate() {
-    let layer_base = suffix_idx << l0;
+    let layer_base = suffix_idx << L0;
     let a_size = gather_and_extend_prefix::<T, D>(
       a_layers,
       bit_rev,
@@ -373,14 +372,14 @@ fn scatter_beta_value<F, const D: usize>(
 /// Builds the table accumulators used by NeutronNova's small-value NIFS.
 ///
 /// Handles both modes uniformly:
-/// - full-small (`l0 == ell_b`): every instance-folding bit lives in the
+/// - full-small (`L0 == ell_b`): every instance-folding bit lives in the
 ///   small-value prefix;
-/// - partial-small (`0 < l0 < ell_b`): the first `l0` instance bits use the
+/// - partial-small (`0 < L0 < ell_b`): the first `L0` instance bits use the
 ///   accumulator path, while the suffix bits are summed with Boolean equality
-///   weights from `rhos[l0..]`.
-pub(crate) fn build_accumulators_neutronnova<F, SV>(
-  a_evals: &[&[SV]],
-  b_evals: &[&[SV]],
+///   weights from `rhos[L0..]`.
+pub(crate) fn build_accumulators_neutronnova<F, SV, const L0: usize>(
+  a_evals: &[&ExtensionBoundedPoly<SV, <SV as WideMul>::Product, SMALL_VALUE_T_DEGREE, L0>],
+  b_evals: &[&ExtensionBoundedPoly<SV, <SV as WideMul>::Product, SMALL_VALUE_T_DEGREE, L0>],
   a_field_evals: &[&[F]],
   b_field_evals: &[&[F]],
   large_positions: &[usize],
@@ -388,11 +387,11 @@ pub(crate) fn build_accumulators_neutronnova<F, SV>(
   left: usize,
   right: usize,
   rhos: &[F],
-  l0: usize,
 ) -> Result<LagrangeAccumulators<F, SMALL_VALUE_T_DEGREE>, SpartanError>
 where
   F: PrimeField + Default + DelayedReduction<SV::Product> + DelayedReduction<F> + Send + Sync,
   SV: SmallValue,
+  <SV as WideMul>::Product: ExtensionBoundProduct,
 {
   let n = a_evals.len();
   if n == 0 || !n.is_power_of_two() {
@@ -410,10 +409,10 @@ where
   }
   let ell_b = n.trailing_zeros() as usize;
 
-  if l0 == 0 || l0 > ell_b {
+  if L0 == 0 || L0 > ell_b {
     return Err(invalid_input(format!(
-      "build_accumulators_neutronnova requires 0 < l0 <= ell_b; got l0={} and ell_b={}",
-      l0, ell_b
+      "build_accumulators_neutronnova requires 0 < L0 <= ell_b; got L0={} and ell_b={}",
+      L0, ell_b
     )));
   }
   if rhos.len() != ell_b {
@@ -455,7 +454,7 @@ where
   if !a_evals
     .iter()
     .chain(b_evals.iter())
-    .all(|layer| layer.len() == expected_layer_len)
+    .all(|layer| layer.as_poly().Z.len() == expected_layer_len)
   {
     return Err(invalid_input(format!(
       "all A/B layers must have length left * right {}",
@@ -487,26 +486,26 @@ where
   // Partition the instance bits into the Lagrange prefix handled here and the
   // Boolean suffix folded by equality weights.
   let base: usize = SMALL_VALUE_T_DEGREE + 1;
-  let l0_shift = u32::try_from(l0).map_err(|_| invalid_input("l0 does not fit in a u32 shift"))?;
+  let l0_shift = u32::try_from(L0).map_err(|_| invalid_input("L0 does not fit in a u32 shift"))?;
   let prefix_size = 1usize
     .checked_shl(l0_shift)
-    .ok_or_else(|| invalid_input("l0 is too large for this platform"))?;
-  let suffix_shift = u32::try_from(ell_b - l0)
-    .map_err(|_| invalid_input("ell_b - l0 does not fit in a u32 shift"))?;
+    .ok_or_else(|| invalid_input("L0 is too large for this platform"))?;
+  let suffix_shift = u32::try_from(ell_b - L0)
+    .map_err(|_| invalid_input("ell_b - L0 does not fit in a u32 shift"))?;
   let suffix_groups = 1usize
     .checked_shl(suffix_shift)
-    .ok_or_else(|| invalid_input("ell_b - l0 is too large for this platform"))?;
+    .ok_or_else(|| invalid_input("ell_b - L0 is too large for this platform"))?;
   let ext_size = base
-    .checked_pow(l0 as u32)
+    .checked_pow(L0 as u32)
     .ok_or_else(|| invalid_input("small-value extension table size overflows"))?;
   ext_size
-    .checked_mul(l0)
+    .checked_mul(L0)
     .ok_or_else(|| invalid_input("small-value beta cache size overflows"))?;
 
   // Equality data for suffix bits beyond LB. In full-small mode this collapses
   // to one suffix group with weight 1.
-  let e_b = compute_suffix_eq_pyramid(rhos, l0);
-  let suffix_weights = weights_from_r(&rhos[l0..], suffix_groups);
+  let e_b = compute_suffix_eq_pyramid(rhos, L0);
+  let suffix_weights = weights_from_r(&rhos[L0..], suffix_groups);
 
   let e_left = &e_eq[..left];
   let e_right = &e_eq[left..];
@@ -533,15 +532,24 @@ where
 
   // Map each Lagrange beta point to accumulator buckets. Only beta points with
   // an ∞ coordinate can contribute to the stored table.
-  let bit_rev = bit_rev_prefix_table(l0);
+  let bit_rev = bit_rev_prefix_table::<L0>();
   let BetaPrefixCache {
     cache: beta_prefix_cache,
     num_betas,
-  } = build_beta_cache::<SMALL_VALUE_T_DEGREE>(l0);
+  } = build_beta_cache::<SMALL_VALUE_T_DEGREE, L0>();
 
   let betas_with_infty: Vec<usize> = (0..num_betas)
-    .filter(|&i| (0..l0).any(|d| (i / base.pow(d as u32)).is_multiple_of(base)))
+    .filter(|&i| (0..L0).any(|d| (i / base.pow(d as u32)).is_multiple_of(base)))
     .collect();
+
+  let a_eval_slices = a_evals
+    .iter()
+    .map(|layer| layer.as_poly().Z.as_slice())
+    .collect::<Vec<_>>();
+  let b_eval_slices = b_evals
+    .iter()
+    .map(|layer| layer.as_poly().Z.as_slice())
+    .collect::<Vec<_>>();
 
   type State<F2, SV2> = SpartanThreadState<F2, SV2, SMALL_VALUE_T_DEGREE>;
   let process_outer = |state: &mut State<F, SV>, x_outer: usize| {
@@ -556,14 +564,13 @@ where
         x_outer * left + x_inner
       };
 
-      for_each_extended_ab_at_idx::<SV, F, SMALL_VALUE_T_DEGREE>(
-        &a_evals,
-        &b_evals,
+      for_each_extended_ab_at_idx::<SV, F, SMALL_VALUE_T_DEGREE, L0>(
+        &a_eval_slices,
+        &b_eval_slices,
         &bit_rev,
         &suffix_weights,
         idx,
         e_inner_val,
-        l0,
         &betas_with_infty,
         &mut state.ext,
         |beta_idx, weighted_inner, a_beta, b_beta| {
@@ -607,7 +614,7 @@ where
   let mut merged = (0..outer_dim)
     .into_par_iter()
     .fold(
-      || State::<F, SV>::new(l0, num_betas, prefix_size, ext_size),
+      || State::<F, SV>::new(L0, num_betas, prefix_size, ext_size),
       |mut state: State<F, SV>, x_outer| {
         process_outer(&mut state, x_outer);
         state
@@ -617,14 +624,14 @@ where
       a.acc.merge(&b.acc);
       a
     })
-    .unwrap_or_else(|| State::<F, SV>::new(l0, num_betas, prefix_size, ext_size));
+    .unwrap_or_else(|| State::<F, SV>::new(L0, num_betas, prefix_size, ext_size));
 
   if !large_positions.is_empty() {
     type CorrectionState<F2> = NeutronNovaFieldCorrectionState<F2, SMALL_VALUE_T_DEGREE>;
     let correction = large_positions
       .par_iter()
       .fold(
-        || CorrectionState::<F>::new(l0, prefix_size, ext_size),
+        || CorrectionState::<F>::new::<L0>(prefix_size, ext_size),
         |mut state, &idx| {
           debug_assert!(idx < expected_layer_len);
           let (x_outer, x_inner) = if swap_loops {
@@ -634,14 +641,13 @@ where
           };
           let e_inner_val = e_inner[x_inner];
 
-          for_each_extended_ab_at_idx::<F, F, SMALL_VALUE_T_DEGREE>(
+          for_each_extended_ab_at_idx::<F, F, SMALL_VALUE_T_DEGREE, L0>(
             a_field_evals,
             b_field_evals,
             &bit_rev,
             &suffix_weights,
             idx,
             e_inner_val,
-            l0,
             &betas_with_infty,
             &mut state.ext,
             |beta_idx, weighted_inner, a_beta, b_beta| {
@@ -668,7 +674,7 @@ where
         a.acc.merge(&b.acc);
         a
       })
-      .unwrap_or_else(|| CorrectionState::<F>::new(l0, prefix_size, ext_size));
+      .unwrap_or_else(|| CorrectionState::<F>::new::<L0>(prefix_size, ext_size));
     merged.acc.merge(&correction.acc);
   }
 
@@ -732,12 +738,12 @@ fn precompute_eq_tables<F: PrimeField>(taus: &[F], l0: usize) -> (EqSplitTables<
 }
 
 /// Build beta → prefix index cache for O(1) scatter access.
-pub(crate) fn build_beta_cache<const D: usize>(l0: usize) -> BetaPrefixCache {
+pub(crate) fn build_beta_cache<const D: usize, const L0: usize>() -> BetaPrefixCache {
   let base: usize = D + 1;
-  let num_betas = base.pow(l0 as u32);
-  let mut cache: Csr<AccumulatorPrefixIndex> = Csr::with_capacity(num_betas, num_betas * l0);
+  let num_betas = base.pow(L0 as u32);
+  let mut cache: Csr<AccumulatorPrefixIndex> = Csr::with_capacity(num_betas, num_betas * L0);
   for b in 0..num_betas {
-    let beta = LagrangeIndex::<D>::from_flat_index(b, l0);
+    let beta = LagrangeIndex::<D>::from_flat_index(b, L0);
     let entries = compute_idx4(&beta);
     cache.push(&entries);
   }
@@ -784,9 +790,9 @@ mod tests {
     let taus: Vec<Scalar> = vec![Scalar::from(3u64), Scalar::from(5u64)];
 
     let az =
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&az).expect("Az should be extension-bounded");
+      SmallValueExtensionBoundedPoly::<_, L0>::new(az).expect("Az should be extension-bounded");
     let bz =
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&bz).expect("Bz should be extension-bounded");
+      SmallValueExtensionBoundedPoly::<_, L0>::new(bz).expect("Bz should be extension-bounded");
 
     let (acc, _, _) = build_accumulators_spartan(&az, &bz, &taus);
 
@@ -837,9 +843,9 @@ mod tests {
     ];
 
     let az =
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&az).expect("Az should be extension-bounded");
+      SmallValueExtensionBoundedPoly::<_, L0>::new(az).expect("Az should be extension-bounded");
     let bz =
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&bz).expect("Bz should be extension-bounded");
+      SmallValueExtensionBoundedPoly::<_, L0>::new(bz).expect("Bz should be extension-bounded");
 
     // Build accumulators twice
     let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus);
@@ -881,9 +887,9 @@ mod tests {
     let taus: Vec<Scalar> = (0..l).map(|i| Scalar::from((i * 7 + 3) as u64)).collect();
 
     let az =
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&az).expect("Az should be extension-bounded");
+      SmallValueExtensionBoundedPoly::<_, L0>::new(az).expect("Az should be extension-bounded");
     let bz =
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&bz).expect("Bz should be extension-bounded");
+      SmallValueExtensionBoundedPoly::<_, L0>::new(bz).expect("Bz should be extension-bounded");
 
     // Build accumulators twice to verify consistency
     let (acc1, _, _) = build_accumulators_spartan(&az, &bz, &taus);
@@ -911,7 +917,7 @@ mod tests {
     let poly = MultilinearPolynomial::new(vec![i32::MAX, 0, 0, 0]);
 
     assert!(matches!(
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&poly),
+      SmallValueExtensionBoundedPoly::<_, L0>::new(poly),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
   }
@@ -922,7 +928,7 @@ mod tests {
     let poly = MultilinearPolynomial::new(vec![0, 0, i32::MAX, 0]);
 
     assert!(matches!(
-      SmallValueExtensionBoundedPoly::<_, L0>::new(&poly),
+      SmallValueExtensionBoundedPoly::<_, L0>::new(poly),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
   }

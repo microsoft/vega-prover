@@ -39,4 +39,7 @@ pub(crate) use accumulator_builder::{
 pub(crate) use basis::{
   LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals, ReducedLagrangeDomainEvals,
 };
-pub(crate) use extension_bound::field_to_i64_or_zero_for_l0;
+pub(crate) use extension_bound::{
+  ExtensionBoundProduct, ExtensionBoundedPoly, field_to_i64_or_zero_for_l0,
+  max_extension_fit_input_abs, max_extension_input_abs, small_value_fits_abs_bound,
+};
