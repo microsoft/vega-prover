@@ -31,7 +31,7 @@ pub struct UniPoly<Scalar: PrimeField> {
 ///
 /// The linear term coefficient is omitted to save space. For a polynomial $ax^2 + bx + c$,
 /// coefficients are stored as `vec![c, a]`. For $ax^3 + bx^2 + cx + d$, stored as `vec![d, c, a]`.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CompressedUniPoly<Scalar: PrimeField> {
   coeffs_except_linear_term: Vec<Scalar>,
 }
@@ -151,6 +151,71 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
       coeffs_except_linear_term,
     }
   }
+}
+
+/// Derive `Q(1)` from the relation `claim = L(0) * Q(0) + L(1) * Q(1)`.
+///
+/// Returns `None` when `L(1)` is zero.
+pub(crate) fn derive_quadratic_eval_at_one_from_claim<Scalar: PrimeField>(
+  linear_at_zero: Scalar,
+  linear_at_one: Scalar,
+  claim: Scalar,
+  quadratic_at_zero: Scalar,
+) -> Option<Scalar> {
+  let constant_term = linear_at_zero * quadratic_at_zero;
+  let remaining_claim = claim - constant_term;
+  linear_at_one
+    .invert()
+    .into_option()
+    .map(|inv| remaining_claim * inv)
+}
+
+/// Build `S(X) = L(X) * Q(X)` from evaluations of a linear `L` and quadratic `Q`.
+///
+/// `linear_at_infinity` and `quadratic_at_infinity` are the leading coefficients
+/// of `L` and `Q`, respectively.
+pub(crate) fn build_linear_times_quadratic_poly_from_evals<Scalar: PrimeField>(
+  linear_at_zero: Scalar,
+  linear_at_infinity: Scalar,
+  quadratic_at_zero: Scalar,
+  quadratic_at_one: Scalar,
+  quadratic_at_infinity: Scalar,
+) -> UniPoly<Scalar> {
+  let quadratic_middle = quadratic_at_one - quadratic_at_infinity - quadratic_at_zero;
+
+  let s3 = linear_at_infinity * quadratic_at_infinity;
+  let s2 = linear_at_infinity * quadratic_middle + linear_at_zero * quadratic_at_infinity;
+  let s1 = linear_at_infinity * quadratic_at_zero + linear_at_zero * quadratic_middle;
+  let s0 = linear_at_zero * quadratic_at_zero;
+
+  UniPoly {
+    coeffs: vec![s0, s1, s2, s3],
+  }
+}
+
+/// Build `S(X) = L(X) * Q(X)` after deriving `Q(1)` from the sumcheck claim.
+pub(crate) fn build_linear_times_quadratic_poly_from_claim<Scalar: PrimeField>(
+  linear_at_zero: Scalar,
+  linear_at_one: Scalar,
+  linear_at_infinity: Scalar,
+  claim: Scalar,
+  quadratic_at_zero: Scalar,
+  quadratic_at_infinity: Scalar,
+) -> Option<UniPoly<Scalar>> {
+  let quadratic_at_one = derive_quadratic_eval_at_one_from_claim(
+    linear_at_zero,
+    linear_at_one,
+    claim,
+    quadratic_at_zero,
+  )?;
+
+  Some(build_linear_times_quadratic_poly_from_evals(
+    linear_at_zero,
+    linear_at_infinity,
+    quadratic_at_zero,
+    quadratic_at_one,
+    quadratic_at_infinity,
+  ))
 }
 
 impl<Scalar: PrimeField> CompressedUniPoly<Scalar> {
@@ -294,6 +359,7 @@ pub fn div_f<F: PrimeField>(a: F, b: F) -> Result<F, SpartanError> {
 mod tests {
   use super::*;
   use crate::provider::pasta::pallas;
+  use ff::Field;
 
   fn test_from_evals_quad_with<F: PrimeField>() {
     // polynomial is 2x^2 + 3x + 1
@@ -324,6 +390,72 @@ mod tests {
   #[test]
   fn test_from_evals_quad() {
     test_from_evals_quad_with::<pallas::Scalar>();
+  }
+
+  #[test]
+  fn test_derive_quadratic_eval_at_one_from_claim() {
+    type F = pallas::Scalar;
+
+    let linear_at_zero = F::from(2u64);
+    let linear_at_one = F::from(7u64);
+    let quadratic_at_zero = F::from(13u64);
+    let quadratic_at_one = F::from(27u64);
+    let claim = linear_at_zero * quadratic_at_zero + linear_at_one * quadratic_at_one;
+
+    assert_eq!(
+      derive_quadratic_eval_at_one_from_claim(
+        linear_at_zero,
+        linear_at_one,
+        claim,
+        quadratic_at_zero
+      ),
+      Some(quadratic_at_one)
+    );
+  }
+
+  #[test]
+  fn test_derive_quadratic_eval_at_one_from_claim_returns_none_for_zero_linear_one() {
+    type F = pallas::Scalar;
+
+    assert_eq!(
+      derive_quadratic_eval_at_one_from_claim(
+        F::from(2u64),
+        F::ZERO,
+        F::from(10u64),
+        F::from(3u64)
+      ),
+      None
+    );
+  }
+
+  #[test]
+  fn test_build_linear_times_quadratic_poly_from_claim() {
+    type F = pallas::Scalar;
+
+    // L(X) = 5X + 2 and Q(X) = 3X^2 + 11X + 13.
+    let linear_at_zero = F::from(2u64);
+    let linear_at_one = F::from(7u64);
+    let linear_at_infinity = F::from(5u64);
+    let quadratic_at_zero = F::from(13u64);
+    let quadratic_at_one = F::from(27u64);
+    let quadratic_at_infinity = F::from(3u64);
+    let claim = linear_at_zero * quadratic_at_zero + linear_at_one * quadratic_at_one;
+
+    let poly = build_linear_times_quadratic_poly_from_claim(
+      linear_at_zero,
+      linear_at_one,
+      linear_at_infinity,
+      claim,
+      quadratic_at_zero,
+      quadratic_at_infinity,
+    )
+    .expect("linear_at_one is non-zero");
+
+    assert_eq!(poly.coeffs[0], F::from(26u64));
+    assert_eq!(poly.coeffs[1], F::from(87u64));
+    assert_eq!(poly.coeffs[2], F::from(61u64));
+    assert_eq!(poly.coeffs[3], F::from(15u64));
+    assert_eq!(poly.eval_at_zero() + poly.eval_at_one(), claim);
   }
 
   fn test_from_evals_cubic_with<F: PrimeField>() {
