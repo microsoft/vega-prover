@@ -76,7 +76,7 @@ pub(crate) trait SmallValueField<SmallValue>: PrimeField {
 ///
 /// Chosen so that all i128 arithmetic in small-value sumcheck consumers remains
 /// overflow-free.
-const SMALL_VALUE_MAX: u64 = (1u64 << 62) - 1;
+const U64_SMALL_VALUE_MAX: u64 = (1u64 << 62) - 1;
 
 #[derive(Clone, Copy)]
 enum SignedMagnitude {
@@ -155,7 +155,6 @@ fn try_field_to_signed_magnitude<F: PrimeField>(
 }
 
 #[inline]
-#[allow(dead_code)]
 fn try_field_to_i32<F: PrimeField>(val: &F) -> Option<i32> {
   match try_field_to_signed_magnitude(val, 4)? {
     SignedMagnitude::Positive(mag) if mag <= i32::MAX as u128 => Some(mag as i32),
@@ -174,7 +173,6 @@ fn try_field_to_i64<F: PrimeField>(val: &F) -> Option<i64> {
 }
 
 #[inline]
-#[allow(dead_code)]
 fn try_field_to_i128<F: PrimeField>(val: &F) -> Option<i128> {
   match try_field_to_signed_magnitude(val, 16)? {
     SignedMagnitude::Positive(mag) if mag <= i128::MAX as u128 => Some(mag as i128),
@@ -224,9 +222,9 @@ impl<F: PrimeField> SmallValueField<i128> for F {
 /// Convert field elements to i64 values, storing 0 for values outside the
 /// small-value range and recording those positions for field correction.
 #[inline(never)]
-pub(crate) fn to_small_vec_or_zero<F: PrimeField>(poly: &[F]) -> (Vec<i64>, Vec<usize>) {
+pub(crate) fn field_values_to_i64_or_zero<F: PrimeField>(values: &[F]) -> (Vec<i64>, Vec<usize>) {
   let (small, positions) =
-    field_values_to_small_or_zero_with_bound::<F, i64, i128>(poly, SMALL_VALUE_MAX as i128);
+    field_values_to_small_or_zero_with_bound::<F, i64, i128>(values, U64_SMALL_VALUE_MAX as i128);
   (small, positions.into_iter().collect())
 }
 
@@ -237,8 +235,8 @@ macro_rules! test_small_value_conversion {
   ($name:ident, $field:ty) => {
     mod $name {
       #[test]
-      fn small_vec_or_zero() {
-        $crate::lagrange_accumulator::test_small_vec_or_zero_impl::<$field>();
+      fn field_values_to_i64_or_zero() {
+        $crate::lagrange_accumulator::test_field_values_to_i64_or_zero_impl::<$field>();
       }
     }
   };
@@ -1140,17 +1138,17 @@ pub(crate) mod tests {
     ));
   }
 
-  /// Test to_small_vec_or_zero with accepted small values and rejected large values.
-  pub(crate) fn test_small_vec_or_zero_impl<F: PrimeField + Copy>() {
+  /// Test field_values_to_i64_or_zero with accepted small values and rejected large values.
+  pub(crate) fn test_field_values_to_i64_or_zero_impl<F: PrimeField + Copy>() {
     let vals: Vec<F> = vec![
       F::ZERO,
       F::from(1u64),
       F::from(5u64),
       -F::from(3u64),
-      F::from(SMALL_VALUE_MAX),
-      -F::from(SMALL_VALUE_MAX),
+      F::from(U64_SMALL_VALUE_MAX),
+      -F::from(U64_SMALL_VALUE_MAX),
     ];
-    let (small, large) = to_small_vec_or_zero(&vals);
+    let (small, large) = field_values_to_i64_or_zero(&vals);
     assert!(large.is_empty());
     assert_eq!(
       small,
@@ -1159,14 +1157,14 @@ pub(crate) mod tests {
         1,
         5,
         -3,
-        SMALL_VALUE_MAX as i64,
-        -(SMALL_VALUE_MAX as i64)
+        U64_SMALL_VALUE_MAX as i64,
+        -(U64_SMALL_VALUE_MAX as i64)
       ]
     );
 
-    let above = SMALL_VALUE_MAX + 1;
+    let above = U64_SMALL_VALUE_MAX + 1;
     let vals = vec![F::from(above), -F::from(above)];
-    let (small, large) = to_small_vec_or_zero(&vals);
+    let (small, large) = field_values_to_i64_or_zero(&vals);
     assert_eq!(small, vec![0, 0]);
     assert_eq!(large, vec![0, 1]);
   }

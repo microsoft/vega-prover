@@ -41,12 +41,12 @@ pub(crate) use basis::{
 };
 pub(crate) use extension_bound::{
   ExtensionBoundProduct, ExtensionBoundedPoly, SmallValue, SmallValueEngine, SmallValueField,
-  field_values_to_small_or_zero_with_bound, max_extension_input_abs_for_rounds,
-  to_small_vec_or_zero,
+  field_values_to_i64_or_zero, field_values_to_small_or_zero_with_bound,
+  max_extension_input_abs_for_rounds,
 };
 
 #[cfg(test)]
 pub(crate) use extension_bound::{i32_to_field, i64_to_field, i128_to_field};
 
 #[cfg(test)]
-pub(crate) use extension_bound::tests::test_small_vec_or_zero_impl;
+pub(crate) use extension_bound::tests::test_field_values_to_i64_or_zero_impl;

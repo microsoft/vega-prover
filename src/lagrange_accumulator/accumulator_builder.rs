@@ -761,12 +761,21 @@ fn invalid_input(reason: impl Into<String>) -> SpartanError {
 mod tests {
   use super::*;
   use crate::{
-    lagrange_accumulator::domain::LagrangeHatPoint, polys::multilinear::MultilinearPolynomial,
-    provider::pasta::pallas,
+    lagrange_accumulator::domain::LagrangeHatPoint,
+    neutronnova_zk::{
+      compute_field_round_claim, fold_layer_pair_into, generate_nifs_field_round_polynomial,
+    },
+    polys::multilinear::MultilinearPolynomial,
+    provider::PallasHyraxEngine,
+    small_sumcheck::{
+      SmallValueSumCheck, generate_univariate_sumcheck_polynomial_from_accumulator,
+    },
+    traits::Engine,
   };
   use ff::Field;
 
-  type Scalar = pallas::Scalar;
+  type E = PallasHyraxEngine;
+  type Scalar = <E as Engine>::Scalar;
 
   // Use the shared constant for polynomial degree in tests
   const D: usize = SMALL_VALUE_T_DEGREE;
@@ -931,5 +940,231 @@ mod tests {
       SmallValueExtensionBoundedPoly::<_, L0>::new(poly),
       Err(SpartanError::SmallValueOverflow { .. })
     ));
+  }
+
+  #[test]
+  fn test_neutronnova_accumulator_rejects_out_of_range_large_position() {
+    const L0: usize = 1;
+    let num_instances = 4usize;
+    let left = 4usize;
+    let right = 2usize;
+    let num_constraints = left * right;
+
+    let a_values = (0..num_instances)
+      .map(|layer| {
+        (0..num_constraints)
+          .map(|k| ((layer + 1) * (k + 2)) as i64)
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
+    let b_values = (0..num_instances)
+      .map(|layer| {
+        (0..num_constraints)
+          .map(|k| ((layer + 3) * (k + 5)) as i64)
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
+
+    let a_bounded = a_values
+      .iter()
+      .map(|layer| {
+        SmallValueExtensionBoundedPoly::<_, L0>::new(MultilinearPolynomial::new(layer.clone()))
+          .expect("synthetic Az should be extension-bounded")
+      })
+      .collect::<Vec<_>>();
+    let b_bounded = b_values
+      .iter()
+      .map(|layer| {
+        SmallValueExtensionBoundedPoly::<_, L0>::new(MultilinearPolynomial::new(layer.clone()))
+          .expect("synthetic Bz should be extension-bounded")
+      })
+      .collect::<Vec<_>>();
+    let a_bounded_refs = a_bounded.iter().collect::<Vec<_>>();
+    let b_bounded_refs = b_bounded.iter().collect::<Vec<_>>();
+
+    let a_field = a_values
+      .iter()
+      .map(|layer| {
+        layer
+          .iter()
+          .map(|&v| Scalar::from(v as u64))
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
+    let b_field = b_values
+      .iter()
+      .map(|layer| {
+        layer
+          .iter()
+          .map(|&v| Scalar::from(v as u64))
+          .collect::<Vec<_>>()
+      })
+      .collect::<Vec<_>>();
+    let a_field_refs = a_field.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let b_field_refs = b_field.iter().map(Vec::as_slice).collect::<Vec<_>>();
+
+    let ell_b = num_instances.trailing_zeros() as usize;
+    let e_eq = (0..left + right)
+      .map(|i| Scalar::from((i as u64) + 3))
+      .collect::<Vec<_>>();
+    let rhos = (0..ell_b)
+      .map(|round| Scalar::from((5 * round + 11) as u64))
+      .collect::<Vec<_>>();
+
+    let err = match build_accumulators_neutronnova::<Scalar, i64, L0>(
+      &a_bounded_refs,
+      &b_bounded_refs,
+      &a_field_refs,
+      &b_field_refs,
+      &[num_constraints],
+      &e_eq,
+      left,
+      right,
+      &rhos,
+    ) {
+      Ok(_) => panic!("out-of-range large position should be rejected"),
+      Err(err) => err,
+    };
+    assert!(matches!(
+      err,
+      SpartanError::InvalidInputLength { reason } if reason.contains("out of range")
+    ));
+  }
+
+  fn fold_test_layers(layers: &mut Vec<Vec<Scalar>>, r: Scalar) {
+    let pairs = layers.len() / 2;
+    for i in 0..pairs {
+      fold_layer_pair_into(layers, 2 * i, 2 * i + 1, i, r);
+    }
+    layers.truncate(pairs);
+  }
+
+  fn run_neutronnova_accumulator_large_ab_correction_case<const L0: usize>() {
+    let num_instances = 4usize;
+    let left = 4usize;
+    let right = 2usize;
+    let num_constraints = left * right;
+    let large_position = 3usize;
+
+    let mut a_field = Vec::with_capacity(num_instances);
+    let mut b_field = Vec::with_capacity(num_instances);
+    let mut c_field = Vec::with_capacity(num_instances);
+    let mut a_small = Vec::with_capacity(num_instances);
+    let mut b_small = Vec::with_capacity(num_instances);
+
+    for instance in 0..num_instances {
+      let mut a_field_layer = Vec::with_capacity(num_constraints);
+      let mut b_field_layer = Vec::with_capacity(num_constraints);
+      let mut c_field_layer = Vec::with_capacity(num_constraints);
+      let mut a_small_layer = Vec::with_capacity(num_constraints);
+      let mut b_small_layer = Vec::with_capacity(num_constraints);
+
+      for k in 0..num_constraints {
+        let (a_value, b_value, a_small_value, b_small_value) = if k == large_position {
+          (
+            Scalar::from(1u64 << 35) * Scalar::from(1u64 << 35),
+            Scalar::from(3u64),
+            0,
+            0,
+          )
+        } else {
+          let a = (((instance + 3) * (k + 5)) % 17 + 1) as i64;
+          let b = (((instance + 7) * (k + 2)) % 19 + 1) as i64;
+          (Scalar::from(a as u64), Scalar::from(b as u64), a, b)
+        };
+
+        a_field_layer.push(a_value);
+        b_field_layer.push(b_value);
+        c_field_layer.push(a_value * b_value);
+        a_small_layer.push(a_small_value);
+        b_small_layer.push(b_small_value);
+      }
+
+      a_field.push(a_field_layer);
+      b_field.push(b_field_layer);
+      c_field.push(c_field_layer);
+      a_small.push(a_small_layer);
+      b_small.push(b_small_layer);
+    }
+
+    let a_bounded = a_small
+      .iter()
+      .map(|layer| {
+        SmallValueExtensionBoundedPoly::<_, L0>::new(MultilinearPolynomial::new(layer.clone()))
+          .expect("synthetic Az should be extension-bounded")
+      })
+      .collect::<Vec<_>>();
+    let b_bounded = b_small
+      .iter()
+      .map(|layer| {
+        SmallValueExtensionBoundedPoly::<_, L0>::new(MultilinearPolynomial::new(layer.clone()))
+          .expect("synthetic Bz should be extension-bounded")
+      })
+      .collect::<Vec<_>>();
+    let a_bounded_refs = a_bounded.iter().collect::<Vec<_>>();
+    let b_bounded_refs = b_bounded.iter().collect::<Vec<_>>();
+    let a_field_refs = a_field.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let b_field_refs = b_field.iter().map(Vec::as_slice).collect::<Vec<_>>();
+
+    let ell_b = num_instances.trailing_zeros() as usize;
+    let e_eq = (0..left + right)
+      .map(|i| Scalar::from((i as u64) + 3))
+      .collect::<Vec<_>>();
+    let rhos = (0..ell_b)
+      .map(|round| Scalar::from((5 * round + 11) as u64))
+      .collect::<Vec<_>>();
+    let r_bs = (0..ell_b)
+      .map(|round| Scalar::from((7 * round + 13) as u64))
+      .collect::<Vec<_>>();
+
+    let accumulators = build_accumulators_neutronnova::<Scalar, i64, L0>(
+      &a_bounded_refs,
+      &b_bounded_refs,
+      &a_field_refs,
+      &b_field_refs,
+      &[large_position],
+      &e_eq,
+      left,
+      right,
+      &rhos,
+    )
+    .expect("mixed accumulator construction should succeed");
+    let mut small_value =
+      SmallValueSumCheck::<Scalar, SMALL_VALUE_T_DEGREE>::from_accumulators(accumulators);
+    let mut t_cur = Scalar::ZERO;
+    let mut acc_eq = Scalar::ONE;
+
+    for (round, (&rho, &r_b)) in rhos.iter().zip(&r_bs).enumerate().take(L0) {
+      let (standard_e0, standard_quad_coeff) = compute_field_round_claim::<E>(
+        &a_field, &b_field, &c_field, &e_eq, left, right, &rhos, round,
+      )
+      .expect("standard field round should compute");
+      let standard_poly = generate_nifs_field_round_polynomial::<Scalar>(
+        rho,
+        acc_eq,
+        t_cur,
+        standard_e0,
+        standard_quad_coeff,
+      )
+      .expect("standard polynomial should interpolate");
+      let (small_poly, li) =
+        generate_univariate_sumcheck_polynomial_from_accumulator(&small_value, round, rho, t_cur)
+          .expect("mixed accumulator polynomial should interpolate");
+
+      assert_eq!(small_poly, standard_poly);
+
+      t_cur = small_poly.evaluate(&r_b);
+      acc_eq = li.eval_linear_at(r_b);
+      small_value.advance(&li, r_b);
+      fold_test_layers(&mut a_field, r_b);
+      fold_test_layers(&mut b_field, r_b);
+      fold_test_layers(&mut c_field, r_b);
+    }
+  }
+
+  #[test]
+  fn test_neutronnova_accumulator_corrects_large_ab_positions() {
+    run_neutronnova_accumulator_large_ab_correction_case::<1>();
+    run_neutronnova_accumulator_large_ab_correction_case::<2>();
   }
 }

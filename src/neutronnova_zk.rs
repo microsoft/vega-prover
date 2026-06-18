@@ -20,13 +20,12 @@ use crate::{
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
   },
-  big_num::{DelayedReduction, WideMul},
+  big_num::DelayedReduction,
   digest::DigestComputer,
   errors::SpartanError,
   lagrange_accumulator::{
-    ExtensionBoundedPoly, SmallValue, SmallValueEngine, SmallValueField,
-    field_values_to_small_or_zero_with_bound, max_extension_input_abs_for_rounds,
-    to_small_vec_or_zero,
+    SmallValueField, field_values_to_i64_or_zero, field_values_to_small_or_zero_with_bound,
+    max_extension_input_abs_for_rounds,
   },
   math::Math,
   nifs::NovaNIFS,
@@ -51,7 +50,6 @@ use crate::{
   zk::NeutronNovaVerifierCircuit,
 };
 use ff::{Field, PrimeField};
-use num_traits::{Bounded, ToPrimitive};
 use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -209,53 +207,6 @@ fn suffix_weight_full<F: Field>(t: usize, ell_b: usize, pair_idx: usize, rhos: &
   w
 }
 
-#[derive(Clone, Debug)]
-struct RhoSuffixWeights<F: Field> {
-  weights: Vec<F>,
-}
-
-impl<F: Field> RhoSuffixWeights<F> {
-  fn new(rhos: &[F], start_round: usize, layer_count: usize) -> Result<Self, SpartanError> {
-    if start_round > rhos.len() {
-      return Err(invalid_input(format!(
-        "rho suffix start round {} exceeds rho length {}",
-        start_round,
-        rhos.len()
-      )));
-    }
-    let shift = u32::try_from(rhos.len() - start_round)
-      .map_err(|_| invalid_input("rho suffix length does not fit in a u32 shift"))?;
-    let expected_layer_count = 1usize
-      .checked_shl(shift)
-      .ok_or_else(|| invalid_input("rho suffix layer count overflows"))?;
-    if layer_count != expected_layer_count {
-      return Err(invalid_input(format!(
-        "rho suffix layer count {} does not match expected {} for start round {}",
-        layer_count, expected_layer_count, start_round
-      )));
-    }
-
-    Ok(Self {
-      weights: weights_from_r(&rhos[start_round..], layer_count),
-    })
-  }
-
-  fn fold_to_pair_weights(&mut self) -> Result<&[F], SpartanError> {
-    if self.weights.is_empty() || !self.weights.len().is_multiple_of(2) {
-      return Err(invalid_input(format!(
-        "rho suffix weights length {} must be non-empty and even",
-        self.weights.len()
-      )));
-    }
-    let pairs = self.weights.len() / 2;
-    for i in 0..pairs {
-      self.weights[i] = self.weights[2 * i] + self.weights[2 * i + 1];
-    }
-    self.weights.truncate(pairs);
-    Ok(&self.weights)
-  }
-}
-
 fn extend_with_first_clones<T: Clone>(values: &mut Vec<T>, additional: usize) {
   if additional > 0 {
     values.extend(std::iter::repeat_n(values[0].clone(), additional));
@@ -385,14 +336,14 @@ where
   fn prove_helper_small(
     (left, right): (usize, usize),
     e: &[E::Scalar],
-    az1: &[E::Scalar],
-    bz1: &[E::Scalar],
-    az2: &[E::Scalar],
-    bz2: &[E::Scalar],
-    az1_small: &[i64],
-    bz1_small: &[i64],
-    az2_small: &[i64],
-    bz2_small: &[i64],
+    Az1: &[E::Scalar],
+    Bz1: &[E::Scalar],
+    Az2: &[E::Scalar],
+    Bz2: &[E::Scalar],
+    Az1_i64: &[i64],
+    Bz1_i64: &[i64],
+    Az2_i64: &[i64],
+    Bz2_i64: &[i64],
     large_positions: &[usize],
   ) -> E::Scalar
   where
@@ -412,8 +363,8 @@ where
 
       for j in 0..left {
         let k = base + j;
-        let az_diff = az2_small[k] as i128 - az1_small[k] as i128;
-        let bz_diff = bz2_small[k] as i128 - bz1_small[k] as i128;
+        let az_diff = Az2_i64[k] as i128 - Az1_i64[k] as i128;
+        let bz_diff = Bz2_i64[k] as i128 - Bz1_i64[k] as i128;
         let quad_val = az_diff * bz_diff;
         <E::Scalar as DelayedReduction<i128>>::unreduced_multiply_accumulate(
           &mut inner_acc,
@@ -440,8 +391,8 @@ where
       }
       let i = k / left;
       let j = k % left;
-      let az_diff = az2[k] - az1[k];
-      let bz_diff = bz2[k] - bz1[k];
+      let az_diff = Az2[k] - Az1[k];
+      let bz_diff = Bz2[k] - Bz1[k];
       quad += f[i] * e_left[j] * az_diff * bz_diff;
     }
 
@@ -459,8 +410,8 @@ where
   fn prove_helper_ab_cross(
     (left, right): (usize, usize),
     e: &[E::Scalar],
-    a_small: [&[i64]; 4],
-    b_small: [&[i64]; 4],
+    a_i64: [&[i64]; 4],
+    b_i64: [&[i64]; 4],
     a_field: [&[E::Scalar]; 4],
     b_field: [&[E::Scalar]; 4],
     c00: &E::Scalar,
@@ -491,8 +442,8 @@ where
       for j in 0..left {
         let k = base + j;
         let weight = &e_left[j];
-        let (a0, a1) = (a_small[0][k] as i128, a_small[1][k] as i128);
-        let (b0, b1) = (b_small[0][k] as i128, b_small[1][k] as i128);
+        let (a0, a1) = (a_i64[0][k] as i128, a_i64[1][k] as i128);
+        let (b0, b1) = (b_i64[0][k] as i128, b_i64[1][k] as i128);
         <E::Scalar as DelayedReduction<i128>>::unreduced_multiply_accumulate(
           &mut e0_00,
           weight,
@@ -526,10 +477,10 @@ where
       for j in 0..left {
         let k = base + j;
         let weight = &e_left[j];
-        let da0 = a_small[2][k] as i128 - a_small[0][k] as i128;
-        let da1 = a_small[3][k] as i128 - a_small[1][k] as i128;
-        let db0 = b_small[2][k] as i128 - b_small[0][k] as i128;
-        let db1 = b_small[3][k] as i128 - b_small[1][k] as i128;
+        let da0 = a_i64[2][k] as i128 - a_i64[0][k] as i128;
+        let da1 = a_i64[3][k] as i128 - a_i64[1][k] as i128;
+        let db0 = b_i64[2][k] as i128 - b_i64[0][k] as i128;
+        let db1 = b_i64[3][k] as i128 - b_i64[1][k] as i128;
         <E::Scalar as DelayedReduction<i128>>::unreduced_multiply_accumulate(
           &mut q_00,
           weight,
@@ -716,14 +667,14 @@ where
       cz: mut C_layers,
     } = field;
 
-    let use_round0_small_optimization = *nifs_input;
+    let is_small = *nifs_input;
     let (
-      mut A_small_layers,
-      mut B_small_layers,
+      mut A_i64_layers,
+      mut B_i64_layers,
       mut C_small_layers,
-      ab_large_positions,
+      large_positions,
       c_large_positions,
-    ) = if use_round0_small_optimization {
+    ) = if is_small {
       let small_abc = small_abc.ok_or_else(|| SpartanError::InvalidInputLength {
         reason: "regular small optimization requested but small A/B/C MLEs are missing".to_string(),
       })?;
@@ -759,22 +710,22 @@ where
         ),
       });
     }
-    if use_round0_small_optimization {
-      if A_small_layers.len() != n || B_small_layers.len() != n || C_small_layers.len() != n {
+    if is_small {
+      if A_i64_layers.len() != n || B_i64_layers.len() != n || C_small_layers.len() != n {
         return Err(SpartanError::InvalidInputLength {
           reason: format!(
             "regular small path received small layer lengths A={}, B={}, C={} but {} instances",
-            A_small_layers.len(),
-            B_small_layers.len(),
+            A_i64_layers.len(),
+            B_i64_layers.len(),
             C_small_layers.len(),
             n
           ),
         });
       }
       let expected_len = left * right;
-      if !A_small_layers
+      if !A_i64_layers
         .iter()
-        .chain(B_small_layers.iter())
+        .chain(B_i64_layers.iter())
         .chain(C_small_layers.iter())
         .all(|layer| layer.len() == expected_len)
       {
@@ -801,14 +752,14 @@ where
       extend_with_first_clones(&mut B_layers, additional);
       extend_with_first_clones(&mut C_layers, additional);
     }
-    if use_round0_small_optimization && A_small_layers.len() < n_padded {
-      let additional = n_padded - A_small_layers.len();
-      extend_with_first_clones(&mut A_small_layers, additional);
-      extend_with_first_clones(&mut B_small_layers, additional);
+    if is_small && A_i64_layers.len() < n_padded {
+      let additional = n_padded - A_i64_layers.len();
+      extend_with_first_clones(&mut A_i64_layers, additional);
+      extend_with_first_clones(&mut B_i64_layers, additional);
       extend_with_first_clones(&mut C_small_layers, additional);
     }
 
-    let mut c_claims = if use_round0_small_optimization {
+    let mut c_claims = if is_small {
       compute_small_c_claims_with_field_corrections::<E>(
         &C_small_layers,
         &C_layers,
@@ -827,32 +778,30 @@ where
 
     {
       let pairs = n_padded / 2;
-      let (e0, quad_coeff) = if use_round0_small_optimization {
+      let (e0, quad_coeff) = if is_small {
         let quad_coeff = A_layers
           .par_chunks(2)
           .zip(B_layers.par_chunks(2))
-          .zip(A_small_layers.par_chunks(2))
-          .zip(B_small_layers.par_chunks(2))
+          .zip(A_i64_layers.par_chunks(2))
+          .zip(B_i64_layers.par_chunks(2))
           .enumerate()
-          .map(
-            |(pair_idx, (((pair_a, pair_b), pair_a_small), pair_b_small))| {
-              let quad_coeff = Self::prove_helper_small(
-                (left, right),
-                &E_eq,
-                &pair_a[0],
-                &pair_b[0],
-                &pair_a[1],
-                &pair_b[1],
-                &pair_a_small[0],
-                &pair_b_small[0],
-                &pair_a_small[1],
-                &pair_b_small[1],
-                &ab_large_positions,
-              );
-              let weight = suffix_weight_full::<E::Scalar>(0, ell_b, pair_idx, &rhos);
-              quad_coeff * weight
-            },
-          )
+          .map(|(pair_idx, (((pair_a, pair_b), pair_a_i64), pair_b_i64))| {
+            let quad_coeff = Self::prove_helper_small(
+              (left, right),
+              &E_eq,
+              &pair_a[0],
+              &pair_b[0],
+              &pair_a[1],
+              &pair_b[1],
+              &pair_a_i64[0],
+              &pair_b_i64[0],
+              &pair_a_i64[1],
+              &pair_b_i64[1],
+              &large_positions,
+            );
+            let weight = suffix_weight_full::<E::Scalar>(0, ell_b, pair_idx, &rhos);
+            quad_coeff * weight
+          })
           .reduce(|| E::Scalar::ZERO, |a, b| a + b);
         (E::Scalar::ZERO, quad_coeff)
       } else {
@@ -875,7 +824,7 @@ where
         &mut acc_eq,
       )?;
 
-      if use_round0_small_optimization {
+      if is_small {
         if ell_b == 1 {
           fold_ab_c_claim_pairs_in_range::<E>(
             &mut A_layers,
@@ -892,8 +841,8 @@ where
           let prev_r_b = r_b;
           let fold_pairs = A_layers.len() / 2;
           let prove_pairs = fold_pairs / 2;
-          let mut rho_suffix_weights = RhoSuffixWeights::new(&rhos, t, fold_pairs)?;
-          let round_weights = rho_suffix_weights.fold_to_pair_weights()?;
+          let mut suffix_weights = rho_suffix_weights(&rhos, t, fold_pairs)?;
+          let round_weights = collapse_rho_suffix_weights_to_pairs(&mut suffix_weights)?;
           let one_minus_r0 = E::Scalar::ONE - prev_r_b;
           let c00 = one_minus_r0 * one_minus_r0;
           let c01 = one_minus_r0 * prev_r_b;
@@ -902,8 +851,8 @@ where
           let e_eq_ref = &E_eq;
           let a_layers_ref = &A_layers;
           let b_layers_ref = &B_layers;
-          let a_small_ref = &A_small_layers;
-          let b_small_ref = &B_small_layers;
+          let a_small_ref = &A_i64_layers;
+          let b_small_ref = &B_i64_layers;
           let c_head = &mut c_claims[..4 * prove_pairs];
           let (e0_acc, quad_acc) = c_head
             .par_chunks_mut(4)
@@ -941,7 +890,7 @@ where
                 &c01,
                 &c11,
                 &prev_r_b,
-                &ab_large_positions,
+                &large_positions,
               );
               let e0 = e0_ab - c_chunk[0];
               let weight = round_weights[j];
@@ -1005,7 +954,7 @@ where
             transcript,
             2,
             pending_r_b,
-            rho_suffix_weights,
+            suffix_weights,
             &mut r_bs,
             &mut T_cur,
             &mut acc_eq,
@@ -1105,7 +1054,7 @@ where
       }
     }
 
-    if use_round0_small_optimization {
+    if is_small {
       let final_weights = weights_from_r::<E::Scalar>(&r_bs, n_padded);
       let c_folded = fold_small_c_with_field_corrections::<E>(
         &C_small_layers,
@@ -1191,7 +1140,7 @@ where
   let mut c_field_positions = BTreeSet::new();
 
   for cz_layer in &field.cz {
-    let (cz_small_layer, cz_large_indices) = to_small_vec_or_zero(cz_layer);
+    let (cz_small_layer, cz_large_indices) = field_values_to_i64_or_zero(cz_layer);
     c_field_positions.extend(cz_large_indices);
     cz_small.push(cz_small_layer);
   }
@@ -1214,82 +1163,50 @@ where
   Ok(small_abc)
 }
 
-fn build_certified_small_abc_from_field<E, SV, const L0: usize>(
-  field: &FieldStepMLEs<E>,
-) -> Result<
-  SmallAbcStepMLEs<
-    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
-    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
-  >,
-  SpartanError,
->
-where
-  E: Engine,
-  SV: SmallValue + Bounded + ToPrimitive,
-  E::Scalar: SmallValueField<SV>,
-{
-  if L0 == 0 {
-    return Err(SpartanError::InvalidInputLength {
-      reason: "small-value NeutronNova NIFS requires L0 > 0".to_string(),
-    });
+fn rho_suffix_weights<F: Field>(
+  rhos: &[F],
+  start_round: usize,
+  layer_count: usize,
+) -> Result<Vec<F>, SpartanError> {
+  if start_round > rhos.len() {
+    return Err(invalid_input(format!(
+      "rho suffix start round {} exceeds rho length {}",
+      start_round,
+      rhos.len()
+    )));
+  }
+  let shift = u32::try_from(rhos.len() - start_round)
+    .map_err(|_| invalid_input("rho suffix length does not fit in a u32 shift"))?;
+  let expected_layer_count = 1usize
+    .checked_shl(shift)
+    .ok_or_else(|| invalid_input("rho suffix layer count overflows"))?;
+  if layer_count != expected_layer_count {
+    return Err(invalid_input(format!(
+      "rho suffix layer count {} does not match expected {} for start round {}",
+      layer_count, expected_layer_count, start_round
+    )));
   }
 
-  let mut az_small = Vec::with_capacity(field.len());
-  let mut bz_small = Vec::with_capacity(field.len());
-  let mut cz_small = Vec::with_capacity(field.len());
-  let mut ab_field_positions = BTreeSet::new();
-  let mut c_field_positions = BTreeSet::new();
+  Ok(weights_from_r(&rhos[start_round..], layer_count))
+}
 
-  for az_layer in &field.az {
-    let (cert, field_positions) =
-      ExtensionBoundedPoly::<SV, <SV as WideMul>::Product, 2, L0>::from_field_values_with_product_bound(
-        az_layer,
-      );
-    ab_field_positions.extend(field_positions);
-    az_small.push(cert);
+/// Collapse the current rho-bit dimension:
+/// `V(0, suffix) + V(1, suffix)` becomes the pair weight for that suffix.
+fn collapse_rho_suffix_weights_to_pairs<F: Field>(
+  weights: &mut Vec<F>,
+) -> Result<&[F], SpartanError> {
+  if weights.is_empty() || !weights.len().is_multiple_of(2) {
+    return Err(invalid_input(format!(
+      "rho suffix weights length {} must be non-empty and even",
+      weights.len()
+    )));
   }
-
-  for bz_layer in &field.bz {
-    let (cert, field_positions) =
-      ExtensionBoundedPoly::<SV, <SV as WideMul>::Product, 2, L0>::from_field_values_with_product_bound(
-        bz_layer,
-      );
-    ab_field_positions.extend(field_positions);
-    bz_small.push(cert);
+  let pairs = weights.len() / 2;
+  for i in 0..pairs {
+    weights[i] = weights[2 * i] + weights[2 * i + 1];
   }
-
-  for cz_layer in &field.cz {
-    let (cert, field_positions) =
-      ExtensionBoundedPoly::<SV, <SV as WideMul>::Product, 1, L0>::from_field_values_with_extension_bound(
-        cz_layer,
-      );
-    c_field_positions.extend(field_positions);
-    cz_small.push(cert);
-  }
-
-  if !ab_field_positions.is_empty() {
-    for cert in az_small.iter_mut().chain(bz_small.iter_mut()) {
-      cert.zero_positions(&ab_field_positions);
-    }
-  }
-  if !c_field_positions.is_empty() {
-    for cert in &mut cz_small {
-      cert.zero_positions(&c_field_positions);
-    }
-  }
-
-  let small_abc = SmallAbcStepMLEs {
-    ab: SmallAbStepMLEs {
-      az_small,
-      bz_small,
-      field_positions: ab_field_positions.into_iter().collect(),
-    },
-    cz_small,
-    c_field_positions: c_field_positions.into_iter().collect(),
-  };
-  #[cfg(debug_assertions)]
-  debug_validate_certified_small_abc_cache::<E, SV, L0>(field, &small_abc);
-  Ok(small_abc)
+  weights.truncate(pairs);
+  Ok(weights)
 }
 
 #[cfg(debug_assertions)]
@@ -1445,193 +1362,6 @@ fn debug_validate_regular_small_abc_cache<E>(
         k
       );
     }
-  }
-}
-
-#[cfg(debug_assertions)]
-pub(crate) fn debug_validate_small_value_step_mles<E, SV, const L0: usize>(
-  step_mles: &SmallValueNeutronNovaStepMLEs<E, SV, L0>,
-) where
-  E: Engine,
-  SV: SmallValue + Bounded + ToPrimitive,
-  E::Scalar: SmallValueField<SV>,
-{
-  debug_validate_certified_small_abc_cache::<E, SV, L0>(&step_mles.field, &step_mles.small_abc);
-}
-
-#[cfg(debug_assertions)]
-fn debug_validate_certified_small_abc_cache<E, SV, const L0: usize>(
-  field: &FieldStepMLEs<E>,
-  small_abc: &SmallAbcStepMLEs<
-    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
-    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
-  >,
-) where
-  E: Engine,
-  SV: SmallValue + Bounded + ToPrimitive,
-  E::Scalar: SmallValueField<SV>,
-{
-  debug_assert_eq!(
-    field.az.len(),
-    field.bz.len(),
-    "field Az/Bz layer count mismatch"
-  );
-  debug_assert_eq!(
-    field.az.len(),
-    field.cz.len(),
-    "field Az/Cz layer count mismatch"
-  );
-  debug_assert_eq!(
-    field.az.len(),
-    small_abc.ab.az_small.len(),
-    "small Az layer count mismatch"
-  );
-  debug_assert_eq!(
-    field.az.len(),
-    small_abc.ab.bz_small.len(),
-    "small Bz layer count mismatch"
-  );
-  debug_assert_eq!(
-    field.az.len(),
-    small_abc.cz_small.len(),
-    "small Cz layer count mismatch"
-  );
-
-  let Some(first_layer) = field.az.first() else {
-    return;
-  };
-  let layer_len = first_layer.len();
-  for &pos in &small_abc.ab.field_positions {
-    debug_assert!(
-      pos < layer_len,
-      "A/B field position {} is out of range for layer length {}",
-      pos,
-      layer_len
-    );
-  }
-  for &pos in &small_abc.c_field_positions {
-    debug_assert!(
-      pos < layer_len,
-      "C field position {} is out of range for layer length {}",
-      pos,
-      layer_len
-    );
-  }
-
-  for layer_idx in 0..field.az.len() {
-    let az_field = &field.az[layer_idx];
-    let bz_field = &field.bz[layer_idx];
-    let cz_field = &field.cz[layer_idx];
-    let az_small = &small_abc.ab.az_small[layer_idx].as_poly().Z;
-    let bz_small = &small_abc.ab.bz_small[layer_idx].as_poly().Z;
-    let cz_small = &small_abc.cz_small[layer_idx].as_poly().Z;
-
-    debug_assert_eq!(az_field.len(), layer_len);
-    debug_assert_eq!(bz_field.len(), layer_len);
-    debug_assert_eq!(cz_field.len(), layer_len);
-    debug_assert_eq!(az_small.len(), layer_len);
-    debug_assert_eq!(bz_small.len(), layer_len);
-    debug_assert_eq!(cz_small.len(), layer_len);
-
-    for k in 0..layer_len {
-      if small_abc.ab.field_positions.contains(&k) {
-        debug_assert!(
-          az_small[k].is_zero(),
-          "A/B field-position small Az entry must be zero at layer {} index {}",
-          layer_idx,
-          k
-        );
-        debug_assert!(
-          bz_small[k].is_zero(),
-          "A/B field-position small Bz entry must be zero at layer {} index {}",
-          layer_idx,
-          k
-        );
-      } else {
-        debug_assert_eq!(
-          <E::Scalar as SmallValueField<SV>>::small_to_field(az_small[k]),
-          az_field[k],
-          "small Az cache mismatch at layer {} index {}",
-          layer_idx,
-          k
-        );
-        debug_assert_eq!(
-          <E::Scalar as SmallValueField<SV>>::small_to_field(bz_small[k]),
-          bz_field[k],
-          "small Bz cache mismatch at layer {} index {}",
-          layer_idx,
-          k
-        );
-      }
-
-      if small_abc.c_field_positions.contains(&k) {
-        debug_assert!(
-          cz_small[k].is_zero(),
-          "C field-position small Cz entry must be zero at layer {} index {}",
-          layer_idx,
-          k
-        );
-      } else {
-        debug_assert_eq!(
-          <E::Scalar as SmallValueField<SV>>::small_to_field(cz_small[k]),
-          cz_field[k],
-          "small Cz cache mismatch at layer {} index {}",
-          layer_idx,
-          k
-        );
-      }
-
-      debug_assert_eq!(
-        az_field[k] * bz_field[k],
-        cz_field[k],
-        "field Az*Bz != Cz at layer {} index {}",
-        layer_idx,
-        k
-      );
-    }
-  }
-}
-
-impl<E, SV, const L0: usize> NeutronNovaNifsStrategy<E> for SmallValueNeutronNovaNIFS<E, SV, L0>
-where
-  E: Engine,
-  E::PCS: FoldingEngineTrait<E>,
-  SV: SmallValue + Bounded + ToPrimitive,
-  E::Scalar: SmallValueEngine<SV> + Default,
-{
-  type Input = ();
-  type StepMLEs = SmallValueNeutronNovaStepMLEs<E, SV, L0>;
-
-  fn is_small(_: &Self::Input) -> bool {
-    true
-  }
-
-  fn build_step_mles_from_field(
-    field_mles: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
-    _input: &Self::Input,
-  ) -> Result<Self::StepMLEs, SpartanError> {
-    let field = FieldStepMLEs::from_triples(field_mles);
-    let small_abc = build_certified_small_abc_from_field::<E, SV, L0>(&field)?;
-    Ok(SmallValueNeutronNovaStepMLEs { field, small_abc })
-  }
-
-  #[allow(clippy::too_many_arguments)]
-  fn prove(
-    s: &SplitR1CSShape<E>,
-    ck: &CommitmentKey<E>,
-    us: Vec<R1CSInstance<E>>,
-    ws: Vec<R1CSWitness<E>>,
-    step_mles: Self::StepMLEs,
-    _nifs_input: &Self::Input,
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
-    vc_shape: &SplitMultiRoundR1CSShape<E>,
-    vc_ck: &CommitmentKey<E>,
-    transcript: &mut E::TE,
-  ) -> Result<NeutronNovaNifsOutput<E>, SpartanError> {
-    crate::small_neutronnova::prove::<E, SV, L0>(
-      s, ck, us, ws, &step_mles, vc, vc_state, vc_shape, vc_ck, transcript,
-    )
   }
 }
 
@@ -2130,53 +1860,6 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-pub(crate) fn compute_ab_c_claim_round<E>(
-  a_layers: &[Vec<E::Scalar>],
-  b_layers: &[Vec<E::Scalar>],
-  c_claims: &[E::Scalar],
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-  rhos: &[E::Scalar],
-  round: usize,
-) -> Result<(E::Scalar, E::Scalar), SpartanError>
-where
-  E: Engine,
-  E::PCS: FoldingEngineTrait<E>,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  let shape = NifsRoundShape {
-    e_eq,
-    left,
-    right,
-    rhos,
-    round,
-  };
-  validate_scalar_c_round_inputs(shape, a_layers, b_layers, c_claims)?;
-
-  Ok(compute_weighted_round_claims::<E, _, _>(
-    a_layers,
-    b_layers,
-    c_claims,
-    rhos,
-    round,
-    |pair_a, pair_b, pair_c| {
-      let (e0_ab, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper_ab_only(
-        (left, right),
-        e_eq,
-        &pair_a[0],
-        &pair_b[0],
-        &pair_a[1],
-        &pair_b[1],
-      );
-      let e0 = e0_ab - pair_c[0];
-      (e0, quad_coeff)
-    },
-  ))
-}
-
-#[allow(clippy::too_many_arguments)]
 fn compute_ab_c_claim_round_with_pair_weights<E>(
   a_layers: &[Vec<E::Scalar>],
   b_layers: &[Vec<E::Scalar>],
@@ -2220,66 +1903,6 @@ where
       (e0, quad_coeff)
     },
   )
-}
-
-#[cfg(test)]
-fn dot_field_layer_with_split_eq<E>(
-  layer: &[E::Scalar],
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-) -> Result<E::Scalar, SpartanError>
-where
-  E: Engine,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  if e_eq.len() != left + right {
-    return Err(invalid_input("split equality table has wrong length"));
-  }
-  if layer.len() != left * right {
-    return Err(invalid_input("field layer has wrong length"));
-  }
-
-  type Acc<S> = <S as DelayedReduction<S>>::Accumulator;
-
-  let e_left = &e_eq[..left];
-  let e_right = &e_eq[left..];
-  let mut acc = Acc::<E::Scalar>::default();
-
-  for (i, e_right_i) in e_right.iter().enumerate().take(right) {
-    let base = i * left;
-    let mut inner = Acc::<E::Scalar>::default();
-    for j in 0..left {
-      <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
-        &mut inner,
-        &e_left[j],
-        &layer[base + j],
-      );
-    }
-    let inner_red = <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&inner);
-    <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
-      &mut acc, e_right_i, &inner_red,
-    );
-  }
-
-  Ok(<E::Scalar as DelayedReduction<E::Scalar>>::reduce(&acc))
-}
-
-#[cfg(test)]
-fn compute_field_c_claims<E>(
-  c_layers: &[Vec<E::Scalar>],
-  e_eq: &[E::Scalar],
-  left: usize,
-  right: usize,
-) -> Result<Vec<E::Scalar>, SpartanError>
-where
-  E: Engine,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  c_layers
-    .par_iter()
-    .map(|layer| dot_field_layer_with_split_eq::<E>(layer, e_eq, left, right))
-    .collect()
 }
 
 fn compute_small_c_claims_with_field_corrections<E>(
@@ -2363,41 +1986,6 @@ where
   }
 
   Ok(vals)
-}
-
-#[cfg(test)]
-fn fold_field_layers_with_weights<E>(
-  layers: &[Vec<E::Scalar>],
-  weights: &[E::Scalar],
-) -> Result<Vec<E::Scalar>, SpartanError>
-where
-  E: Engine,
-  E::Scalar: DelayedReduction<E::Scalar>,
-{
-  if layers.is_empty() {
-    return Err(invalid_input("cannot fold empty field layer list"));
-  }
-  if layers.len() != weights.len() {
-    return Err(invalid_input("field layer and weight counts do not match"));
-  }
-  let layer_len = layers[0].len();
-  validate_layer_family("field", layers, layer_len)?;
-
-  let folded = (0..layer_len)
-    .into_par_iter()
-    .map(|k| {
-      type Acc<S> = <S as DelayedReduction<S>>::Accumulator;
-      let mut acc = Acc::<E::Scalar>::default();
-      for (weight, layer) in weights.iter().zip(layers.iter()) {
-        <E::Scalar as DelayedReduction<E::Scalar>>::unreduced_multiply_accumulate(
-          &mut acc, weight, &layer[k],
-        );
-      }
-      <E::Scalar as DelayedReduction<E::Scalar>>::reduce(&acc)
-    })
-    .collect();
-
-  Ok(folded)
 }
 
 fn fold_small_c_with_field_corrections<E>(
@@ -2509,8 +2097,8 @@ where
     return Ok(());
   }
 
-  let mut rho_suffix_weights = RhoSuffixWeights::new(rhos, start_round, a_layers.len())?;
-  let round_weights = rho_suffix_weights.fold_to_pair_weights()?;
+  let mut suffix_weights = rho_suffix_weights(rhos, start_round, a_layers.len())?;
+  let round_weights = collapse_rho_suffix_weights_to_pairs(&mut suffix_weights)?;
   let (e0, quad_coeff) = compute_ab_c_claim_round_with_pair_weights::<E>(
     a_layers,
     b_layers,
@@ -2552,7 +2140,7 @@ where
     transcript,
     start_round + 1,
     pending_r_b,
-    rho_suffix_weights,
+    suffix_weights,
     r_bs,
     t_cur,
     acc_eq,
@@ -2575,7 +2163,7 @@ fn continue_ab_suffix_with_c_claims_from_pending<E>(
   transcript: &mut E::TE,
   start_round: usize,
   mut pending_r_b: E::Scalar,
-  mut rho_suffix_weights: RhoSuffixWeights<E::Scalar>,
+  mut suffix_weights: Vec<E::Scalar>,
   r_bs: &mut Vec<E::Scalar>,
   t_cur: &mut E::Scalar,
   acc_eq: &mut E::Scalar,
@@ -2602,16 +2190,16 @@ where
         "merged suffix round requires layer count divisible by 4",
       ));
     }
-    if rho_suffix_weights.weights.len() != fold_pairs {
+    if suffix_weights.len() != fold_pairs {
       return Err(invalid_input(format!(
         "rho suffix weight count {} does not match folded layer count {} at round {}",
-        rho_suffix_weights.weights.len(),
+        suffix_weights.len(),
         fold_pairs,
         round
       )));
     }
 
-    let round_weights = rho_suffix_weights.fold_to_pair_weights()?;
+    let round_weights = collapse_rho_suffix_weights_to_pairs(&mut suffix_weights)?;
 
     let (a_head, _) = a_layers.split_at_mut(4 * prove_pairs);
     let (b_head, _) = b_layers.split_at_mut(4 * prove_pairs);
@@ -4057,100 +3645,6 @@ mod tests {
   }
 
   #[test]
-  fn test_rho_suffix_weights_match_suffix_weight_full() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    type F = <E as Engine>::Scalar;
-
-    for ell_b in 1..=6 {
-      let rhos = (0..ell_b)
-        .map(|i| F::from((i as u64) + 2))
-        .collect::<Vec<_>>();
-      for start_round in 0..ell_b {
-        let layer_count = 1usize << (ell_b - start_round);
-        let mut suffix_weights = RhoSuffixWeights::new(&rhos, start_round, layer_count)?;
-
-        for round in start_round..ell_b {
-          let round_weights = suffix_weights.fold_to_pair_weights()?.to_vec();
-          assert_eq!(round_weights.len(), 1usize << (ell_b - round - 1));
-          for (pair_idx, weight) in round_weights.iter().enumerate() {
-            assert_eq!(
-              *weight,
-              suffix_weight_full::<F>(round, ell_b, pair_idx, &rhos),
-              "weight mismatch for ell_b={ell_b}, start_round={start_round}, round={round}, pair={pair_idx}"
-            );
-          }
-        }
-      }
-    }
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_scalar_c_suffix_claims_match_folded_rho_weights() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    type F = <E as Engine>::Scalar;
-
-    let left = 4usize;
-    let right = 2usize;
-    let layer_len = left * right;
-    let e_eq = (0..left + right)
-      .map(|i| F::from((i as u64) + 3))
-      .collect::<Vec<_>>();
-
-    for ell_b in 1..=5 {
-      let rhos = (0..ell_b)
-        .map(|i| F::from((i as u64) + 11))
-        .collect::<Vec<_>>();
-      for round in 0..ell_b {
-        let layer_count = 1usize << (ell_b - round);
-        let a_layers = (0..layer_count)
-          .map(|layer| {
-            (0..layer_len)
-              .map(|k| F::from((layer * 17 + k + 1) as u64))
-              .collect::<Vec<_>>()
-          })
-          .collect::<Vec<_>>();
-        let b_layers = (0..layer_count)
-          .map(|layer| {
-            (0..layer_len)
-              .map(|k| F::from((layer * 19 + k + 5) as u64))
-              .collect::<Vec<_>>()
-          })
-          .collect::<Vec<_>>();
-        let c_claims = (0..layer_count)
-          .map(|layer| F::from((layer * 23 + 7) as u64))
-          .collect::<Vec<_>>();
-
-        let recomputed = compute_ab_c_claim_round::<E>(
-          &a_layers, &b_layers, &c_claims, &e_eq, left, right, &rhos, round,
-        )?;
-
-        let mut suffix_weights = RhoSuffixWeights::new(&rhos, round, layer_count)?;
-        let round_weights = suffix_weights.fold_to_pair_weights()?;
-        let folded = compute_ab_c_claim_round_with_pair_weights::<E>(
-          &a_layers,
-          &b_layers,
-          &c_claims,
-          &e_eq,
-          left,
-          right,
-          &rhos,
-          round,
-          round_weights,
-        )?;
-
-        assert_eq!(
-          folded, recomputed,
-          "claim mismatch for ell_b={ell_b}, round={round}"
-        );
-      }
-    }
-
-    Ok(())
-  }
-
-  #[test]
   fn test_neutron_sha256() {
     let _ = tracing_subscriber::fmt()
       .with_target(false)
@@ -4209,28 +3703,6 @@ mod tests {
     assert_eq!(normal_outputs, regular_small_outputs);
     assert_eq!(normal_outputs, small_outputs);
     assert_eq!(normal_outputs.0.len(), NUM_CIRCUITS);
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_prep_prove_stores_nifs_input_when_mle_cache_skipped() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    const NUM_CIRCUITS: usize = 2;
-    const LEN: usize = 32;
-    const SMALL_VALUE_L0: usize = 3;
-
-    let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let prep =
-      NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, SMALL_VALUE_L0>>::prep_prove::<_, _>(
-        &pk,
-        &circuits,
-        &circuits[0],
-        &(),
-      )?;
-
-    assert!(prep.cached_step_mles.is_none());
-    assert_eq!(prep.nifs_input, ());
 
     Ok(())
   }
@@ -4313,348 +3785,6 @@ mod tests {
     assert_eq!(small_abc.ab.az_small.len(), NUM_CIRCUITS);
     assert_eq!(small_abc.ab.bz_small.len(), NUM_CIRCUITS);
     assert_eq!(small_abc.cz_small.len(), NUM_CIRCUITS);
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_small_value_cached_and_uncached_paths_match() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    const NUM_CIRCUITS: usize = 4;
-    const L0: usize = 2;
-
-    let step_proto = CacheablePublicCircuit::<E> {
-      value: <E as Engine>::Scalar::ZERO,
-    };
-    let core_proto = step_proto.clone();
-    let (pk, vk) = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, NUM_CIRCUITS)?;
-    let step_circuits = (0..NUM_CIRCUITS)
-      .map(|i| CacheablePublicCircuit::<E> {
-        value: <E as Engine>::Scalar::from(i as u64),
-      })
-      .collect::<Vec<_>>();
-    let core_circuit = CacheablePublicCircuit::<E> {
-      value: <E as Engine>::Scalar::ZERO,
-    };
-    let nifs_input = ();
-
-    let cached_prep = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<
-      _,
-      _,
-    >(&pk, &step_circuits, &core_circuit, &nifs_input)?;
-    assert!(cached_prep.cached_step_mles.is_some());
-
-    let mut uncached_prep =
-      NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<_, _>(
-        &pk,
-        &step_circuits,
-        &core_circuit,
-        &nifs_input,
-      )?;
-    assert!(uncached_prep.cached_step_mles.take().is_some());
-    uncached_prep.cached_step_public_values.clear();
-
-    let (cached_snark, _) = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prove::<
-      _,
-      _,
-    >(&pk, &step_circuits, &core_circuit, cached_prep, &nifs_input)?;
-    let (uncached_snark, _) =
-      NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prove::<_, _>(
-        &pk,
-        &step_circuits,
-        &core_circuit,
-        uncached_prep,
-        &nifs_input,
-      )?;
-
-    assert_eq!(
-      cached_snark.verify(&vk, NUM_CIRCUITS)?,
-      uncached_snark.verify(&vk, NUM_CIRCUITS)?
-    );
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_regular_round0_small_helper_matches_field_claim() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    type Scalar = <E as Engine>::Scalar;
-
-    let left = 2;
-    let right = 2;
-    let e = vec![
-      Scalar::from(2),
-      Scalar::from(3),
-      Scalar::from(5),
-      Scalar::from(7),
-    ];
-    let rhos = vec![Scalar::from(11)];
-    let az = vec![
-      vec![
-        Scalar::from(1),
-        Scalar::from(2),
-        Scalar::from(3),
-        Scalar::from(4),
-      ],
-      vec![
-        Scalar::from(2),
-        Scalar::from(4),
-        Scalar::from(6),
-        Scalar::from(8),
-      ],
-    ];
-    let bz = vec![
-      vec![
-        Scalar::from(5),
-        Scalar::from(6),
-        Scalar::from(7),
-        Scalar::from(8),
-      ],
-      vec![
-        Scalar::from(3),
-        Scalar::from(6),
-        Scalar::from(9),
-        Scalar::from(12),
-      ],
-    ];
-    let cz = vec![vec![Scalar::ZERO; left * right]; 2];
-
-    let (_field_e0, field_quad) =
-      compute_field_round_claim::<E>(&az, &bz, &cz, &e, left, right, &rhos, 0)?;
-
-    let mut az_small = [vec![1, 2, 3, 4], vec![2, 4, 6, 8]];
-    let mut bz_small = [vec![5, 6, 7, 8], vec![3, 6, 9, 12]];
-    let large_positions = vec![2usize];
-    for layer in az_small.iter_mut().chain(bz_small.iter_mut()) {
-      layer[2] = 0;
-    }
-
-    let small_quad = NeutronNovaNIFS::<E>::prove_helper_small(
-      (left, right),
-      &e,
-      &az[0],
-      &bz[0],
-      &az[1],
-      &bz[1],
-      &az_small[0],
-      &bz_small[0],
-      &az_small[1],
-      &bz_small[1],
-      &large_positions,
-    );
-
-    assert_eq!(field_quad, small_quad);
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_regular_small_c_claims_match_field_with_large_correction() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    type Scalar = <E as Engine>::Scalar;
-
-    let left = 2;
-    let right = 2;
-    let e = vec![
-      Scalar::from(2),
-      Scalar::from(3),
-      Scalar::from(5),
-      Scalar::from(7),
-    ];
-    let c_field = vec![
-      vec![
-        Scalar::from(1),
-        Scalar::from(2),
-        Scalar::from(30),
-        Scalar::from(4),
-      ],
-      vec![
-        Scalar::from(5),
-        Scalar::from(6),
-        Scalar::from(70),
-        Scalar::from(8),
-      ],
-    ];
-    let mut c_small = vec![vec![1, 2, 30, 4], vec![5, 6, 70, 8]];
-    let large_positions = vec![2usize];
-    for layer in &mut c_small {
-      layer[2] = 0;
-    }
-
-    let field_claims = compute_field_c_claims::<E>(&c_field, &e, left, right)?;
-    let small_claims = compute_small_c_claims_with_field_corrections::<E>(
-      &c_small,
-      &c_field,
-      &large_positions,
-      &e,
-      left,
-      right,
-    )?;
-
-    assert_eq!(field_claims, small_claims);
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_regular_final_small_c_fold_matches_field_with_large_correction()
-  -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    type Scalar = <E as Engine>::Scalar;
-
-    let c_field = vec![
-      vec![Scalar::from(1), Scalar::from(20), Scalar::from(3)],
-      vec![Scalar::from(4), Scalar::from(50), Scalar::from(6)],
-      vec![Scalar::from(7), Scalar::from(80), Scalar::from(9)],
-    ];
-    let mut c_small = vec![vec![1, 20, 3], vec![4, 50, 6], vec![7, 80, 9]];
-    let large_positions = vec![1usize];
-    for layer in &mut c_small {
-      layer[1] = 0;
-    }
-    let weights = vec![Scalar::from(2), Scalar::from(3), Scalar::from(5)];
-
-    let field_fold = fold_field_layers_with_weights::<E>(&c_field, &weights)?;
-    let small_fold =
-      fold_small_c_with_field_corrections::<E>(&c_small, &c_field, &large_positions, &weights)?;
-
-    assert_eq!(field_fold, small_fold);
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_cached_step_mles_are_one_shot() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    const NUM_CIRCUITS: usize = 2;
-
-    let step_proto = CacheablePublicCircuit::<E> {
-      value: <E as Engine>::Scalar::ZERO,
-    };
-    let core_proto = step_proto.clone();
-    let (pk, _vk) = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, NUM_CIRCUITS)?;
-    let step_circuits = (0..NUM_CIRCUITS)
-      .map(|i| CacheablePublicCircuit::<E> {
-        value: <E as Engine>::Scalar::from(i as u64),
-      })
-      .collect::<Vec<_>>();
-    let core_circuit = CacheablePublicCircuit::<E> {
-      value: <E as Engine>::Scalar::ZERO,
-    };
-
-    let nifs_input = true;
-    let prep =
-      NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(&pk, &step_circuits, &core_circuit, &nifs_input)?;
-    assert!(prep.cached_step_mles.is_some());
-
-    let (_snark, consumed_prep) = NeutronNovaZkSNARK::<E>::prove::<_, _>(
-      &pk,
-      &step_circuits,
-      &core_circuit,
-      prep,
-      &nifs_input,
-    )?;
-    assert!(consumed_prep.cached_step_mles.is_none());
-    assert!(!consumed_prep.cached_step_public_values.is_empty());
-
-    let err = NeutronNovaZkSNARK::<E>::prove::<_, _>(
-      &pk,
-      &step_circuits,
-      &core_circuit,
-      consumed_prep,
-      &nifs_input,
-    )
-    .expect_err("consumed cached prep should require rerunning prep_prove");
-
-    assert!(matches!(
-      err,
-      SpartanError::InternalError { reason }
-        if reason.contains("rerun prep_prove")
-    ));
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_small_value_neutronnova_nifs_rejects_zero_l0() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    const NUM_CIRCUITS: usize = 2;
-    const LEN: usize = 32;
-
-    let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let nifs_input = ();
-    let prep = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, 0>>::prep_prove::<_, _>(
-      &pk,
-      &circuits,
-      &circuits[0],
-      &nifs_input,
-    )?;
-    let err = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, 0>>::prove::<_, _>(
-      &pk,
-      &circuits,
-      &circuits[0],
-      prep,
-      &nifs_input,
-    )
-    .expect_err("small-value NIFS should reject l0 == 0");
-
-    assert!(matches!(
-      err,
-      SpartanError::InvalidInputLength { reason }
-        if reason.contains("small-value NeutronNova NIFS requires L0 > 0")
-    ));
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_neutronnova_prove_rejects_input_mismatch() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    const NUM_CIRCUITS: usize = 2;
-    const LEN: usize = 32;
-
-    let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let prep_input = true;
-    let prove_input = false;
-    let prep =
-      NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(&pk, &circuits, &circuits[0], &prep_input)?;
-    let err =
-      NeutronNovaZkSNARK::<E>::prove::<_, _>(&pk, &circuits, &circuits[0], prep, &prove_input)
-        .expect_err("prove should reject a different NIFS input than prep_prove used");
-
-    assert!(matches!(
-      err,
-      SpartanError::InvalidInputLength { reason }
-        if reason.contains("prep/prove NIFS inputs do not match")
-    ));
-
-    Ok(())
-  }
-
-  #[test]
-  fn test_small_value_neutronnova_nifs_accepts_const_small_value_l0() -> Result<(), SpartanError> {
-    type E = T256HyraxEngine;
-    const NUM_CIRCUITS: usize = 4;
-    const LEN: usize = 32;
-    const L0: usize = 2;
-
-    let (pk, vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let nifs_input = ();
-    let prep = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<_, _>(
-      &pk,
-      &circuits,
-      &circuits[0],
-      &nifs_input,
-    )?;
-    assert_eq!(prep.nifs_input, ());
-    assert!(prep.cached_step_mles.is_none());
-
-    let (snark, _prep) = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prove::<
-      _,
-      _,
-    >(&pk, &circuits, &circuits[0], prep, &nifs_input)?;
-    let (step_public, _core_public) = snark.verify(&vk, NUM_CIRCUITS)?;
-    assert_eq!(step_public.len(), NUM_CIRCUITS);
 
     Ok(())
   }
