@@ -12,7 +12,8 @@
 //! O(num_x_out) to O(num_threads).
 
 use super::accumulator::LagrangeAccumulators;
-use crate::big_num::{DelayedReduction, SmallValue};
+use super::extension_bound::SmallValue;
+use crate::big_num::DelayedReduction;
 use num_traits::Zero;
 
 /// Reusable A/B prefix and Lagrange-extension buffers.

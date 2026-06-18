@@ -40,6 +40,13 @@ pub(crate) use basis::{
   LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals, ReducedLagrangeDomainEvals,
 };
 pub(crate) use extension_bound::{
-  ExtensionBoundProduct, ExtensionBoundedPoly, field_to_i64_or_zero_for_l0,
-  max_extension_fit_input_abs, max_extension_input_abs, small_value_fits_abs_bound,
+  ExtensionBoundProduct, ExtensionBoundedPoly, SmallValue, SmallValueEngine, SmallValueField,
+  field_values_to_small_or_zero_with_bound, max_extension_input_abs_for_rounds,
+  to_small_vec_or_zero,
 };
+
+#[cfg(test)]
+pub(crate) use extension_bound::{i32_to_field, i64_to_field, i128_to_field};
+
+#[cfg(test)]
+pub(crate) use extension_bound::tests::test_small_vec_or_zero_impl;

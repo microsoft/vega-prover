@@ -27,12 +27,12 @@
 //! The main entry point is [`prove_spartan_outer_cubic_small_value`], which implements
 
 use crate::{
-  big_num::{DelayedReduction, SmallValue, SmallValueEngine, SmallValueField},
+  big_num::DelayedReduction,
   errors::SpartanError,
   lagrange_accumulator::{
     LagrangeAccumulators, LagrangeBasisFactory, LagrangeCoeff, LagrangeDomainEvals,
-    ReducedLagrangeDomainEvals, SMALL_VALUE_T_DEGREE, SmallValueExtensionBoundedPoly,
-    build_accumulators_spartan,
+    ReducedLagrangeDomainEvals, SMALL_VALUE_T_DEGREE, SmallValue, SmallValueEngine,
+    SmallValueExtensionBoundedPoly, SmallValueField, build_accumulators_spartan,
   },
   polys::{
     eq::EqPolynomial,
@@ -401,7 +401,7 @@ where
 mod tests {
   use super::*;
   use crate::{
-    big_num::{SmallValue, SmallValueEngine, SmallValueField},
+    lagrange_accumulator::{SmallValue, SmallValueEngine, SmallValueField},
     polys::multilinear::MultilinearPolynomial,
     provider::PallasHyraxEngine,
     sumcheck::eq_sumcheck::EqSumCheckInstance,
@@ -846,7 +846,7 @@ mod tests {
 mod perf_tests {
   use super::*;
   use crate::{
-    big_num::SmallValueEngine, polys::multilinear::MultilinearPolynomial, start_span,
+    lagrange_accumulator::SmallValueEngine, polys::multilinear::MultilinearPolynomial, start_span,
     traits::Engine,
   };
   use ff::Field;

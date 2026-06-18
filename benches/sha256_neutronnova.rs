@@ -320,17 +320,19 @@ fn validate_backend_for_case(backend: BenchBackend, size: usize, num_steps: usiz
   }
 }
 
+type ProveWithBackendOutput<Nifs> = (NeutronNovaZkSNARK<E, Nifs>, NeutronNovaPrepZkSNARK<E, Nifs>);
+
 fn prove_with_backend<Nifs>(
   pk: &NeutronNovaProverKey<E>,
   step_circuits: &[Sha256StepCircuit<E>],
   core_circuit: &CoreCircuit<E>,
   prep: NeutronNovaPrepZkSNARK<E, Nifs>,
   nifs_input: &Nifs::Input,
-) -> Result<(NeutronNovaZkSNARK<E>, NeutronNovaPrepZkSNARK<E, Nifs>), SpartanError>
+) -> Result<ProveWithBackendOutput<Nifs>, SpartanError>
 where
   Nifs: NeutronNovaNifsStrategy<E>,
 {
-  NeutronNovaZkSNARK::<E>::prove::<Sha256StepCircuit<E>, CoreCircuit<E>, Nifs>(
+  NeutronNovaZkSNARK::<E, Nifs>::prove::<Sha256StepCircuit<E>, CoreCircuit<E>>(
     pk,
     step_circuits,
     core_circuit,
@@ -344,11 +346,11 @@ fn prep_and_prove_with_backend<Nifs>(
   step_circuits: &[Sha256StepCircuit<E>],
   core_circuit: &CoreCircuit<E>,
   nifs_input: &Nifs::Input,
-) -> Result<NeutronNovaZkSNARK<E>, SpartanError>
+) -> Result<NeutronNovaZkSNARK<E, Nifs>, SpartanError>
 where
   Nifs: NeutronNovaNifsStrategy<E>,
 {
-  let prep = NeutronNovaZkSNARK::<E>::prep_prove::<Sha256StepCircuit<E>, CoreCircuit<E>, Nifs>(
+  let prep = NeutronNovaZkSNARK::<E, Nifs>::prep_prove::<Sha256StepCircuit<E>, CoreCircuit<E>>(
     pk,
     step_circuits,
     core_circuit,
@@ -363,7 +365,7 @@ fn prep_prove_small_value<const L0: usize>(
   step_circuits: &[Sha256StepCircuit<E>],
   core_circuit: &CoreCircuit<E>,
 ) -> Result<SmallValuePrep<L0>, SpartanError> {
-  NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, L0>>(
+  NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<_, _>(
     pk,
     step_circuits,
     core_circuit,
@@ -429,6 +431,39 @@ enum PreparedBenchCase {
   SmallValue5(PreparedSmallValueBenchCase<5>),
 }
 
+enum BenchProof {
+  Regular(NeutronNovaZkSNARK<E>),
+  SmallValue1(NeutronNovaZkSNARK<E, SmallValueNeutronNovaNIFS<E, i64, 1>>),
+  SmallValue2(NeutronNovaZkSNARK<E, SmallValueNeutronNovaNIFS<E, i64, 2>>),
+  SmallValue3(NeutronNovaZkSNARK<E, SmallValueNeutronNovaNIFS<E, i64, 3>>),
+  SmallValue4(NeutronNovaZkSNARK<E, SmallValueNeutronNovaNIFS<E, i64, 4>>),
+  SmallValue5(NeutronNovaZkSNARK<E, SmallValueNeutronNovaNIFS<E, i64, 5>>),
+}
+
+impl BenchProof {
+  fn serialized_len(&self) -> usize {
+    match self {
+      BenchProof::Regular(proof) => bincode::serialize(proof).unwrap().len(),
+      BenchProof::SmallValue1(proof) => bincode::serialize(proof).unwrap().len(),
+      BenchProof::SmallValue2(proof) => bincode::serialize(proof).unwrap().len(),
+      BenchProof::SmallValue3(proof) => bincode::serialize(proof).unwrap().len(),
+      BenchProof::SmallValue4(proof) => bincode::serialize(proof).unwrap().len(),
+      BenchProof::SmallValue5(proof) => bincode::serialize(proof).unwrap().len(),
+    }
+  }
+
+  fn verify(&self, vk: &NeutronNovaVerifierKey<E>, num_steps: usize) -> Result<(), SpartanError> {
+    match self {
+      BenchProof::Regular(proof) => proof.verify(vk, num_steps).map(drop),
+      BenchProof::SmallValue1(proof) => proof.verify(vk, num_steps).map(drop),
+      BenchProof::SmallValue2(proof) => proof.verify(vk, num_steps).map(drop),
+      BenchProof::SmallValue3(proof) => proof.verify(vk, num_steps).map(drop),
+      BenchProof::SmallValue4(proof) => proof.verify(vk, num_steps).map(drop),
+      BenchProof::SmallValue5(proof) => proof.verify(vk, num_steps).map(drop),
+    }
+  }
+}
+
 trait IntoPreparedBenchCase {
   fn into_prepared_bench_case(self) -> PreparedBenchCase;
 }
@@ -453,9 +488,14 @@ impl_into_prepared_bench_case! {
   5 => SmallValue5,
 }
 
+type SmallValueProofAndVk<const L0: usize> = (
+  NeutronNovaZkSNARK<E, SmallValueNeutronNovaNIFS<E, i64, L0>>,
+  NeutronNovaVerifierKey<E>,
+);
+
 fn prove_prepared_small_value<const L0: usize>(
   case: PreparedSmallValueBenchCase<L0>,
-) -> Result<(NeutronNovaZkSNARK<E>, NeutronNovaVerifierKey<E>), SpartanError> {
+) -> Result<SmallValueProofAndVk<L0>, SpartanError> {
   let PreparedSmallValueBenchCase {
     pk,
     vk,
@@ -476,7 +516,7 @@ fn prove_prepared_small_value<const L0: usize>(
 
 fn prove_prepared(
   case: PreparedBenchCase,
-) -> Result<(NeutronNovaZkSNARK<E>, NeutronNovaVerifierKey<E>), SpartanError> {
+) -> Result<(BenchProof, NeutronNovaVerifierKey<E>), SpartanError> {
   match case {
     PreparedBenchCase::Regular {
       pk,
@@ -493,13 +533,28 @@ fn prove_prepared(
         prep,
         &nifs_input,
       )?;
-      Ok((proof, vk))
+      Ok((BenchProof::Regular(proof), vk))
     }
-    PreparedBenchCase::SmallValue1(case) => prove_prepared_small_value(case),
-    PreparedBenchCase::SmallValue2(case) => prove_prepared_small_value(case),
-    PreparedBenchCase::SmallValue3(case) => prove_prepared_small_value(case),
-    PreparedBenchCase::SmallValue4(case) => prove_prepared_small_value(case),
-    PreparedBenchCase::SmallValue5(case) => prove_prepared_small_value(case),
+    PreparedBenchCase::SmallValue1(case) => {
+      let (proof, vk) = prove_prepared_small_value(case)?;
+      Ok((BenchProof::SmallValue1(proof), vk))
+    }
+    PreparedBenchCase::SmallValue2(case) => {
+      let (proof, vk) = prove_prepared_small_value(case)?;
+      Ok((BenchProof::SmallValue2(proof), vk))
+    }
+    PreparedBenchCase::SmallValue3(case) => {
+      let (proof, vk) = prove_prepared_small_value(case)?;
+      Ok((BenchProof::SmallValue3(proof), vk))
+    }
+    PreparedBenchCase::SmallValue4(case) => {
+      let (proof, vk) = prove_prepared_small_value(case)?;
+      Ok((BenchProof::SmallValue4(proof), vk))
+    }
+    PreparedBenchCase::SmallValue5(case) => {
+      let (proof, vk) = prove_prepared_small_value(case)?;
+      Ok((BenchProof::SmallValue5(proof), vk))
+    }
   }
 }
 
@@ -516,7 +571,7 @@ fn prepare_small_value_case<const L0: usize>(
   core_circuit: CoreCircuit<E>,
 ) -> PreparedSmallValueBenchCase<L0> {
   let nifs_input = ();
-  let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, L0>>(
+  let prep = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<_, _>(
     &pk,
     &step_circuits,
     &core_circuit,
@@ -541,7 +596,7 @@ fn prepare_case(num_steps: usize, backend: BenchBackend) -> PreparedBenchCase {
   match backend {
     BenchBackend::RegularField | BenchBackend::RegularSmallRound0 => {
       let nifs_input = matches!(backend, BenchBackend::RegularSmallRound0);
-      let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
+      let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(
         &pk,
         &step_circuits,
         &core_circuit,
@@ -580,14 +635,10 @@ fn neutronnova_benches(c: &mut Criterion) {
     for &size in SIZES {
       let num_steps = num_steps_for_size(size);
       let (proof, _) = prove_prepared(prepare_case(num_steps, backend)).unwrap();
-      let proof_bytes = bincode::serialize(&proof).unwrap();
+      let proof_bytes = proof.serialized_len();
       println!(
         "NeutronNova SHA-256 backend={} size={}B num_steps={} (= {} compressions): proof_size={} bytes",
-        backend_label,
-        size,
-        num_steps,
-        num_steps,
-        proof_bytes.len()
+        backend_label, size, num_steps, num_steps, proof_bytes
       );
     }
   }
@@ -640,7 +691,7 @@ fn neutronnova_benches(c: &mut Criterion) {
                   match backend {
                     BenchBackend::RegularField | BenchBackend::RegularSmallRound0 => {
                       let nifs_input = matches!(backend, BenchBackend::RegularSmallRound0);
-                      let _ = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
+                      let _ = NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(
                         &pk,
                         &step_circuits,
                         &core_circuit,

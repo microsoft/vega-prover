@@ -16,12 +16,12 @@ use super::{
   accumulator::LagrangeAccumulators,
   csr::Csr,
   domain::LagrangeIndex,
-  extension_bound::{ExtensionBoundProduct, ExtensionBoundedPoly},
+  extension_bound::{ExtensionBoundProduct, ExtensionBoundedPoly, SmallValue, SmallValueEngine},
   index::AccumulatorPrefixIndex,
   thread_state::{PrefixExtensionScratch, SpartanThreadState},
 };
 use crate::{
-  big_num::{DelayedReduction, SmallValue, SmallValueEngine, WideMul},
+  big_num::{DelayedReduction, WideMul},
   errors::SpartanError,
   polys::{eq::build_eq_pyramid, eq::compute_suffix_eq_pyramid},
   r1cs::weights_from_r,

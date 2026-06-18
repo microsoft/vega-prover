@@ -19,7 +19,6 @@ pub(crate) mod delayed_reduction;
 pub(crate) mod field_reduction_constants;
 pub(crate) mod macros;
 pub(crate) mod montgomery;
-pub(crate) mod small_value_conversion;
 pub(crate) mod wide_mul;
 
 mod limbs;
@@ -32,9 +31,5 @@ pub use field_reduction_constants::{
 pub use montgomery::MontgomeryLimbs;
 // TODO: Remove unused imports after adding small-value sumcheck support (https://github.com/microsoft/Spartan2/pull/112)
 #[allow(unused_imports)]
-pub use small_value_conversion::{SmallValue, SmallValueEngine, SmallValueField};
-pub use wide_mul::WideMul;
-
-// TODO: Remove unused imports after adding small-value sumcheck support (https://github.com/microsoft/Spartan2/pull/112)
-#[allow(unused_imports)]
 pub use limbs::{SignedWideLimbs, SubMagResult, WideLimbs, sub_mag};
+pub use wide_mul::WideMul;

@@ -170,7 +170,7 @@ where
 #[cfg(test)]
 mod tests {
   use super::*;
-  use crate::{big_num::SmallValueField, provider::pasta::pallas};
+  use crate::{lagrange_accumulator::SmallValueField, provider::pasta::pallas};
   use ff::Field;
 
   use super::super::domain::{LagrangeIndex, LagrangePoint};

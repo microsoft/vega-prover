@@ -20,15 +20,13 @@ use crate::{
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
   },
-  big_num::{
-    DelayedReduction, SmallValue, SmallValueEngine, SmallValueField, WideMul,
-    small_value_conversion::to_small_vec_or_zero,
-  },
+  big_num::{DelayedReduction, WideMul},
   digest::DigestComputer,
   errors::SpartanError,
   lagrange_accumulator::{
-    ExtensionBoundProduct, ExtensionBoundedPoly, field_to_i64_or_zero_for_l0,
-    max_extension_fit_input_abs, max_extension_input_abs, small_value_fits_abs_bound,
+    ExtensionBoundedPoly, SmallValue, SmallValueEngine, SmallValueField,
+    field_values_to_small_or_zero_with_bound, max_extension_input_abs_for_rounds,
+    to_small_vec_or_zero,
   },
   math::Math,
   nifs::NovaNIFS,
@@ -57,8 +55,14 @@ use num_traits::{Bounded, ToPrimitive};
 use once_cell::sync::OnceCell;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
 use std::{collections::BTreeSet, marker::PhantomData};
 use tracing::{debug, info};
+
+pub use crate::{
+  polys::outer_mles::{FieldStepMLEs, SmallAbStepMLEs, SmallAbcStepMLEs},
+  small_neutronnova::{SmallValueNeutronNovaNIFS, SmallValueNeutronNovaStepMLEs},
+};
 
 pub(crate) fn compute_tensor_decomp(n: usize) -> (usize, usize, usize) {
   let ell = n.next_power_of_two().log_2();
@@ -78,103 +82,18 @@ pub struct NeutronNovaNIFS<E: Engine> {
   _p: PhantomData<E>,
 }
 
-/// A small-value NeutronNova NIFS backend.
-pub struct SmallValueNeutronNovaNIFS<E: Engine, SV, const L0: usize> {
-  _p: PhantomData<(E, SV)>,
-}
-
-impl<E: Engine, SV, const L0: usize> std::fmt::Debug for SmallValueNeutronNovaNIFS<E, SV, L0> {
-  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("SmallValueNeutronNovaNIFS")
-      .field("L0", &L0)
-      .finish()
-  }
-}
-
-/// Full field-valued step-circuit Az/Bz/Cz tables.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound = "")]
-pub struct FieldStepMatvecs<E: Engine> {
-  /// Field-valued Az tables in original instance order.
-  pub az: Vec<Vec<E::Scalar>>,
-  /// Field-valued Bz tables in original instance order.
-  pub bz: Vec<Vec<E::Scalar>>,
-  /// Field-valued Cz tables in original instance order.
-  pub cz: Vec<Vec<E::Scalar>>,
-}
-
-impl<E: Engine> FieldStepMatvecs<E> {
-  fn from_triples(matvec: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>) -> Self {
-    let mut az = Vec::with_capacity(matvec.len());
-    let mut bz = Vec::with_capacity(matvec.len());
-    let mut cz = Vec::with_capacity(matvec.len());
-    for (az_layer, bz_layer, cz_layer) in matvec {
-      az.push(az_layer);
-      bz.push(bz_layer);
-      cz.push(cz_layer);
-    }
-
-    Self { az, bz, cz }
-  }
-
-  fn len(&self) -> usize {
-    self.az.len()
-  }
-}
-
-/// Small-value Az/Bz tables and the global positions that must use field corrections.
-///
-/// Invariant: for every index in `field_positions`, every layer's small Az/Bz
-/// table stores zero at that index.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SmallAbStepMatvecs<AbLayer> {
-  /// Small Az tables; global large positions are zeroed.
-  pub az_small: Vec<AbLayer>,
-  /// Small Bz tables; global large positions are zeroed.
-  pub bz_small: Vec<AbLayer>,
-  /// Sorted positions where any cached value did not fit in the small representation.
-  pub field_positions: Vec<usize>,
-}
-
-/// Small-value Az/Bz/Cz tables and the global positions that must use field corrections.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SmallAbcStepMatvecs<AbLayer, CLayer> {
-  /// Small Az/Bz tables and their large-position metadata.
-  pub ab: SmallAbStepMatvecs<AbLayer>,
-  /// Small Cz tables; global large positions are zeroed.
-  pub cz_small: Vec<CLayer>,
-  /// Sorted positions where any cached C value did not fit in the small representation.
-  pub c_field_positions: Vec<usize>,
-}
-
-/// Regular NeutronNova step matvecs.
+/// Regular NeutronNova step MLEs.
 ///
 /// `small_abc = None` is the full-field path. `small_abc = Some(..)` enables
 /// the old `has_i64` optimization path: small A/B for round claims plus small C
 /// for scalar C claims and final C folding.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct NeutronNovaStepMatvecs<E: Engine> {
-  /// Full field-valued step matvec tables.
-  pub field: FieldStepMatvecs<E>,
+pub struct NeutronNovaStepMLEs<E: Engine> {
+  /// Full field-valued step MLE tables.
+  pub field: FieldStepMLEs<E>,
   /// Optional small Az/Bz/Cz tables for the regular small-value optimization.
-  pub small_abc: Option<SmallAbcStepMatvecs<Vec<i64>, Vec<i64>>>,
-}
-
-/// Small-value accumulator NeutronNova step matvecs.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(bound(serialize = "SV: Serialize", deserialize = "SV: Deserialize<'de>"))]
-pub struct SmallValueNeutronNovaStepMatvecs<E: Engine, SV, const L0: usize>
-where
-  SV: WideMul,
-{
-  /// Full field-valued step matvec tables used for large-position corrections.
-  pub field: FieldStepMatvecs<E>,
-  /// Small Az/Bz/Cz tables used by the small-value accumulator.
-  pub small_abc: SmallAbcStepMatvecs<
-    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
-    ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
-  >,
+  pub small_abc: Option<SmallAbcStepMLEs<Vec<i64>, Vec<i64>>>,
 }
 
 /// Output of a NeutronNova NIFS backend.
@@ -202,22 +121,22 @@ where
   type Input: Clone + Send + Sync + PartialEq;
 
   /// Backend-specific representation of the step `Az/Bz/Cz` layers.
-  type StepMatvecs: Send + Sync;
+  type StepMLEs: Send + Sync;
 
   /// Returns whether witness synthesis should use the small-value assignment path.
   fn is_small(input: &Self::Input) -> bool;
 
-  /// Builds backend-specific step matvecs from regular instances and witnesses.
-  fn build_step_matvecs(
+  /// Builds backend-specific step MLEs from regular instances and witnesses.
+  fn build_step_mles(
     shape: &SplitR1CSShape<E>,
     instances: &[R1CSInstance<E>],
     witnesses: &[R1CSWitness<E>],
     input: &Self::Input,
-  ) -> Result<Self::StepMatvecs, SpartanError> {
+  ) -> Result<Self::StepMLEs, SpartanError> {
     if instances.len() != witnesses.len() {
       return Err(SpartanError::InvalidInputLength {
         reason: format!(
-          "cannot build step matvecs with {} instances and {} witnesses",
+          "cannot build step MLEs with {} instances and {} witnesses",
           instances.len(),
           witnesses.len()
         ),
@@ -232,42 +151,42 @@ where
       z
     });
 
-    Self::build_step_matvecs_from_prepared_zs(shape, zs, input)
+    Self::build_step_mles_from_prepared_zs(shape, zs, input)
   }
 
-  /// Builds backend-specific step matvecs from fully prepared step `z` vectors.
+  /// Builds backend-specific step MLEs from fully prepared step `z` vectors.
   ///
   /// This is the cache-building entrypoint used by `prep_prove`, so strategies
-  /// can construct richer representations than field-only matvec tables.
-  fn build_step_matvecs_from_prepared_zs<Zs>(
+  /// can construct richer representations than field-only MLE tables.
+  fn build_step_mles_from_prepared_zs<Zs>(
     shape: &SplitR1CSShape<E>,
     zs: Zs,
     input: &Self::Input,
-  ) -> Result<Self::StepMatvecs, SpartanError>
+  ) -> Result<Self::StepMLEs, SpartanError>
   where
     Zs: ParallelIterator<Item = Vec<E::Scalar>>,
   {
-    let matvec: Vec<_> = zs
+    let field_mles: Vec<_> = zs
       .map(|z| shape.multiply_vec(&z))
       .collect::<Result<Vec<_>, _>>()?;
 
-    Self::build_step_matvecs_from_field(matvec, input)
+    Self::build_step_mles_from_field(field_mles, input)
   }
 
-  /// Builds backend-specific step matvecs from already-computed field `Az/Bz/Cz` tables.
-  fn build_step_matvecs_from_field(
-    field_matvecs: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
+  /// Builds backend-specific step MLEs from already-computed field `Az/Bz/Cz` tables.
+  fn build_step_mles_from_field(
+    field_mles: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
     input: &Self::Input,
-  ) -> Result<Self::StepMatvecs, SpartanError>;
+  ) -> Result<Self::StepMLEs, SpartanError>;
 
-  /// Prove the NIFS folding step using the provided step matvec layers.
+  /// Prove the NIFS folding step using the provided step MLE layers.
   #[allow(clippy::too_many_arguments)]
   fn prove(
     s: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     us: Vec<R1CSInstance<E>>,
     ws: Vec<R1CSWitness<E>>,
-    step_matvecs: Self::StepMatvecs,
+    step_mles: Self::StepMLEs,
     nifs_input: &Self::Input,
     vc: &mut NeutronNovaVerifierCircuit<E>,
     vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
@@ -288,6 +207,53 @@ fn suffix_weight_full<F: Field>(t: usize, ell_b: usize, pair_idx: usize, rhos: &
     k >>= 1;
   }
   w
+}
+
+#[derive(Clone, Debug)]
+struct RhoSuffixWeights<F: Field> {
+  weights: Vec<F>,
+}
+
+impl<F: Field> RhoSuffixWeights<F> {
+  fn new(rhos: &[F], start_round: usize, layer_count: usize) -> Result<Self, SpartanError> {
+    if start_round > rhos.len() {
+      return Err(invalid_input(format!(
+        "rho suffix start round {} exceeds rho length {}",
+        start_round,
+        rhos.len()
+      )));
+    }
+    let shift = u32::try_from(rhos.len() - start_round)
+      .map_err(|_| invalid_input("rho suffix length does not fit in a u32 shift"))?;
+    let expected_layer_count = 1usize
+      .checked_shl(shift)
+      .ok_or_else(|| invalid_input("rho suffix layer count overflows"))?;
+    if layer_count != expected_layer_count {
+      return Err(invalid_input(format!(
+        "rho suffix layer count {} does not match expected {} for start round {}",
+        layer_count, expected_layer_count, start_round
+      )));
+    }
+
+    Ok(Self {
+      weights: weights_from_r(&rhos[start_round..], layer_count),
+    })
+  }
+
+  fn fold_to_pair_weights(&mut self) -> Result<&[F], SpartanError> {
+    if self.weights.is_empty() || !self.weights.len().is_multiple_of(2) {
+      return Err(invalid_input(format!(
+        "rho suffix weights length {} must be non-empty and even",
+        self.weights.len()
+      )));
+    }
+    let pairs = self.weights.len() / 2;
+    for i in 0..pairs {
+      self.weights[i] = self.weights[2 * i] + self.weights[2 * i + 1];
+    }
+    self.weights.truncate(pairs);
+    Ok(&self.weights)
+  }
 }
 
 fn extend_with_first_clones<T: Clone>(values: &mut Vec<T>, additional: usize) {
@@ -691,24 +657,24 @@ where
   E::Scalar: DelayedReduction<i128>,
 {
   type Input = bool;
-  type StepMatvecs = NeutronNovaStepMatvecs<E>;
+  type StepMLEs = NeutronNovaStepMLEs<E>;
 
   fn is_small(input: &Self::Input) -> bool {
     *input
   }
 
-  fn build_step_matvecs_from_field(
-    field_matvecs: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
+  fn build_step_mles_from_field(
+    field_mles: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
     input: &Self::Input,
-  ) -> Result<Self::StepMatvecs, SpartanError> {
-    let field = FieldStepMatvecs::from_triples(field_matvecs);
+  ) -> Result<Self::StepMLEs, SpartanError> {
+    let field = FieldStepMLEs::from_triples(field_mles);
     let small_abc = if *input {
       Some(build_small_abc_from_field(&field, 1)?)
     } else {
       None
     };
 
-    Ok(NeutronNovaStepMatvecs { field, small_abc })
+    Ok(NeutronNovaStepMLEs { field, small_abc })
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -717,7 +683,7 @@ where
     ck: &CommitmentKey<E>,
     us: Vec<R1CSInstance<E>>,
     ws: Vec<R1CSWitness<E>>,
-    step_matvecs: Self::StepMatvecs,
+    step_mles: Self::StepMLEs,
     nifs_input: &Self::Input,
     vc: &mut NeutronNovaVerifierCircuit<E>,
     vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
@@ -743,8 +709,8 @@ where
       n_padded
     );
 
-    let NeutronNovaStepMatvecs { field, small_abc } = step_matvecs;
-    let FieldStepMatvecs {
+    let NeutronNovaStepMLEs { field, small_abc } = step_mles;
+    let FieldStepMLEs {
       az: mut A_layers,
       bz: mut B_layers,
       cz: mut C_layers,
@@ -759,12 +725,11 @@ where
       c_large_positions,
     ) = if use_round0_small_optimization {
       let small_abc = small_abc.ok_or_else(|| SpartanError::InvalidInputLength {
-        reason: "regular small optimization requested but small A/B/C matvecs are missing"
-          .to_string(),
+        reason: "regular small optimization requested but small A/B/C MLEs are missing".to_string(),
       })?;
-      let SmallAbcStepMatvecs {
+      let SmallAbcStepMLEs {
         ab:
-          SmallAbStepMatvecs {
+          SmallAbStepMLEs {
             az_small,
             bz_small,
             field_positions: ab_field_positions,
@@ -786,7 +751,7 @@ where
     if A_layers.len() != n || B_layers.len() != n || C_layers.len() != n {
       return Err(SpartanError::InvalidInputLength {
         reason: format!(
-          "NIFS received step matvec layer lengths A={}, B={}, C={} but {} instances",
+          "NIFS received step MLE layer lengths A={}, B={}, C={} but {} instances",
           A_layers.len(),
           B_layers.len(),
           C_layers.len(),
@@ -927,13 +892,14 @@ where
           let prev_r_b = r_b;
           let fold_pairs = A_layers.len() / 2;
           let prove_pairs = fold_pairs / 2;
+          let mut rho_suffix_weights = RhoSuffixWeights::new(&rhos, t, fold_pairs)?;
+          let round_weights = rho_suffix_weights.fold_to_pair_weights()?;
           let one_minus_r0 = E::Scalar::ONE - prev_r_b;
           let c00 = one_minus_r0 * one_minus_r0;
           let c01 = one_minus_r0 * prev_r_b;
           let c11 = prev_r_b * prev_r_b;
 
           let e_eq_ref = &E_eq;
-          let rhos_ref = &rhos;
           let a_layers_ref = &A_layers;
           let b_layers_ref = &B_layers;
           let a_small_ref = &A_small_layers;
@@ -978,7 +944,7 @@ where
                 &ab_large_positions,
               );
               let e0 = e0_ab - c_chunk[0];
-              let weight = suffix_weight_full::<E::Scalar>(t, ell_b, j, rhos_ref);
+              let weight = round_weights[j];
               (e0 * weight, quad_coeff * weight)
             })
             .reduce(
@@ -1039,6 +1005,7 @@ where
             transcript,
             2,
             pending_r_b,
+            rho_suffix_weights,
             &mut r_bs,
             &mut T_cur,
             &mut acc_eq,
@@ -1167,27 +1134,30 @@ where
 }
 
 fn build_small_ab_from_field<E>(
-  field: &FieldStepMatvecs<E>,
+  field: &FieldStepMLEs<E>,
   l0: usize,
-) -> Result<SmallAbStepMatvecs<Vec<i64>>, SpartanError>
+) -> Result<SmallAbStepMLEs<Vec<i64>>, SpartanError>
 where
   E: Engine,
 {
   if l0 == 0 {
     return Err(SpartanError::InvalidInputLength {
-      reason: "small A/B matvec conversion requires l0 > 0".to_string(),
+      reason: "small A/B MLE conversion requires l0 > 0".to_string(),
     });
   }
 
   let mut az_small = Vec::with_capacity(field.len());
   let mut bz_small = Vec::with_capacity(field.len());
   let mut field_positions = BTreeSet::new();
+  let max_abs = max_extension_input_abs_for_rounds::<i64, i128, 2>(l0);
 
   for (az_layer, bz_layer) in field.az.iter().zip(&field.bz) {
-    let (az_small_layer, az_large_indices) = field_to_i64_or_zero_for_l0(az_layer, l0);
-    let (bz_small_layer, bz_large_indices) = field_to_i64_or_zero_for_l0(bz_layer, l0);
-    field_positions.extend(az_large_indices);
-    field_positions.extend(bz_large_indices);
+    let (az_small_layer, az_field_positions) =
+      field_values_to_small_or_zero_with_bound::<E::Scalar, i64, i128>(az_layer, max_abs);
+    let (bz_small_layer, bz_field_positions) =
+      field_values_to_small_or_zero_with_bound::<E::Scalar, i64, i128>(bz_layer, max_abs);
+    field_positions.extend(az_field_positions);
+    field_positions.extend(bz_field_positions);
     az_small.push(az_small_layer);
     bz_small.push(bz_small_layer);
   }
@@ -1201,7 +1171,7 @@ where
     }
   }
 
-  Ok(SmallAbStepMatvecs {
+  Ok(SmallAbStepMLEs {
     az_small,
     bz_small,
     field_positions: field_positions.into_iter().collect(),
@@ -1209,9 +1179,9 @@ where
 }
 
 fn build_small_abc_from_field<E>(
-  field: &FieldStepMatvecs<E>,
+  field: &FieldStepMLEs<E>,
   l0: usize,
-) -> Result<SmallAbcStepMatvecs<Vec<i64>, Vec<i64>>, SpartanError>
+) -> Result<SmallAbcStepMLEs<Vec<i64>, Vec<i64>>, SpartanError>
 where
   E: Engine,
   E::Scalar: SmallValueField<i64>,
@@ -1234,7 +1204,7 @@ where
     }
   }
 
-  let small_abc = SmallAbcStepMatvecs {
+  let small_abc = SmallAbcStepMLEs {
     ab,
     cz_small,
     c_field_positions: c_field_positions.into_iter().collect(),
@@ -1244,43 +1214,10 @@ where
   Ok(small_abc)
 }
 
-fn field_layer_to_bounded_small_poly<E, SV, Product, const D: usize, const L0: usize>(
-  layer: &[E::Scalar],
-  max_abs: Product,
-) -> (ExtensionBoundedPoly<SV, Product, D, L0>, BTreeSet<usize>)
-where
-  E: Engine,
-  SV: SmallValue + Bounded + ToPrimitive,
-  Product: ExtensionBoundProduct,
-  E::Scalar: SmallValueField<SV>,
-{
-  let mut values = Vec::with_capacity(layer.len());
-  let mut field_positions = BTreeSet::new();
-
-  for (idx, value) in layer.iter().enumerate() {
-    let Some(small) = <E::Scalar as SmallValueField<SV>>::try_field_to_small(value) else {
-      values.push(SV::zero());
-      field_positions.insert(idx);
-      continue;
-    };
-    if small_value_fits_abs_bound::<SV, Product>(small, max_abs) {
-      values.push(small);
-    } else {
-      values.push(SV::zero());
-      field_positions.insert(idx);
-    }
-  }
-
-  (
-    ExtensionBoundedPoly::new_unchecked(MultilinearPolynomial::new(values)),
-    field_positions,
-  )
-}
-
 fn build_certified_small_abc_from_field<E, SV, const L0: usize>(
-  field: &FieldStepMatvecs<E>,
+  field: &FieldStepMLEs<E>,
 ) -> Result<
-  SmallAbcStepMatvecs<
+  SmallAbcStepMLEs<
     ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
     ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
   >,
@@ -1303,13 +1240,10 @@ where
   let mut ab_field_positions = BTreeSet::new();
   let mut c_field_positions = BTreeSet::new();
 
-  let ab_max_abs = max_extension_input_abs::<SV, <SV as WideMul>::Product, 2, L0>();
-  let c_max_abs = max_extension_fit_input_abs::<SV, <SV as WideMul>::Product, 1, L0>();
-
   for az_layer in &field.az {
     let (cert, field_positions) =
-      field_layer_to_bounded_small_poly::<E, SV, <SV as WideMul>::Product, 2, L0>(
-        az_layer, ab_max_abs,
+      ExtensionBoundedPoly::<SV, <SV as WideMul>::Product, 2, L0>::from_field_values_with_product_bound(
+        az_layer,
       );
     ab_field_positions.extend(field_positions);
     az_small.push(cert);
@@ -1317,8 +1251,8 @@ where
 
   for bz_layer in &field.bz {
     let (cert, field_positions) =
-      field_layer_to_bounded_small_poly::<E, SV, <SV as WideMul>::Product, 2, L0>(
-        bz_layer, ab_max_abs,
+      ExtensionBoundedPoly::<SV, <SV as WideMul>::Product, 2, L0>::from_field_values_with_product_bound(
+        bz_layer,
       );
     ab_field_positions.extend(field_positions);
     bz_small.push(cert);
@@ -1326,8 +1260,8 @@ where
 
   for cz_layer in &field.cz {
     let (cert, field_positions) =
-      field_layer_to_bounded_small_poly::<E, SV, <SV as WideMul>::Product, 1, L0>(
-        cz_layer, c_max_abs,
+      ExtensionBoundedPoly::<SV, <SV as WideMul>::Product, 1, L0>::from_field_values_with_extension_bound(
+        cz_layer,
       );
     c_field_positions.extend(field_positions);
     cz_small.push(cert);
@@ -1344,8 +1278,8 @@ where
     }
   }
 
-  let small_abc = SmallAbcStepMatvecs {
-    ab: SmallAbStepMatvecs {
+  let small_abc = SmallAbcStepMLEs {
+    ab: SmallAbStepMLEs {
       az_small,
       bz_small,
       field_positions: ab_field_positions.into_iter().collect(),
@@ -1360,8 +1294,8 @@ where
 
 #[cfg(debug_assertions)]
 fn debug_validate_regular_small_abc_cache<E>(
-  field: &FieldStepMatvecs<E>,
-  small_abc: &SmallAbcStepMatvecs<Vec<i64>, Vec<i64>>,
+  field: &FieldStepMLEs<E>,
+  small_abc: &SmallAbcStepMLEs<Vec<i64>, Vec<i64>>,
 ) where
   E: Engine,
   E::Scalar: SmallValueField<i64>,
@@ -1515,23 +1449,20 @@ fn debug_validate_regular_small_abc_cache<E>(
 }
 
 #[cfg(debug_assertions)]
-pub(crate) fn debug_validate_small_value_step_matvecs<E, SV, const L0: usize>(
-  step_matvecs: &SmallValueNeutronNovaStepMatvecs<E, SV, L0>,
+pub(crate) fn debug_validate_small_value_step_mles<E, SV, const L0: usize>(
+  step_mles: &SmallValueNeutronNovaStepMLEs<E, SV, L0>,
 ) where
   E: Engine,
   SV: SmallValue + Bounded + ToPrimitive,
   E::Scalar: SmallValueField<SV>,
 {
-  debug_validate_certified_small_abc_cache::<E, SV, L0>(
-    &step_matvecs.field,
-    &step_matvecs.small_abc,
-  );
+  debug_validate_certified_small_abc_cache::<E, SV, L0>(&step_mles.field, &step_mles.small_abc);
 }
 
 #[cfg(debug_assertions)]
 fn debug_validate_certified_small_abc_cache<E, SV, const L0: usize>(
-  field: &FieldStepMatvecs<E>,
-  small_abc: &SmallAbcStepMatvecs<
+  field: &FieldStepMLEs<E>,
+  small_abc: &SmallAbcStepMLEs<
     ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 2, L0>,
     ExtensionBoundedPoly<SV, <SV as WideMul>::Product, 1, L0>,
   >,
@@ -1669,19 +1600,19 @@ where
   E::Scalar: SmallValueEngine<SV> + Default,
 {
   type Input = ();
-  type StepMatvecs = SmallValueNeutronNovaStepMatvecs<E, SV, L0>;
+  type StepMLEs = SmallValueNeutronNovaStepMLEs<E, SV, L0>;
 
   fn is_small(_: &Self::Input) -> bool {
     true
   }
 
-  fn build_step_matvecs_from_field(
-    field_matvecs: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
+  fn build_step_mles_from_field(
+    field_mles: Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>,
     _input: &Self::Input,
-  ) -> Result<Self::StepMatvecs, SpartanError> {
-    let field = FieldStepMatvecs::from_triples(field_matvecs);
+  ) -> Result<Self::StepMLEs, SpartanError> {
+    let field = FieldStepMLEs::from_triples(field_mles);
     let small_abc = build_certified_small_abc_from_field::<E, SV, L0>(&field)?;
-    Ok(SmallValueNeutronNovaStepMatvecs { field, small_abc })
+    Ok(SmallValueNeutronNovaStepMLEs { field, small_abc })
   }
 
   #[allow(clippy::too_many_arguments)]
@@ -1690,7 +1621,7 @@ where
     ck: &CommitmentKey<E>,
     us: Vec<R1CSInstance<E>>,
     ws: Vec<R1CSWitness<E>>,
-    step_matvecs: Self::StepMatvecs,
+    step_mles: Self::StepMLEs,
     _nifs_input: &Self::Input,
     vc: &mut NeutronNovaVerifierCircuit<E>,
     vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
@@ -1699,16 +1630,7 @@ where
     transcript: &mut E::TE,
   ) -> Result<NeutronNovaNifsOutput<E>, SpartanError> {
     crate::small_neutronnova::prove::<E, SV, L0>(
-      s,
-      ck,
-      us,
-      ws,
-      &step_matvecs,
-      vc,
-      vc_state,
-      vc_shape,
-      vc_ck,
-      transcript,
+      s, ck, us, ws, &step_mles, vc, vc_state, vc_shape, vc_ck, transcript,
     )
   }
 }
@@ -1947,6 +1869,11 @@ where
 }
 
 /// Publish the final normalized step claim and consume the final verifier round.
+///
+/// During NIFS, `t_cur` tracks the folded sumcheck claim multiplied by the running equality factor
+/// `acc_eq = eq(rho_0..rho_{final_round - 1}, r_b)`. The verifier circuit expects the normalized
+/// step claim `T_out`, so this divides by `acc_eq`, stores both `T_out` and `acc_eq`, and then
+/// advances the multi-round verifier circuit transcript one final time.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn finalize_nifs_step_claim<E>(
   vc: &mut NeutronNovaVerifierCircuit<E>,
@@ -2165,7 +2092,45 @@ where
     )
 }
 
+fn compute_weighted_round_claims_with_pair_weights<E, C, ClaimFn>(
+  a_layers: &[Vec<E::Scalar>],
+  b_layers: &[Vec<E::Scalar>],
+  c_data: &[C],
+  pair_weights: &[E::Scalar],
+  claim_for_pair: ClaimFn,
+) -> Result<(E::Scalar, E::Scalar), SpartanError>
+where
+  E: Engine,
+  C: Sync,
+  ClaimFn: Fn(&[Vec<E::Scalar>], &[Vec<E::Scalar>], &[C]) -> (E::Scalar, E::Scalar) + Sync,
+{
+  if pair_weights.len() != a_layers.len() / 2 {
+    return Err(invalid_input(format!(
+      "pair weight count {} does not match layer pair count {}",
+      pair_weights.len(),
+      a_layers.len() / 2
+    )));
+  }
+
+  Ok(
+    a_layers
+      .par_chunks(2)
+      .zip(b_layers.par_chunks(2))
+      .zip(c_data.par_chunks(2))
+      .zip(pair_weights.par_iter())
+      .map(|(((pair_a, pair_b), pair_c), weight)| {
+        let (e0, quad_coeff) = claim_for_pair(pair_a, pair_b, pair_c);
+        (e0 * *weight, quad_coeff * *weight)
+      })
+      .reduce(
+        || (E::Scalar::ZERO, E::Scalar::ZERO),
+        |a, b| (a.0 + b.0, a.1 + b.1),
+      ),
+  )
+}
+
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn compute_ab_c_claim_round<E>(
   a_layers: &[Vec<E::Scalar>],
   b_layers: &[Vec<E::Scalar>],
@@ -2209,6 +2174,52 @@ where
       (e0, quad_coeff)
     },
   ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compute_ab_c_claim_round_with_pair_weights<E>(
+  a_layers: &[Vec<E::Scalar>],
+  b_layers: &[Vec<E::Scalar>],
+  c_claims: &[E::Scalar],
+  e_eq: &[E::Scalar],
+  left: usize,
+  right: usize,
+  rhos: &[E::Scalar],
+  round: usize,
+  pair_weights: &[E::Scalar],
+) -> Result<(E::Scalar, E::Scalar), SpartanError>
+where
+  E: Engine,
+  E::PCS: FoldingEngineTrait<E>,
+  E::Scalar: DelayedReduction<E::Scalar>,
+{
+  let shape = NifsRoundShape {
+    e_eq,
+    left,
+    right,
+    rhos,
+    round,
+  };
+  validate_scalar_c_round_inputs(shape, a_layers, b_layers, c_claims)?;
+
+  compute_weighted_round_claims_with_pair_weights::<E, _, _>(
+    a_layers,
+    b_layers,
+    c_claims,
+    pair_weights,
+    |pair_a, pair_b, pair_c| {
+      let (e0_ab, quad_coeff) = NeutronNovaNIFS::<E>::prove_helper_ab_only(
+        (left, right),
+        e_eq,
+        &pair_a[0],
+        &pair_b[0],
+        &pair_a[1],
+        &pair_b[1],
+      );
+      let e0 = e0_ab - pair_c[0];
+      (e0, quad_coeff)
+    },
+  )
 }
 
 #[cfg(test)]
@@ -2458,6 +2469,18 @@ fn fold_ab_c_claim_pairs_in_range<E>(
   }
 }
 
+/// Continue NeutronNova suffix rounds after C has been compressed to scalar claims.
+///
+/// This is used after a small-value or prefix-optimized phase has already materialized the current
+/// A/B suffix layers and computed `c_claims[i] = <e_eq, C_i>`. The helper proves the remaining
+/// instance-folding rounds by:
+/// - computing the next round claim from materialized A/B layers plus scalar C claims;
+/// - deriving each verifier challenge through the multi-round verifier circuit;
+/// - folding A/B layers and C claims with that challenge;
+/// - carrying `r_bs`, `t_cur`, and `acc_eq` forward for the final normalized step claim.
+///
+/// Rho suffix weights are carried and folded internally, avoiding repeated reconstruction of the
+/// same equality-weight table for each post-prefix round.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn continue_ab_suffix_with_c_claims<E>(
   a_layers: &mut Vec<Vec<E::Scalar>>,
@@ -2486,7 +2509,9 @@ where
     return Ok(());
   }
 
-  let (e0, quad_coeff) = compute_ab_c_claim_round::<E>(
+  let mut rho_suffix_weights = RhoSuffixWeights::new(rhos, start_round, a_layers.len())?;
+  let round_weights = rho_suffix_weights.fold_to_pair_weights()?;
+  let (e0, quad_coeff) = compute_ab_c_claim_round_with_pair_weights::<E>(
     a_layers,
     b_layers,
     c_claims,
@@ -2495,6 +2520,7 @@ where
     right,
     rhos,
     start_round,
+    round_weights,
   )?;
   let pending_r_b = finish_nifs_field_round(
     rhos,
@@ -2526,6 +2552,7 @@ where
     transcript,
     start_round + 1,
     pending_r_b,
+    rho_suffix_weights,
     r_bs,
     t_cur,
     acc_eq,
@@ -2533,7 +2560,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn continue_ab_suffix_with_c_claims_from_pending<E>(
+fn continue_ab_suffix_with_c_claims_from_pending<E>(
   a_layers: &mut Vec<Vec<E::Scalar>>,
   b_layers: &mut Vec<Vec<E::Scalar>>,
   c_claims: &mut Vec<E::Scalar>,
@@ -2548,6 +2575,7 @@ pub(crate) fn continue_ab_suffix_with_c_claims_from_pending<E>(
   transcript: &mut E::TE,
   start_round: usize,
   mut pending_r_b: E::Scalar,
+  mut rho_suffix_weights: RhoSuffixWeights<E::Scalar>,
   r_bs: &mut Vec<E::Scalar>,
   t_cur: &mut E::Scalar,
   acc_eq: &mut E::Scalar,
@@ -2574,6 +2602,16 @@ where
         "merged suffix round requires layer count divisible by 4",
       ));
     }
+    if rho_suffix_weights.weights.len() != fold_pairs {
+      return Err(invalid_input(format!(
+        "rho suffix weight count {} does not match folded layer count {} at round {}",
+        rho_suffix_weights.weights.len(),
+        fold_pairs,
+        round
+      )));
+    }
+
+    let round_weights = rho_suffix_weights.fold_to_pair_weights()?;
 
     let (a_head, _) = a_layers.split_at_mut(4 * prove_pairs);
     let (b_head, _) = b_layers.split_at_mut(4 * prove_pairs);
@@ -2598,7 +2636,7 @@ where
           &b_chunk[2],
         );
         let e0 = e0_ab - c_chunk[0];
-        let w = suffix_weight_full::<E::Scalar>(round, rhos.len(), pair_idx, rhos);
+        let w = round_weights[pair_idx];
         (e0 * w, quad_coeff * w)
       })
       .reduce(
@@ -2806,10 +2844,10 @@ impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
 /// A type that holds the pre-processed state for proving
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound(
-  serialize = "Nifs::StepMatvecs: Serialize, Nifs::Input: Serialize",
-  deserialize = "Nifs::StepMatvecs: Deserialize<'de>, Nifs::Input: Deserialize<'de>"
+  serialize = "Nifs::StepMLEs: Serialize, Nifs::Input: Serialize",
+  deserialize = "Nifs::StepMLEs: Deserialize<'de>, Nifs::Input: Deserialize<'de>"
 ))]
-pub struct NeutronNovaPrepZkSNARK<E, Nifs>
+pub struct NeutronNovaPrepZkSNARK<E, Nifs = NeutronNovaNIFS<E>>
 where
   E: Engine,
   E::PCS: FoldingEngineTrait<E>,
@@ -2818,9 +2856,9 @@ where
   ps_step: Vec<PrecommittedState<E>>,
   ps_core: PrecommittedState<E>,
   /// Cached strategy-specific Az/Bz/Cz layers for step circuits.
-  cached_step_matvecs: Option<Nifs::StepMatvecs>,
-  /// Public values used when computing cached_step_matvecs, for validation in prove.
-  /// Non-empty when the matvec cache is active; prove checks that step circuits produce the same values.
+  cached_step_mles: Option<Nifs::StepMLEs>,
+  /// Public values used when computing cached_step_mles, for validation in prove.
+  /// Non-empty when the MLE cache is active; prove checks that step circuits produce the same values.
   cached_step_public_values: Vec<Vec<E::Scalar>>,
   /// Backend input used to build this prep state.
   nifs_input: Nifs::Input,
@@ -2830,7 +2868,7 @@ where
 /// Holds the proof produced by the NeutronNova folding scheme followed by NeutronNova SNARK
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct NeutronNovaZkSNARK<E: Engine> {
+pub struct NeutronNovaZkSNARK<E: Engine, Nifs = NeutronNovaNIFS<E>> {
   /// Shared commitment stored once (same for all step instances and core).
   comm_W_shared: Option<Commitment<E>>,
   step_instances: Vec<SplitR1CSInstance<E>>,
@@ -2840,9 +2878,10 @@ pub struct NeutronNovaZkSNARK<E: Engine> {
   nifs: NovaNIFS<E>,
   random_U: RelaxedR1CSInstance<E>,
   relaxed_snark: crate::spartan_relaxed::RelaxedR1CSSpartanProof<E>,
+  _nifs: PhantomData<fn() -> Nifs>,
 }
 
-impl<E: Engine> NeutronNovaZkSNARK<E>
+impl<E: Engine, Nifs> NeutronNovaZkSNARK<E, Nifs>
 where
   E::PCS: FoldingEngineTrait<E>,
 {
@@ -2931,8 +2970,8 @@ where
     Ok((pk, vk))
   }
 
-  /// Prepares the pre-processed state for proving
-  pub fn prep_prove<C1, C2, Nifs>(
+  /// Prepares the pre-processed state for proving with this proof type's NIFS strategy.
+  pub fn prep_prove<C1, C2>(
     pk: &NeutronNovaProverKey<E>,
     step_circuits: &[C1],
     core_circuit: &C2,
@@ -2985,9 +3024,9 @@ where
     // Precompute full matrix-vector products for step circuits (deterministic).
     // Only valid when step circuits have no rest variables and no challenges,
     // meaning z = [shared_W, precommitted_W, 0..., 1, public_values] is fully known during prep.
-    let can_cache_matvec = pk.S_step.num_challenges == 0 && pk.S_step.num_rest_unpadded == 0;
+    let can_cache_mles = pk.S_step.num_challenges == 0 && pk.S_step.num_rest_unpadded == 0;
 
-    let (cached_step_matvecs, cached_step_public_values) = if can_cache_matvec {
+    let (cached_step_mles, cached_step_public_values) = if can_cache_mles {
       // Collect public values for each step circuit so we can validate in prove
       let step_public_values: Vec<Vec<E::Scalar>> = step_circuits
         .iter()
@@ -3012,12 +3051,12 @@ where
         z.extend_from_slice(public_values);
         z
       });
-      let step_matvecs = Nifs::build_step_matvecs_from_prepared_zs(&pk.S_step, zs, nifs_input)?;
-      info!(total = z_len, "cached_step_matvecs_built");
-      (Some(step_matvecs), step_public_values)
+      let step_mles = Nifs::build_step_mles_from_prepared_zs(&pk.S_step, zs, nifs_input)?;
+      info!(total = z_len, "cached_step_mles_built");
+      (Some(step_mles), step_public_values)
     } else {
       info!(
-        "Step circuit has rest_unpadded={} challenges={}, skipping matvec/i64 caching",
+        "Step circuit has rest_unpadded={} challenges={}, skipping MLE/i64 caching",
         pk.S_step.num_rest_unpadded, pk.S_step.num_challenges
       );
       (None, Vec::new())
@@ -3027,18 +3066,19 @@ where
     Ok(NeutronNovaPrepZkSNARK {
       ps_step,
       ps_core: ps,
-      cached_step_matvecs,
+      cached_step_mles,
       cached_step_public_values,
       nifs_input: nifs_input.clone(),
       _nifs: PhantomData,
     })
   }
 
-  /// Prove the folding of a batch of R1CS instances and a core circuit that connects them together.
+  /// Prove the folding of a batch of R1CS instances and a core circuit with this proof type's
+  /// NIFS strategy.
   /// Takes ownership of `prep_snark` to avoid cloning large witness vectors (~66MB).
-  /// Returns the proof and the consumed prep state. Cached step matvecs are one-shot:
+  /// Returns the proof and the consumed prep state. Cached step MLEs are one-shot:
   /// rerun `prep_prove` to rebuild the cache before proving again.
-  pub fn prove<C1, C2, Nifs>(
+  pub fn prove<C1, C2>(
     pk: &NeutronNovaProverKey<E>,
     step_circuits: &[C1],
     core_circuit: &C2,
@@ -3071,18 +3111,18 @@ where
     })?;
     info!(elapsed_ms = %rerandomize_t.elapsed().as_millis(), "rerandomize_prep_state");
 
-    // Validate that cached matvec matches current step circuit public values.
+    // Validate that cached MLE matches current step circuit public values.
     // The cache computed in prep_prove includes public_values in the z vector;
     // if the circuits changed, the cache is stale and would produce incorrect proofs.
     match (
-      prep_snark.cached_step_matvecs.is_some(),
+      prep_snark.cached_step_mles.is_some(),
       prep_snark.cached_step_public_values.is_empty(),
     ) {
       (true, false) => {
         if prep_snark.cached_step_public_values.len() != step_circuits.len() {
           return Err(SpartanError::InternalError {
             reason: format!(
-              "Cached matvec was computed for {} step circuits, but prove received {}",
+              "Cached MLE was computed for {} step circuits, but prove received {}",
               prep_snark.cached_step_public_values.len(),
               step_circuits.len()
             ),
@@ -3106,7 +3146,7 @@ where
       (false, false) => {
         return Err(SpartanError::InternalError {
           reason:
-            "Cached step matvecs were consumed by a previous prove; rerun prep_prove to rebuild them"
+            "Cached step MLEs were consumed by a previous prove; rerun prep_prove to rebuild them"
               .to_string(),
         });
       }
@@ -3212,9 +3252,9 @@ where
 
     // Perform ZK NIFS prove and collect outputs.
     let (_nifs_span, nifs_t) = start_span!("NIFS");
-    let step_matvecs = match prep_snark.cached_step_matvecs.take() {
+    let step_mles = match prep_snark.cached_step_mles.take() {
       Some(cached) => cached,
-      None => Nifs::build_step_matvecs(
+      None => Nifs::build_step_mles(
         &pk.S_step,
         &step_instances_regular,
         &step_witnesses,
@@ -3226,7 +3266,7 @@ where
       &pk.ck,
       step_instances_regular,
       step_witnesses,
-      step_matvecs,
+      step_mles,
       nifs_input,
       &mut vc,
       &mut vc_state,
@@ -3542,6 +3582,7 @@ where
       nifs,
       random_U,
       relaxed_snark,
+      _nifs: PhantomData,
     };
 
     info!(elapsed_ms = %prove_t.elapsed().as_millis(), "neutronnova_prove");
@@ -3965,13 +4006,13 @@ mod tests {
     C2: SpartanCircuit<E>,
     Nifs: NeutronNovaNifsStrategy<E>,
   {
-    let ps = NeutronNovaZkSNARK::<E>::prep_prove::<C1, C2, Nifs>(
+    let ps = NeutronNovaZkSNARK::<E, Nifs>::prep_prove::<C1, C2>(
       pk,
       step_circuits,
       core_circuit,
       nifs_input,
     )?;
-    let (snark, _ps) = NeutronNovaZkSNARK::<E>::prove::<C1, C2, Nifs>(
+    let (snark, _ps) = NeutronNovaZkSNARK::<E, Nifs>::prove::<C1, C2>(
       pk,
       step_circuits,
       core_circuit,
@@ -4013,6 +4054,100 @@ mod tests {
 
     let (public_values_step, _public_values_core) = res.unwrap();
     assert_eq!(public_values_step.len(), step_circuits.len());
+  }
+
+  #[test]
+  fn test_rho_suffix_weights_match_suffix_weight_full() -> Result<(), SpartanError> {
+    type E = T256HyraxEngine;
+    type F = <E as Engine>::Scalar;
+
+    for ell_b in 1..=6 {
+      let rhos = (0..ell_b)
+        .map(|i| F::from((i as u64) + 2))
+        .collect::<Vec<_>>();
+      for start_round in 0..ell_b {
+        let layer_count = 1usize << (ell_b - start_round);
+        let mut suffix_weights = RhoSuffixWeights::new(&rhos, start_round, layer_count)?;
+
+        for round in start_round..ell_b {
+          let round_weights = suffix_weights.fold_to_pair_weights()?.to_vec();
+          assert_eq!(round_weights.len(), 1usize << (ell_b - round - 1));
+          for (pair_idx, weight) in round_weights.iter().enumerate() {
+            assert_eq!(
+              *weight,
+              suffix_weight_full::<F>(round, ell_b, pair_idx, &rhos),
+              "weight mismatch for ell_b={ell_b}, start_round={start_round}, round={round}, pair={pair_idx}"
+            );
+          }
+        }
+      }
+    }
+
+    Ok(())
+  }
+
+  #[test]
+  fn test_scalar_c_suffix_claims_match_folded_rho_weights() -> Result<(), SpartanError> {
+    type E = T256HyraxEngine;
+    type F = <E as Engine>::Scalar;
+
+    let left = 4usize;
+    let right = 2usize;
+    let layer_len = left * right;
+    let e_eq = (0..left + right)
+      .map(|i| F::from((i as u64) + 3))
+      .collect::<Vec<_>>();
+
+    for ell_b in 1..=5 {
+      let rhos = (0..ell_b)
+        .map(|i| F::from((i as u64) + 11))
+        .collect::<Vec<_>>();
+      for round in 0..ell_b {
+        let layer_count = 1usize << (ell_b - round);
+        let a_layers = (0..layer_count)
+          .map(|layer| {
+            (0..layer_len)
+              .map(|k| F::from((layer * 17 + k + 1) as u64))
+              .collect::<Vec<_>>()
+          })
+          .collect::<Vec<_>>();
+        let b_layers = (0..layer_count)
+          .map(|layer| {
+            (0..layer_len)
+              .map(|k| F::from((layer * 19 + k + 5) as u64))
+              .collect::<Vec<_>>()
+          })
+          .collect::<Vec<_>>();
+        let c_claims = (0..layer_count)
+          .map(|layer| F::from((layer * 23 + 7) as u64))
+          .collect::<Vec<_>>();
+
+        let recomputed = compute_ab_c_claim_round::<E>(
+          &a_layers, &b_layers, &c_claims, &e_eq, left, right, &rhos, round,
+        )?;
+
+        let mut suffix_weights = RhoSuffixWeights::new(&rhos, round, layer_count)?;
+        let round_weights = suffix_weights.fold_to_pair_weights()?;
+        let folded = compute_ab_c_claim_round_with_pair_weights::<E>(
+          &a_layers,
+          &b_layers,
+          &c_claims,
+          &e_eq,
+          left,
+          right,
+          &rhos,
+          round,
+          round_weights,
+        )?;
+
+        assert_eq!(
+          folded, recomputed,
+          "claim mismatch for ell_b={ell_b}, round={round}"
+        );
+      }
+    }
+
+    Ok(())
   }
 
   #[test]
@@ -4079,20 +4214,22 @@ mod tests {
   }
 
   #[test]
-  fn test_prep_prove_stores_nifs_input_when_matvec_cache_skipped() -> Result<(), SpartanError> {
+  fn test_prep_prove_stores_nifs_input_when_mle_cache_skipped() -> Result<(), SpartanError> {
     type E = T256HyraxEngine;
     const NUM_CIRCUITS: usize = 2;
     const LEN: usize = 32;
     const SMALL_VALUE_L0: usize = 3;
 
     let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<
-      _,
-      _,
-      SmallValueNeutronNovaNIFS<E, i64, SMALL_VALUE_L0>,
-    >(&pk, &circuits, &circuits[0], &())?;
+    let prep =
+      NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, SMALL_VALUE_L0>>::prep_prove::<_, _>(
+        &pk,
+        &circuits,
+        &circuits[0],
+        &(),
+      )?;
 
-    assert!(prep.cached_step_matvecs.is_none());
+    assert!(prep.cached_step_mles.is_none());
     assert_eq!(prep.nifs_input, ());
 
     Ok(())
@@ -4118,22 +4255,18 @@ mod tests {
     };
 
     let nifs_input = false;
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
-      &pk,
-      &step_circuits,
-      &core_circuit,
-      &nifs_input,
-    )?;
+    let prep =
+      NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(&pk, &step_circuits, &core_circuit, &nifs_input)?;
     let cached = prep
-      .cached_step_matvecs
+      .cached_step_mles
       .as_ref()
-      .expect("cacheable circuit should produce cached matvecs");
+      .expect("cacheable circuit should produce cached MLEs");
     assert!(cached.small_abc.is_none());
     assert_eq!(cached.field.az.len(), NUM_CIRCUITS);
     assert_eq!(cached.field.bz.len(), NUM_CIRCUITS);
     assert_eq!(cached.field.cz.len(), NUM_CIRCUITS);
 
-    let (snark, _prep) = NeutronNovaZkSNARK::<E>::prove::<_, _, NeutronNovaNIFS<E>>(
+    let (snark, _prep) = NeutronNovaZkSNARK::<E>::prove::<_, _>(
       &pk,
       &step_circuits,
       &core_circuit,
@@ -4166,20 +4299,16 @@ mod tests {
     };
 
     let nifs_input = true;
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
-      &pk,
-      &step_circuits,
-      &core_circuit,
-      &nifs_input,
-    )?;
+    let prep =
+      NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(&pk, &step_circuits, &core_circuit, &nifs_input)?;
     let cached = prep
-      .cached_step_matvecs
+      .cached_step_mles
       .as_ref()
-      .expect("cacheable circuit should produce cached matvecs");
+      .expect("cacheable circuit should produce cached MLEs");
     let small_abc = cached
       .small_abc
       .as_ref()
-      .expect("regular true should build small A/B/C matvecs");
+      .expect("regular true should build small A/B/C MLEs");
 
     assert_eq!(small_abc.ab.az_small.len(), NUM_CIRCUITS);
     assert_eq!(small_abc.ab.bz_small.len(), NUM_CIRCUITS);
@@ -4209,28 +4338,28 @@ mod tests {
     };
     let nifs_input = ();
 
-    let cached_prep = NeutronNovaZkSNARK::<E>::prep_prove::<
+    let cached_prep = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<
       _,
       _,
-      SmallValueNeutronNovaNIFS<E, i64, L0>,
     >(&pk, &step_circuits, &core_circuit, &nifs_input)?;
-    assert!(cached_prep.cached_step_matvecs.is_some());
+    assert!(cached_prep.cached_step_mles.is_some());
 
-    let mut uncached_prep = NeutronNovaZkSNARK::<E>::prep_prove::<
-      _,
-      _,
-      SmallValueNeutronNovaNIFS<E, i64, L0>,
-    >(&pk, &step_circuits, &core_circuit, &nifs_input)?;
-    assert!(uncached_prep.cached_step_matvecs.take().is_some());
+    let mut uncached_prep =
+      NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<_, _>(
+        &pk,
+        &step_circuits,
+        &core_circuit,
+        &nifs_input,
+      )?;
+    assert!(uncached_prep.cached_step_mles.take().is_some());
     uncached_prep.cached_step_public_values.clear();
 
-    let (cached_snark, _) = NeutronNovaZkSNARK::<E>::prove::<
+    let (cached_snark, _) = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prove::<
       _,
       _,
-      SmallValueNeutronNovaNIFS<E, i64, L0>,
     >(&pk, &step_circuits, &core_circuit, cached_prep, &nifs_input)?;
     let (uncached_snark, _) =
-      NeutronNovaZkSNARK::<E>::prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, L0>>(
+      NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prove::<_, _>(
         &pk,
         &step_circuits,
         &core_circuit,
@@ -4293,8 +4422,8 @@ mod tests {
     let (_field_e0, field_quad) =
       compute_field_round_claim::<E>(&az, &bz, &cz, &e, left, right, &rhos, 0)?;
 
-    let mut az_small = vec![vec![1, 2, 3, 4], vec![2, 4, 6, 8]];
-    let mut bz_small = vec![vec![5, 6, 7, 8], vec![3, 6, 9, 12]];
+    let mut az_small = [vec![1, 2, 3, 4], vec![2, 4, 6, 8]];
+    let mut bz_small = [vec![5, 6, 7, 8], vec![3, 6, 9, 12]];
     let large_positions = vec![2usize];
     for layer in az_small.iter_mut().chain(bz_small.iter_mut()) {
       layer[2] = 0;
@@ -4395,7 +4524,7 @@ mod tests {
   }
 
   #[test]
-  fn test_cached_step_matvecs_are_one_shot() -> Result<(), SpartanError> {
+  fn test_cached_step_mles_are_one_shot() -> Result<(), SpartanError> {
     type E = T256HyraxEngine;
     const NUM_CIRCUITS: usize = 2;
 
@@ -4414,25 +4543,21 @@ mod tests {
     };
 
     let nifs_input = true;
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
-      &pk,
-      &step_circuits,
-      &core_circuit,
-      &nifs_input,
-    )?;
-    assert!(prep.cached_step_matvecs.is_some());
+    let prep =
+      NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(&pk, &step_circuits, &core_circuit, &nifs_input)?;
+    assert!(prep.cached_step_mles.is_some());
 
-    let (_snark, consumed_prep) = NeutronNovaZkSNARK::<E>::prove::<_, _, NeutronNovaNIFS<E>>(
+    let (_snark, consumed_prep) = NeutronNovaZkSNARK::<E>::prove::<_, _>(
       &pk,
       &step_circuits,
       &core_circuit,
       prep,
       &nifs_input,
     )?;
-    assert!(consumed_prep.cached_step_matvecs.is_none());
+    assert!(consumed_prep.cached_step_mles.is_none());
     assert!(!consumed_prep.cached_step_public_values.is_empty());
 
-    let err = NeutronNovaZkSNARK::<E>::prove::<_, _, NeutronNovaNIFS<E>>(
+    let err = NeutronNovaZkSNARK::<E>::prove::<_, _>(
       &pk,
       &step_circuits,
       &core_circuit,
@@ -4458,13 +4583,13 @@ mod tests {
 
     let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
     let nifs_input = ();
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, 0>>(
+    let prep = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, 0>>::prep_prove::<_, _>(
       &pk,
       &circuits,
       &circuits[0],
       &nifs_input,
     )?;
-    let err = NeutronNovaZkSNARK::<E>::prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, 0>>(
+    let err = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, 0>>::prove::<_, _>(
       &pk,
       &circuits,
       &circuits[0],
@@ -4491,20 +4616,11 @@ mod tests {
     let (pk, _vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
     let prep_input = true;
     let prove_input = false;
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, NeutronNovaNIFS<E>>(
-      &pk,
-      &circuits,
-      &circuits[0],
-      &prep_input,
-    )?;
-    let err = NeutronNovaZkSNARK::<E>::prove::<_, _, NeutronNovaNIFS<E>>(
-      &pk,
-      &circuits,
-      &circuits[0],
-      prep,
-      &prove_input,
-    )
-    .expect_err("prove should reject a different NIFS input than prep_prove used");
+    let prep =
+      NeutronNovaZkSNARK::<E>::prep_prove::<_, _>(&pk, &circuits, &circuits[0], &prep_input)?;
+    let err =
+      NeutronNovaZkSNARK::<E>::prove::<_, _>(&pk, &circuits, &circuits[0], prep, &prove_input)
+        .expect_err("prove should reject a different NIFS input than prep_prove used");
 
     assert!(matches!(
       err,
@@ -4524,19 +4640,18 @@ mod tests {
 
     let (pk, vk, circuits) = generate_sha_r1cs::<E>(NUM_CIRCUITS, LEN);
     let nifs_input = ();
-    let prep = NeutronNovaZkSNARK::<E>::prep_prove::<_, _, SmallValueNeutronNovaNIFS<E, i64, L0>>(
+    let prep = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prep_prove::<_, _>(
       &pk,
       &circuits,
       &circuits[0],
       &nifs_input,
     )?;
     assert_eq!(prep.nifs_input, ());
-    assert!(prep.cached_step_matvecs.is_none());
+    assert!(prep.cached_step_mles.is_none());
 
-    let (snark, _prep) = NeutronNovaZkSNARK::<E>::prove::<
+    let (snark, _prep) = NeutronNovaZkSNARK::<E, SmallValueNeutronNovaNIFS<E, i64, L0>>::prove::<
       _,
       _,
-      SmallValueNeutronNovaNIFS<E, i64, L0>,
     >(&pk, &circuits, &circuits[0], prep, &nifs_input)?;
     let (step_public, _core_public) = snark.verify(&vk, NUM_CIRCUITS)?;
     assert_eq!(step_public.len(), NUM_CIRCUITS);

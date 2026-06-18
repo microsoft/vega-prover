@@ -367,13 +367,18 @@ where
 
   for field in fields {
     for value in values {
-      use super::small_value_conversion;
-
       let mut acc = <F as DelayedReduction<i32>>::Accumulator::default();
       <F as DelayedReduction<i32>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
 
       let result = <F as DelayedReduction<i32>>::reduce(&acc);
-      let expected = field * small_value_conversion::i32_to_field::<F>(value);
+      let expected = field * {
+        let value = value as i64;
+        if value >= 0 {
+        <F>::from(value as u64)
+      } else {
+        -<F>::from(value.wrapping_neg() as u64)
+      }
+    };
 
       assert_eq!(
         result, expected,
@@ -385,10 +390,8 @@ where
   let mut acc = <F as DelayedReduction<i32>>::Accumulator::default();
   let mut expected = F::ZERO;
   for (field, value) in fields.into_iter().zip([i32::MIN, i32::MAX, i32::MIN]) {
-    use super::small_value_conversion;
-
     <F as DelayedReduction<i32>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
-    expected += field * small_value_conversion::i32_to_field::<F>(value);
+    expected += field * crate::lagrange_accumulator::i32_to_field::<F>(value);
   }
 
   let result = <F as DelayedReduction<i32>>::reduce(&acc);
@@ -413,7 +416,7 @@ where
       <F as DelayedReduction<i64>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
 
       let result = <F as DelayedReduction<i64>>::reduce(&acc);
-      let expected = field * super::small_value_conversion::i64_to_field::<F>(value);
+      let expected = field * crate::lagrange_accumulator::i64_to_field::<F>(value);
 
       assert_eq!(
         result, expected,
@@ -425,10 +428,8 @@ where
   let mut acc = <F as DelayedReduction<i64>>::Accumulator::default();
   let mut expected = F::ZERO;
   for (field, value) in fields.into_iter().zip([i64::MIN, i64::MAX, i64::MIN]) {
-    use super::small_value_conversion;
-
     <F as DelayedReduction<i64>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
-    expected += field * small_value_conversion::i64_to_field::<F>(value);
+    expected += field * crate::lagrange_accumulator::i64_to_field::<F>(value);
   }
 
   let result = <F as DelayedReduction<i64>>::reduce(&acc);
@@ -449,13 +450,11 @@ where
 
   for field in fields {
     for value in values {
-      use super::small_value_conversion;
-
       let mut acc = <F as DelayedReduction<i128>>::Accumulator::default();
       <F as DelayedReduction<i128>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
 
       let result = <F as DelayedReduction<i128>>::reduce(&acc);
-      let expected = field * small_value_conversion::i128_to_field::<F>(value);
+      let expected = field * crate::lagrange_accumulator::i128_to_field::<F>(value);
 
       assert_eq!(
         result, expected,
@@ -467,10 +466,8 @@ where
   let mut acc = <F as DelayedReduction<i128>>::Accumulator::default();
   let mut expected = F::ZERO;
   for (field, value) in fields.into_iter().zip([i128::MIN, i128::MAX, i128::MIN]) {
-    use super::small_value_conversion;
-
     <F as DelayedReduction<i128>>::unreduced_multiply_accumulate(&mut acc, &field, &value);
-    expected += field * small_value_conversion::i128_to_field::<F>(value);
+    expected += field * crate::lagrange_accumulator::i128_to_field::<F>(value);
   }
 
   let result = <F as DelayedReduction<i128>>::reduce(&acc);
@@ -503,7 +500,7 @@ macro_rules! test_delayed_reduction_small {
       #[test]
       fn delayed_reduction_i32() {
         $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i32>(
-          $crate::big_num::small_value_conversion::i32_to_field::<$field>,
+          $crate::lagrange_accumulator::i32_to_field::<$field>,
         );
         $crate::big_num::delayed_reduction::test_delayed_reduction_i32_boundaries_impl::<$field>();
       }
@@ -511,7 +508,7 @@ macro_rules! test_delayed_reduction_small {
       #[test]
       fn delayed_reduction_i64() {
         $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i64>(
-          $crate::big_num::small_value_conversion::i64_to_field::<$field>,
+          $crate::lagrange_accumulator::i64_to_field::<$field>,
         );
         $crate::big_num::delayed_reduction::test_delayed_reduction_i64_boundaries_impl::<$field>();
       }
@@ -519,7 +516,7 @@ macro_rules! test_delayed_reduction_small {
       #[test]
       fn delayed_reduction_i128() {
         $crate::big_num::delayed_reduction::test_delayed_reduction_small_impl::<$field, i128>(
-          $crate::big_num::small_value_conversion::i128_to_field::<$field>,
+          $crate::lagrange_accumulator::i128_to_field::<$field>,
         );
         $crate::big_num::delayed_reduction::test_delayed_reduction_i128_boundaries_impl::<$field>();
       }
