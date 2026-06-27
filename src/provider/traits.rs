@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Provides traits and extensions for groups, discrete logarithm operations, and homomorphic commitments.
 //!
@@ -22,7 +22,7 @@
 //! These traits and macros provide a consistent interface for elliptic curve operations
 //! and other algebraic structures used throughout the Spartan proof system.
 use crate::{
-  errors::SpartanError,
+  errors::VegaError,
   traits::{Group, transcript::TranscriptReprTrait},
 };
 use core::{
@@ -121,13 +121,13 @@ pub trait DlogGroupExt: DlogGroup {
     scalars: &[Self::Scalar],
     bases: &[Self::AffineGroupElement],
     use_parallelism_internally: bool,
-  ) -> Result<Self, SpartanError>;
+  ) -> Result<Self, VegaError>;
 
   /// A method to compute a batch of multiexponentations
   fn batch_vartime_multiscalar_mul(
     scalars: &[Vec<Self::Scalar>],
     bases: &[Self::AffineGroupElement],
-  ) -> Result<Vec<Self>, SpartanError> {
+  ) -> Result<Vec<Self>, VegaError> {
     scalars
       .par_iter()
       .map(|scalar| Self::vartime_multiscalar_mul(scalar, &bases[..scalar.len()], false))
@@ -139,13 +139,13 @@ pub trait DlogGroupExt: DlogGroup {
     scalars: &[T],
     bases: &[Self::AffineGroupElement],
     use_parallelism_internally: bool,
-  ) -> Result<Self, SpartanError>;
+  ) -> Result<Self, VegaError>;
 
   /// A method to compute a batch of multiexponentations with small scalars
   fn batch_vartime_multiscalar_mul_small<T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
     scalars: &[Vec<T>],
     bases: &[Self::AffineGroupElement],
-  ) -> Result<Vec<Self>, SpartanError> {
+  ) -> Result<Vec<Self>, VegaError> {
     scalars
       .par_iter()
       .map(|scalar| Self::vartime_multiscalar_mul_small(scalar, &bases[..scalar.len()], false))
@@ -158,7 +158,7 @@ pub trait DlogGroupExt: DlogGroup {
   fn vartime_multiscalar_mul_shared_weights(
     scalars: &[Self::Scalar],
     bases_rows: &[&[Self::AffineGroupElement]],
-  ) -> Result<Vec<Self>, SpartanError>;
+  ) -> Result<Vec<Self>, VegaError>;
 }
 
 /// Implements Spartan's traits except DlogGroupExt so that the MSM can be implemented differently
@@ -329,7 +329,7 @@ macro_rules! impl_traits {
         scalars: &[Self::Scalar],
         bases: &[Self::AffineGroupElement],
         use_parallelism_internally: bool,
-      ) -> Result<Self, $crate::errors::SpartanError> {
+      ) -> Result<Self, $crate::errors::VegaError> {
         msm(scalars, bases, use_parallelism_internally)
       }
 
@@ -337,14 +337,14 @@ macro_rules! impl_traits {
         scalars: &[T],
         bases: &[Self::AffineGroupElement],
         use_parallelism_internally: bool,
-      ) -> Result<Self, $crate::errors::SpartanError> {
+      ) -> Result<Self, $crate::errors::VegaError> {
         msm_small(scalars, bases, use_parallelism_internally)
       }
 
       fn vartime_multiscalar_mul_shared_weights(
         scalars: &[Self::Scalar],
         bases_rows: &[&[Self::AffineGroupElement]],
-      ) -> Result<Vec<Self>, $crate::errors::SpartanError> {
+      ) -> Result<Vec<Self>, $crate::errors::VegaError> {
         msm_shared_weights(scalars, bases_rows)
       }
     }

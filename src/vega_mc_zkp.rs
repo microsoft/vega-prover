@@ -1,22 +1,15 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
-//! This module implements NeutronNova's folding scheme for folding together a batch of R1CS instances
-//! This implementation focuses on a non-recursive version of NeutronNova and targets the case where the batch size is moderately large.
-//! Since we are in the non-recursive setting, we simply fold a batch of instances into one (all at once, via multi-folding)
-//! and then use Spartan to prove that folded instance.
-//! The proof system implemented here provides zero-knowledge via Nova's folding scheme.
+//! Zero-knowledge multi-circuit (MC) prover using NeutronNova folding (https://eprint.iacr.org/2024/1606), proved with the single-circuit prover.
 use crate::start_span;
 use crate::{
   Commitment, CommitmentKey, DEFAULT_COMMITMENT_WIDTH, VerifierKey,
   bellpepper::{
-    r1cs::{
-      MultiRoundSpartanShape, MultiRoundSpartanWitness, PrecommittedState, SpartanShape,
-      SpartanWitness,
-    },
+    r1cs::{MultiRoundVegaShape, MultiRoundVegaWitness, PrecommittedState, VegaShape, VegaWitness},
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
   },
@@ -26,7 +19,7 @@ use crate::{
     small_value::{SmallAccumulator, to_small_vec_or_zero},
   },
   digest::DigestComputer,
-  errors::SpartanError,
+  errors::VegaError,
   math::Math,
   nifs::NovaNIFS,
   polys::{
@@ -42,12 +35,12 @@ use crate::{
   sumcheck::SumcheckProof,
   traits::{
     Engine,
-    circuit::SpartanCircuit,
+    circuit::VegaCircuit,
     pcs::{FoldingEngineTrait, PCSEngineTrait},
-    snark::{DigestHelperTrait, SpartanDigest},
+    snark::{DigestHelperTrait, VegaDigest},
     transcript::TranscriptEngineTrait,
   },
-  zk::NeutronNovaVerifierCircuit,
+  zk::VegaMcVerifierCircuit,
 };
 use ff::Field;
 use once_cell::sync::OnceCell;
@@ -69,7 +62,7 @@ fn compute_tensor_decomp(n: usize) -> (usize, usize, usize) {
 /// A type that holds the NeutronNova NIFS (Non-Interactive Folding Scheme)
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct NeutronNovaNIFS<E: Engine> {
+pub struct VegaMcNIFS<E: Engine> {
   polys: Vec<UniPoly<E::Scalar>>,
 }
 
@@ -86,7 +79,7 @@ fn suffix_weight_full<F: Field>(t: usize, ell_b: usize, pair_idx: usize, rhos: &
   w
 }
 
-impl<E: Engine> NeutronNovaNIFS<E>
+impl<E: Engine> VegaMcNIFS<E>
 where
   E::PCS: FoldingEngineTrait<E>,
 {
@@ -516,8 +509,8 @@ where
     cached_matvec: Option<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>>,
     cached_i64: Option<Vec<(Vec<i64>, Vec<i64>, Vec<i64>)>>,
     large_positions: &[usize],
-    vc: &mut NeutronNovaVerifierCircuit<E>,
-    vc_state: &mut <SatisfyingAssignment<E> as MultiRoundSpartanWitness<E>>::MultiRoundState,
+    vc: &mut VegaMcVerifierCircuit<E>,
+    vc_state: &mut <SatisfyingAssignment<E> as MultiRoundVegaWitness<E>>::MultiRoundState,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
     vc_ck: &CommitmentKey<E>,
     transcript: &mut E::TE,
@@ -530,7 +523,7 @@ where
       R1CSWitness<E>,  // final folded witness
       R1CSInstance<E>, // final folded instance
     ),
-    SpartanError,
+    VegaError,
   > {
     // Determine padding and NIFS rounds
     let n = Us.len();
@@ -708,7 +701,7 @@ where
         let c = $e0 * acc_eq;
         let a = $quad_coeff * acc_eq;
         let rho_t_inv: Option<E::Scalar> = rho_t.invert().into();
-        let a_b_c = (T_cur - c * one_minus_rho) * rho_t_inv.ok_or(SpartanError::DivisionByZero)?;
+        let a_b_c = (T_cur - c * one_minus_rho) * rho_t_inv.ok_or(VegaError::DivisionByZero)?;
         let b = a_b_c - a - c;
         let new_a = a * two_rho_minus_one;
         let new_b = b * two_rho_minus_one + a * one_minus_rho;
@@ -1205,7 +1198,7 @@ where
     }
     // T_out = poly_last(r_last) / eq(r_b, rho)
     let acc_eq_inv: Option<E::Scalar> = acc_eq.invert().into();
-    let T_out = T_cur * acc_eq_inv.ok_or(SpartanError::DivisionByZero)?;
+    let T_out = T_cur * acc_eq_inv.ok_or(VegaError::DivisionByZero)?;
     vc.t_out_step = T_out;
     vc.eq_rho_at_rb = acc_eq;
     let _ =
@@ -1276,11 +1269,11 @@ where
 /// A type that represents the prover's key
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct NeutronNovaProverKey<E: Engine> {
+pub struct VegaMcProverKey<E: Engine> {
   ck: CommitmentKey<E>,
   S_step: SplitR1CSShape<E>,
   S_core: SplitR1CSShape<E>,
-  vk_digest: SpartanDigest, // digest of the verifier's key
+  vk_digest: VegaDigest, // digest of the verifier's key
   vc_shape: SplitMultiRoundR1CSShape<E>,
   vc_shape_regular: R1CSShape<E>,
   vc_ck: CommitmentKey<E>,
@@ -1289,7 +1282,7 @@ pub struct NeutronNovaProverKey<E: Engine> {
 /// A type that represents the verifier's key
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct NeutronNovaVerifierKey<E: Engine> {
+pub struct VegaMcVerifierKey<E: Engine> {
   ck: CommitmentKey<E>,
   vk_ee: <E::PCS as PCSEngineTrait<E>>::VerifierKey,
   S_step: SplitR1CSShape<E>,
@@ -1299,10 +1292,10 @@ pub struct NeutronNovaVerifierKey<E: Engine> {
   vc_ck: CommitmentKey<E>,
   vc_vk: VerifierKey<E>,
   #[serde(skip, default = "OnceCell::new")]
-  digest: OnceCell<SpartanDigest>,
+  digest: OnceCell<VegaDigest>,
 }
 
-impl<E: Engine> crate::digest::Digestible for NeutronNovaVerifierKey<E> {
+impl<E: Engine> crate::digest::Digestible for VegaMcVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
     use bincode::Options;
     let config = bincode::DefaultOptions::new()
@@ -1334,9 +1327,9 @@ impl<E: Engine> crate::digest::Digestible for NeutronNovaVerifierKey<E> {
   }
 }
 
-impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
+impl<E: Engine> DigestHelperTrait<E> for VegaMcVerifierKey<E> {
   /// Returns the digest of the verifier's key.
-  fn digest(&self) -> Result<SpartanDigest, SpartanError> {
+  fn digest(&self) -> Result<VegaDigest, VegaError> {
     self
       .digest
       .get_or_try_init(|| {
@@ -1344,8 +1337,8 @@ impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
         dc.digest()
       })
       .cloned()
-      .map_err(|_| SpartanError::DigestError {
-        reason: "Unable to compute digest for SpartanVerifierKey".to_string(),
+      .map_err(|_| VegaError::DigestError {
+        reason: "Unable to compute digest for VegaVerifierKey".to_string(),
       })
   }
 }
@@ -1353,7 +1346,7 @@ impl<E: Engine> DigestHelperTrait<E> for NeutronNovaVerifierKey<E> {
 /// A type that holds the pre-processed state for proving
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct NeutronNovaPrepZkSNARK<E: Engine> {
+pub struct VegaMcPrepZkSNARK<E: Engine> {
   ps_step: Vec<PrecommittedState<E>>,
   ps_core: PrecommittedState<E>,
   /// Cached partial matrix-vector products for shared+precommitted columns per step circuit (deterministic).
@@ -1369,10 +1362,10 @@ pub struct NeutronNovaPrepZkSNARK<E: Engine> {
   cached_step_public_values: Vec<Vec<E::Scalar>>,
 }
 
-/// Holds the proof produced by the NeutronNova folding scheme followed by NeutronNova SNARK
+/// Holds the zero-knowledge proof produced by the NeutronNova folding scheme followed by NeutronNova SNARK
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct NeutronNovaZkSNARK<E: Engine> {
+pub struct VegaMcZkSNARK<E: Engine> {
   /// Shared commitment stored once (same for all step instances and core).
   comm_W_shared: Option<Commitment<E>>,
   step_instances: Vec<SplitR1CSInstance<E>>,
@@ -1384,7 +1377,7 @@ pub struct NeutronNovaZkSNARK<E: Engine> {
   relaxed_snark: crate::spartan_relaxed::RelaxedR1CSSpartanProof<E>,
 }
 
-impl<E: Engine> NeutronNovaZkSNARK<E>
+impl<E: Engine> VegaMcZkSNARK<E>
 where
   E::PCS: FoldingEngineTrait<E>,
 {
@@ -1394,11 +1387,11 @@ where
   /// - `step_circuit`: The circuit to be folded in the batch
   /// - `core_circuit`: The core circuit that connects the batch together
   /// - `num_steps`: The number of step circuits in the batch (will be padded to next power of two internally)
-  pub fn setup<C1: SpartanCircuit<E>, C2: SpartanCircuit<E>>(
+  pub fn setup<C1: VegaCircuit<E>, C2: VegaCircuit<E>>(
     step_circuit: &C1,
     core_circuit: &C2,
     num_steps: usize,
-  ) -> Result<(NeutronNovaProverKey<E>, NeutronNovaVerifierKey<E>), SpartanError> {
+  ) -> Result<(VegaMcProverKey<E>, VegaMcVerifierKey<E>), VegaError> {
     let (_setup_span, setup_t) = start_span!("neutronnova_setup");
 
     let (_r1cs_span, r1cs_t) = start_span!("r1cs_shape_generation");
@@ -1434,14 +1427,14 @@ where
     let num_vars = S_step.num_shared + S_step.num_precommitted + S_step.num_rest;
     let num_rounds_x = usize::try_from(S_step.num_cons.ilog2()).unwrap();
     let num_rounds_y = usize::try_from(num_vars.ilog2()).unwrap() + 1;
-    let vc = NeutronNovaVerifierCircuit::<E>::default(num_rounds_b, num_rounds_x, num_rounds_y, 32);
+    let vc = VegaMcVerifierCircuit::<E>::default(num_rounds_b, num_rounds_x, num_rounds_y, 32);
     let (vc_shape, vc_ck, vc_vk) =
-      <ShapeCS<E> as MultiRoundSpartanShape<E>>::multiround_r1cs_shape(&vc)?;
+      <ShapeCS<E> as MultiRoundVegaShape<E>>::multiround_r1cs_shape(&vc)?;
     let vc_shape_regular = vc_shape.to_regular_shape();
     info!(elapsed_ms = %vc_t.elapsed().as_millis(), "verifier_circuit_setup");
     // Eagerly init FixedBaseMul table before cloning so both pk/vk get it
     E::PCS::precompute_ck(&vc_ck);
-    let vk: NeutronNovaVerifierKey<E> = NeutronNovaVerifierKey {
+    let vk: VegaMcVerifierKey<E> = VegaMcVerifierKey {
       ck: ck.clone(),
       S_step: S_step.clone(),
       S_core: S_core.clone(),
@@ -1454,7 +1447,7 @@ where
     };
 
     let vk_digest = vk.digest()?;
-    let pk = NeutronNovaProverKey {
+    let pk = VegaMcProverKey {
       ck,
       S_step,
       S_core,
@@ -1474,12 +1467,12 @@ where
   }
 
   /// Prepares the pre-processed state for proving
-  pub fn prep_prove<C1: SpartanCircuit<E>, C2: SpartanCircuit<E>>(
-    pk: &NeutronNovaProverKey<E>,
+  pub fn prep_prove<C1: VegaCircuit<E>, C2: VegaCircuit<E>>(
+    pk: &VegaMcProverKey<E>,
     step_circuits: &[C1],
     core_circuit: &C2,
     is_small: bool, // do witness elements fit in machine words?
-  ) -> Result<NeutronNovaPrepZkSNARK<E>, SpartanError> {
+  ) -> Result<VegaMcPrepZkSNARK<E>, VegaError> {
     let (_prep_span, prep_t) = start_span!("neutronnova_prep_prove");
 
     // we synthesize shared witness for the first circuit; every other circuit including the core circuit shares this witness
@@ -1529,7 +1522,7 @@ where
         let step_public_values: Vec<Vec<E::Scalar>> = step_circuits
           .iter()
           .map(|c| {
-            c.public_values().map_err(|e| SpartanError::SynthesisError {
+            c.public_values().map_err(|e| VegaError::SynthesisError {
               reason: format!("Circuit does not provide public IO: {e}"),
             })
           })
@@ -1592,7 +1585,7 @@ where
       };
 
     info!(elapsed_ms = %prep_t.elapsed().as_millis(), "neutronnova_prep_prove");
-    Ok(NeutronNovaPrepZkSNARK {
+    Ok(VegaMcPrepZkSNARK {
       ps_step,
       ps_core: ps,
       cached_step_matvec,
@@ -1606,13 +1599,13 @@ where
   /// Takes ownership of `prep_snark` to avoid cloning large witness vectors (~66MB).
   /// Returns the proof and the (consumed) prep state, which can be passed to prove again
   /// after re-running prep_prove or simply re-rerandomized.
-  pub fn prove<C1: SpartanCircuit<E>, C2: SpartanCircuit<E>>(
-    pk: &NeutronNovaProverKey<E>,
+  pub fn prove<C1: VegaCircuit<E>, C2: VegaCircuit<E>>(
+    pk: &VegaMcProverKey<E>,
     step_circuits: &[C1],
     core_circuit: &C2,
-    mut prep_snark: NeutronNovaPrepZkSNARK<E>,
+    mut prep_snark: VegaMcPrepZkSNARK<E>,
     is_small: bool, // do witness elements fit in machine words?
-  ) -> Result<(Self, NeutronNovaPrepZkSNARK<E>), SpartanError> {
+  ) -> Result<(Self, VegaMcPrepZkSNARK<E>), VegaError> {
     let (_prove_span, prove_t) = start_span!("neutronnova_prove");
 
     // rerandomize prep state in-place (we own it, no clone needed)
@@ -1632,7 +1625,7 @@ where
     // if the circuits changed, the cache is stale and would produce incorrect proofs.
     if !prep_snark.cached_step_public_values.is_empty() {
       if prep_snark.cached_step_public_values.len() != step_circuits.len() {
-        return Err(SpartanError::InternalError {
+        return Err(VegaError::InternalError {
           reason: format!(
             "Cached matvec was computed for {} step circuits, but prove received {}",
             prep_snark.cached_step_public_values.len(),
@@ -1643,11 +1636,11 @@ where
       for (i, circuit) in step_circuits.iter().enumerate() {
         let current_pv = circuit
           .public_values()
-          .map_err(|e| SpartanError::SynthesisError {
+          .map_err(|e| VegaError::SynthesisError {
             reason: format!("Circuit does not provide public IO: {e}"),
           })?;
         if prep_snark.cached_step_public_values[i] != current_pv {
-          return Err(SpartanError::InternalError {
+          return Err(VegaError::InternalError {
             reason: format!("Step circuit {i} public values changed between prep_prove and prove"),
           });
         }
@@ -1674,12 +1667,11 @@ where
             );
             transcript.absorb(b"circuit_index", &E::Scalar::from(i as u64));
 
-            let public_values =
-              circuit
-                .public_values()
-                .map_err(|e| SpartanError::SynthesisError {
-                  reason: format!("Circuit does not provide public IO: {e}"),
-                })?;
+            let public_values = circuit
+              .public_values()
+              .map_err(|e| VegaError::SynthesisError {
+                reason: format!("Circuit does not provide public IO: {e}"),
+              })?;
             transcript.absorb(b"public_values", &public_values.as_slice());
 
             SatisfyingAssignment::r1cs_instance_and_witness(
@@ -1703,7 +1695,7 @@ where
         let public_values_core =
           core_circuit
             .public_values()
-            .map_err(|e| SpartanError::SynthesisError {
+            .map_err(|e| VegaError::SynthesisError {
               reason: format!("Core circuit does not provide public IO: {e}"),
             })?;
         transcript.absorb(b"public_values", &public_values_core.as_slice());
@@ -1743,7 +1735,7 @@ where
     let num_rounds_x = pk.S_step.num_cons.log_2();
     let num_rounds_y = num_vars.log_2() + 1;
 
-    let mut vc = NeutronNovaVerifierCircuit::<E>::default(
+    let mut vc = VegaMcVerifierCircuit::<E>::default(
       num_rounds_b,
       num_rounds_x,
       num_rounds_y,
@@ -1767,7 +1759,7 @@ where
       .cached_step_i64
       .as_ref()
       .map(|v| v.par_iter().cloned().collect::<Vec<_>>());
-    let (E_eq, Az_step, Bz_step, Cz_step, folded_W, folded_U) = NeutronNovaNIFS::<E>::prove(
+    let (E_eq, Az_step, Bz_step, Cz_step, folded_W, folded_U) = VegaMcNIFS::<E>::prove(
       &pk.S_step,
       &pk.ck,
       step_instances_regular,
@@ -1947,7 +1939,7 @@ where
       SparsePolynomial::new(num_vars_log2, X).evaluate(&r_y[1..])
     };
     let inv: Option<E::Scalar> = (E::Scalar::ONE - r_y[0]).invert().into();
-    let one_minus_ry0_inv = inv.ok_or(SpartanError::DivisionByZero)?;
+    let one_minus_ry0_inv = inv.ok_or(VegaError::DivisionByZero)?;
     let eval_W_step = (eval_Z_step - r_y[0] * eval_X_step) * one_minus_ry0_inv;
     let eval_W_core = (eval_Z_core - r_y[0] * eval_X_core) * one_minus_ry0_inv;
 
@@ -2092,15 +2084,15 @@ where
     Ok((result, prep_snark))
   }
 
-  /// Verifies the NeutronNovaZkSNARK and returns the public IO from the instances
+  /// Verifies the VegaMcZkSNARK and returns the public IO from the instances
   pub fn verify(
     &self,
-    vk: &NeutronNovaVerifierKey<E>,
+    vk: &VegaMcVerifierKey<E>,
     num_instances: usize,
-  ) -> Result<(Vec<Vec<E::Scalar>>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Vec<Vec<E::Scalar>>, Vec<E::Scalar>), VegaError> {
     let (_verify_span, _verify_t) = start_span!("neutronnova_verify");
     if num_instances == 0 || num_instances != self.step_instances.len() {
-      return Err(SpartanError::ProofVerifyError {
+      return Err(VegaError::ProofVerifyError {
         reason: format!(
           "Expected {} instances (non-zero), got {}",
           num_instances,
@@ -2152,7 +2144,7 @@ where
     // also verify it matches the core instance
     for u in &step_instances {
       if u.comm_W_shared != core_instance.comm_W_shared {
-        return Err(SpartanError::ProofVerifyError {
+        return Err(VegaError::ProofVerifyError {
           reason: "All instances must have the same shared commitment".to_string(),
         });
       }
@@ -2205,7 +2197,7 @@ where
     let num_public_values = 6usize;
     let num_challenges = num_rounds_b + num_rounds_x + 1 + num_rounds_y;
     if U_verifier_regular.X.len() != num_challenges + num_public_values {
-      return Err(SpartanError::ProofVerifyError {
+      return Err(VegaError::ProofVerifyError {
         reason: format!(
           "Verifier instance has incorrect number of public IO: expected {}, got {}",
           num_challenges + num_public_values,
@@ -2241,7 +2233,7 @@ where
         &folded_U_verifier,
         &mut transcript,
       )
-      .map_err(|e| SpartanError::ProofVerifyError {
+      .map_err(|e| VegaError::ProofVerifyError {
         reason: format!("Relaxed Spartan verify failed: {e}"),
       })?;
     let (_matrix_eval_span, matrix_eval_t) = start_span!("matrix_evaluations");
@@ -2292,7 +2284,7 @@ where
       || public_values[4] != quotient_step
       || public_values[5] != quotient_core
     {
-      return Err(SpartanError::ProofVerifyError {
+      return Err(VegaError::ProofVerifyError {
         reason:
           "Verifier instance public tau_at_rx/eval_X_step/eq_rho_at_rb/eval_X_core/quotients do not match recomputation"
             .to_string(),
@@ -2360,7 +2352,7 @@ mod tests {
     _p: PhantomData<E>,
   }
 
-  impl<E: Engine> SpartanCircuit<E> for Sha256Circuit<E> {
+  impl<E: Engine> VegaCircuit<E> for Sha256Circuit<E> {
     fn public_values(&self) -> Result<Vec<E::Scalar>, SynthesisError> {
       Ok(vec![E::Scalar::ZERO]) // Placeholder, we don't use public values in this example
     }
@@ -2421,8 +2413,8 @@ mod tests {
     num_circuits: usize,
     len: usize,
   ) -> (
-    NeutronNovaProverKey<E>,
-    NeutronNovaVerifierKey<E>,
+    VegaMcProverKey<E>,
+    VegaMcVerifierKey<E>,
     Vec<Sha256Circuit<E>>,
   )
   where
@@ -2433,7 +2425,7 @@ mod tests {
       _p: Default::default(),
     };
 
-    let (pk, vk) = NeutronNovaZkSNARK::<E>::setup(&circuit, &circuit, num_circuits).unwrap();
+    let (pk, vk) = VegaMcZkSNARK::<E>::setup(&circuit, &circuit, num_circuits).unwrap();
 
     let circuits = (0..num_circuits)
       .map(|i| Sha256Circuit::<E> {
@@ -2445,10 +2437,10 @@ mod tests {
     (pk, vk, circuits)
   }
 
-  fn test_neutron_inner<E: Engine, C1: SpartanCircuit<E>, C2: SpartanCircuit<E>>(
+  fn test_neutron_inner<E: Engine, C1: VegaCircuit<E>, C2: VegaCircuit<E>>(
     name: &str,
-    pk: &NeutronNovaProverKey<E>,
-    vk: &NeutronNovaVerifierKey<E>,
+    pk: &VegaMcProverKey<E>,
+    vk: &VegaMcVerifierKey<E>,
     step_circuits: &[C1],
     core_circuit: &C2,
   ) where
@@ -2459,8 +2451,8 @@ mod tests {
       step_circuits.len()
     );
 
-    let ps = NeutronNovaZkSNARK::<E>::prep_prove(pk, step_circuits, core_circuit, true).unwrap();
-    let res = NeutronNovaZkSNARK::prove(pk, step_circuits, core_circuit, ps, true);
+    let ps = VegaMcZkSNARK::<E>::prep_prove(pk, step_circuits, core_circuit, true).unwrap();
+    let res = VegaMcZkSNARK::prove(pk, step_circuits, core_circuit, ps, true);
     assert!(res.is_ok());
 
     let (snark, _ps) = res.unwrap();

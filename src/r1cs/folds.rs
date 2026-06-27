@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Extended folding utilities and cross-term commitment helpers for NIFS.
 #![allow(non_snake_case)]
 use crate::{
   Blind, Commitment, CommitmentKey, PCS,
-  errors::SpartanError,
+  errors::VegaError,
   r1cs::{R1CSInstance, R1CSShape, R1CSWitness, RelaxedR1CSInstance, RelaxedR1CSWitness},
   traits::{
     Engine,
@@ -33,15 +33,15 @@ impl<E: Engine> R1CSShape<E> {
     U2: &R1CSInstance<E>,
     W2: &R1CSWitness<E>,
     r_T: &Blind<E>,
-  ) -> Result<(Vec<E::Scalar>, Commitment<E>), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, Commitment<E>), VegaError> {
     // Form Z = (W1+W2, u1+1, X1+X2) without intermediate allocations.
     let n_w = W1.W.len();
     if W2.W.len() != n_w {
-      return Err(SpartanError::InvalidWitnessLength);
+      return Err(VegaError::InvalidWitnessLength);
     }
     let n_x = U1.X.len();
     if U2.X.len() != n_x {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "commit_T: U1.X.len() ({}) != U2.X.len() ({})",
           n_x,
@@ -115,9 +115,9 @@ where
     T: &[E::Scalar],
     r_T: &Blind<E>,
     r: &E::Scalar,
-  ) -> Result<RelaxedR1CSWitness<E>, SpartanError> {
+  ) -> Result<RelaxedR1CSWitness<E>, VegaError> {
     if self.W.len() != W2.W.len() || self.E.len() != T.len() {
-      return Err(SpartanError::InvalidWitnessLength);
+      return Err(VegaError::InvalidWitnessLength);
     }
 
     let W = self
@@ -234,9 +234,9 @@ where
   /// Fold this witness with another witness using barycentric weight `r_b`.
   ///
   /// The resulting witness corresponds to `(1 - r_b) * self + r_b * W2`.
-  pub fn fold(&self, w2: &R1CSWitness<E>, r_b: &E::Scalar) -> Result<Self, SpartanError> {
+  pub fn fold(&self, w2: &R1CSWitness<E>, r_b: &E::Scalar) -> Result<Self, VegaError> {
     if self.W.len() != w2.W.len() {
-      return Err(SpartanError::InvalidWitnessLength);
+      return Err(VegaError::InvalidWitnessLength);
     }
 
     // Combine the witness vectors.

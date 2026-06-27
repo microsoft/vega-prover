@@ -1,22 +1,22 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Support for generating R1CS using bellpepper.
 use crate::start_span;
 use crate::{
   Blind, Commitment, CommitmentKey, PCS, VerifierKey,
   bellpepper::{shape_cs::ShapeCS, solver::SatisfyingAssignment},
-  errors::SpartanError,
+  errors::VegaError,
   r1cs::{
     R1CSWitness, SparseMatrix, SplitMultiRoundR1CSInstance, SplitMultiRoundR1CSShape,
     SplitR1CSInstance, SplitR1CSShape,
   },
   traits::{
     Engine,
-    circuit::{MultiRoundCircuit, SpartanCircuit},
+    circuit::{MultiRoundCircuit, VegaCircuit},
     pcs::PCSEngineTrait,
     transcript::TranscriptEngineTrait,
   },
@@ -27,16 +27,16 @@ use ff::{Field, PrimeField};
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
 
-/// `SpartanShape` provides methods for acquiring `SplitR1CSShape` from implementers.
-pub trait SpartanShape<E: Engine> {
+/// `VegaShape` provides methods for acquiring `SplitR1CSShape` from implementers.
+pub trait VegaShape<E: Engine> {
   /// Return an appropriate `SplitR1CSShape`
-  fn r1cs_shape<C: SpartanCircuit<E>>(circuit: &C) -> Result<SplitR1CSShape<E>, SpartanError>;
+  fn r1cs_shape<C: VegaCircuit<E>>(circuit: &C) -> Result<SplitR1CSShape<E>, VegaError>;
 }
 
 /// Defines rerandomization behavior for preprocessed state
 pub trait RerandomizationTrait<E: Engine> {
   /// Returns a rerandomized version of self.
-  fn rerandomize(&self, ck: &CommitmentKey<E>, S: &SplitR1CSShape<E>) -> Result<Self, SpartanError>
+  fn rerandomize(&self, ck: &CommitmentKey<E>, S: &SplitR1CSShape<E>) -> Result<Self, VegaError>
   where
     Self: Sized;
 
@@ -47,13 +47,13 @@ pub trait RerandomizationTrait<E: Engine> {
     S: &SplitR1CSShape<E>,
     comm_W_shared: &Option<Commitment<E>>,
     r_W_shared: &Option<Blind<E>>,
-  ) -> Result<Self, SpartanError>
+  ) -> Result<Self, VegaError>
   where
     Self: Sized;
 }
 
-/// `SpartanWitness` provide a method for acquiring an `SplitR1CSInstance` and `R1CSWitness` from implementers.
-pub trait SpartanWitness<E: Engine> {
+/// `VegaWitness` provide a method for acquiring an `SplitR1CSInstance` and `R1CSWitness` from implementers.
+pub trait VegaWitness<E: Engine> {
   /// Holds the state of the prover after committing to the precommitted portions of the witness.
   type PrecommittedState: Send
     + Sync
@@ -62,35 +62,35 @@ pub trait SpartanWitness<E: Engine> {
     + RerandomizationTrait<E>;
 
   /// Return partial commitments (to shared variables) and the shared state
-  fn shared_witness<C: SpartanCircuit<E>>(
+  fn shared_witness<C: VegaCircuit<E>>(
     S: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     circuit: &C,
     is_small: bool,
-  ) -> Result<Self::PrecommittedState, SpartanError>;
+  ) -> Result<Self::PrecommittedState, VegaError>;
 
   /// Return partial commitments (to shared and precommitted variables) and the partial witness vector.
-  fn precommitted_witness<C: SpartanCircuit<E>>(
+  fn precommitted_witness<C: VegaCircuit<E>>(
     ps: &mut Self::PrecommittedState,
     S: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     circuit: &C,
     is_small: bool,
-  ) -> Result<(), SpartanError>;
+  ) -> Result<(), VegaError>;
 
   /// Return an instance and witness, given a shape and ck.
-  fn r1cs_instance_and_witness<C: SpartanCircuit<E>>(
+  fn r1cs_instance_and_witness<C: VegaCircuit<E>>(
     ps: &mut Self::PrecommittedState,
     S: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     circuit: &C,
     is_small: bool,
     transcript: &mut E::TE,
-  ) -> Result<(SplitR1CSInstance<E>, R1CSWitness<E>), SpartanError>;
+  ) -> Result<(SplitR1CSInstance<E>, R1CSWitness<E>), VegaError>;
 }
 
-/// `MultiRoundSpartanShape` provides methods for acquiring `SplitMultiRoundR1CSShape` and `CommitmentKey` from implementers.
-pub trait MultiRoundSpartanShape<E: Engine> {
+/// `MultiRoundVegaShape` provides methods for acquiring `SplitMultiRoundR1CSShape` and `CommitmentKey` from implementers.
+pub trait MultiRoundVegaShape<E: Engine> {
   /// Return an appropriate `SplitMultiRoundR1CSShape` and `CommitmentKey` structs.
   fn multiround_r1cs_shape<C: MultiRoundCircuit<E>>(
     circuit: &C,
@@ -100,19 +100,19 @@ pub trait MultiRoundSpartanShape<E: Engine> {
       CommitmentKey<E>,
       VerifierKey<E>,
     ),
-    SpartanError,
+    VegaError,
   >;
 }
 
-/// `MultiRoundSpartanWitness` provide a method for acquiring an `SplitMultiRoundR1CSInstance` and `R1CSWitness` from implementers.
-pub trait MultiRoundSpartanWitness<E: Engine> {
+/// `MultiRoundVegaWitness` provide a method for acquiring an `SplitMultiRoundR1CSInstance` and `R1CSWitness` from implementers.
+pub trait MultiRoundVegaWitness<E: Engine> {
   /// Holds the state of the prover across multiple rounds.
   type MultiRoundState: Send + Sync + Serialize + for<'de> Deserialize<'de>;
 
   /// Initialize the multi-round witness process and return the initial state.
   fn initialize_multiround_witness(
     s: &SplitMultiRoundR1CSShape<E>,
-  ) -> Result<Self::MultiRoundState, SpartanError>;
+  ) -> Result<Self::MultiRoundState, VegaError>;
 
   /// Process a specific round and update the state, returning the challenges generated after the commitment to the round.
   fn process_round<C: MultiRoundCircuit<E>>(
@@ -122,17 +122,17 @@ pub trait MultiRoundSpartanWitness<E: Engine> {
     circuit: &C,
     round_index: usize,
     transcript: &mut E::TE,
-  ) -> Result<Vec<E::Scalar>, SpartanError>;
+  ) -> Result<Vec<E::Scalar>, VegaError>;
 
   /// Finalize the multi-round witness and return the instance and witness.
   fn finalize_multiround_witness(
     state: &mut Self::MultiRoundState,
     s: &SplitMultiRoundR1CSShape<E>,
-  ) -> Result<(SplitMultiRoundR1CSInstance<E>, R1CSWitness<E>), SpartanError>;
+  ) -> Result<(SplitMultiRoundR1CSInstance<E>, R1CSWitness<E>), VegaError>;
 }
 
-impl<E: Engine> SpartanShape<E> for ShapeCS<E> {
-  fn r1cs_shape<C: SpartanCircuit<E>>(circuit: &C) -> Result<SplitR1CSShape<E>, SpartanError> {
+impl<E: Engine> VegaShape<E> for ShapeCS<E> {
+  fn r1cs_shape<C: VegaCircuit<E>>(circuit: &C) -> Result<SplitR1CSShape<E>, VegaError> {
     let num_challenges = circuit.num_challenges();
 
     let mut cs: Self = Self::new();
@@ -140,7 +140,7 @@ impl<E: Engine> SpartanShape<E> for ShapeCS<E> {
     // allocate shared variables
     let shared = circuit
       .shared(&mut cs)
-      .map_err(|e| SpartanError::SynthesisError {
+      .map_err(|e| VegaError::SynthesisError {
         reason: format!("Unable to allocate shared variables: {e}"),
       })?;
 
@@ -149,7 +149,7 @@ impl<E: Engine> SpartanShape<E> for ShapeCS<E> {
     debug!("num_shared: {}", num_shared);
     debug!("shared.len(): {}", shared.len());
     if shared.len() > num_shared {
-      return Err(SpartanError::SynthesisError {
+      return Err(VegaError::SynthesisError {
         reason: "Shared variables are not allocated correctly".to_string(),
       });
     }
@@ -158,7 +158,7 @@ impl<E: Engine> SpartanShape<E> for ShapeCS<E> {
     let precommitted =
       circuit
         .precommitted(&mut cs, &shared)
-        .map_err(|e| SpartanError::SynthesisError {
+        .map_err(|e| VegaError::SynthesisError {
           reason: format!("Unable to allocate precommitted variables: {e}"),
         })?;
 
@@ -166,7 +166,7 @@ impl<E: Engine> SpartanShape<E> for ShapeCS<E> {
     debug!("num_precommitted: {}", num_precommitted);
     debug!("precommitted.len(): {}", precommitted.len());
     if precommitted.len() > num_precommitted {
-      return Err(SpartanError::SynthesisError {
+      return Err(VegaError::SynthesisError {
         reason: "Precommitted variables are not allocated correctly".to_string(),
       });
     }
@@ -174,7 +174,7 @@ impl<E: Engine> SpartanShape<E> for ShapeCS<E> {
     // synthesize the circuit
     circuit
       .synthesize(&mut cs, &shared, &precommitted, None)
-      .map_err(|e| SpartanError::SynthesisError {
+      .map_err(|e| VegaError::SynthesisError {
         reason: format!("Unable to synthesize circuit: {e}"),
       })?;
 
@@ -300,15 +300,15 @@ pub struct PrecommittedState<E: Engine> {
   pub(crate) W: Vec<E::Scalar>,
 }
 
-impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
+impl<E: Engine> VegaWitness<E> for SatisfyingAssignment<E> {
   type PrecommittedState = PrecommittedState<E>;
 
-  fn shared_witness<C: SpartanCircuit<E>>(
+  fn shared_witness<C: VegaCircuit<E>>(
     S: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     circuit: &C,
     is_small: bool,
-  ) -> Result<Self::PrecommittedState, SpartanError> {
+  ) -> Result<Self::PrecommittedState, VegaError> {
     let (_synth_span, synth_t) = start_span!("shared_witness_synthesize");
     let mut cs: Self = Self::new();
 
@@ -320,13 +320,13 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
     // produce shared witness variables and commit to them
     let shared = circuit
       .shared(&mut cs)
-      .map_err(|e| SpartanError::SynthesisError {
+      .map_err(|e| VegaError::SynthesisError {
         reason: format!("Unable to allocate shared variables: {e}"),
       })?;
 
     // we know that W is large enough to hold all shared variables
     if cs.aux_assignment.len() < S.num_shared_unpadded {
-      return Err(SpartanError::SynthesisError {
+      return Err(VegaError::SynthesisError {
         reason: "Shared variables are not allocated correctly".to_string(),
       });
     }
@@ -356,24 +356,24 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
     })
   }
 
-  fn precommitted_witness<C: SpartanCircuit<E>>(
+  fn precommitted_witness<C: VegaCircuit<E>>(
     ps: &mut Self::PrecommittedState,
     S: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     circuit: &C,
     is_small: bool,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     let (_synth_span, synth_t) = start_span!("precommitted_witness_synthesize");
     // produce precommitted witness variables
     let precommitted =
       circuit
         .precommitted(&mut ps.cs, &ps.shared)
-        .map_err(|e| SpartanError::SynthesisError {
+        .map_err(|e| VegaError::SynthesisError {
           reason: format!("Unable to allocate precommitted variables: {e}"),
         })?;
 
     if ps.cs.aux_assignment[S.num_shared_unpadded..].len() < S.num_precommitted_unpadded {
-      return Err(SpartanError::SynthesisError {
+      return Err(VegaError::SynthesisError {
         reason: "Precommitted variables are not allocated correctly".to_string(),
       });
     }
@@ -408,14 +408,14 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
     Ok(())
   }
 
-  fn r1cs_instance_and_witness<C: SpartanCircuit<E>>(
+  fn r1cs_instance_and_witness<C: VegaCircuit<E>>(
     ps: &mut Self::PrecommittedState,
     S: &SplitR1CSShape<E>,
     ck: &CommitmentKey<E>,
     circuit: &C,
     is_small: bool,
     transcript: &mut E::TE,
-  ) -> Result<(SplitR1CSInstance<E>, R1CSWitness<E>), SpartanError> {
+  ) -> Result<(SplitR1CSInstance<E>, R1CSWitness<E>), VegaError> {
     let (_synth_span, synth_t) = start_span!("circuit_synthesize_rest");
 
     // partial commitment to precommitted witness variables
@@ -428,7 +428,7 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
 
     let challenges = (0..S.num_challenges)
       .map(|_| transcript.squeeze(b"challenge"))
-      .collect::<Result<Vec<E::Scalar>, SpartanError>>()?;
+      .collect::<Result<Vec<E::Scalar>, VegaError>>()?;
 
     // Fast path: skip circuit synthesis when there are no rest witness variables to compute
     // and no verifier challenges to process. In this case, the witness W is already fully
@@ -450,7 +450,7 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
 
       circuit
         .synthesize(&mut ps.cs, &ps.shared, &ps.precommitted, Some(&challenges))
-        .map_err(|e| SpartanError::SynthesisError {
+        .map_err(|e| VegaError::SynthesisError {
           reason: format!("Unable to synthesize witness: {e}"),
         })?;
 
@@ -493,7 +493,7 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
     let public_values = if skip_synthesize {
       circuit
         .public_values()
-        .map_err(|e| SpartanError::SynthesisError {
+        .map_err(|e| VegaError::SynthesisError {
           reason: format!("Circuit does not provide public IO: {e}"),
         })?
     } else {
@@ -538,7 +538,7 @@ impl<E: Engine> SpartanWitness<E> for SatisfyingAssignment<E> {
 }
 
 impl<E: Engine> RerandomizationTrait<E> for PrecommittedState<E> {
-  fn rerandomize(&self, ck: &CommitmentKey<E>, S: &SplitR1CSShape<E>) -> Result<Self, SpartanError>
+  fn rerandomize(&self, ck: &CommitmentKey<E>, S: &SplitR1CSShape<E>) -> Result<Self, VegaError>
   where
     Self: Sized,
   {
@@ -553,7 +553,7 @@ impl<E: Engine> RerandomizationTrait<E> for PrecommittedState<E> {
     S: &SplitR1CSShape<E>,
     comm_W_shared: &Option<Commitment<E>>,
     r_W_shared: &Option<Blind<E>>,
-  ) -> Result<Self, SpartanError>
+  ) -> Result<Self, VegaError>
   where
     Self: Sized,
   {
@@ -569,7 +569,7 @@ impl<E: Engine> PrecommittedState<E> {
     &mut self,
     ck: &CommitmentKey<E>,
     S: &SplitR1CSShape<E>,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     if let (Some(comm), Some(r_old)) = (&self.comm_W_shared, &self.r_W_shared) {
       let r_new = PCS::<E>::blind(ck, S.num_shared);
       self.comm_W_shared = Some(PCS::<E>::rerandomize_commitment(ck, comm, r_old, &r_new)?);
@@ -590,7 +590,7 @@ impl<E: Engine> PrecommittedState<E> {
     S: &SplitR1CSShape<E>,
     comm_W_shared: &Option<Commitment<E>>,
     r_W_shared: &Option<Blind<E>>,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     self.comm_W_shared = comm_W_shared.clone();
     self.r_W_shared = r_W_shared.clone();
     if let (Some(comm), Some(r_old)) = (&self.comm_W_precommitted, &self.r_W_precommitted) {
@@ -602,7 +602,7 @@ impl<E: Engine> PrecommittedState<E> {
   }
 }
 
-impl<E: Engine> MultiRoundSpartanShape<E> for ShapeCS<E> {
+impl<E: Engine> MultiRoundVegaShape<E> for ShapeCS<E> {
   fn multiround_r1cs_shape<C: MultiRoundCircuit<E>>(
     circuit: &C,
   ) -> Result<
@@ -611,7 +611,7 @@ impl<E: Engine> MultiRoundSpartanShape<E> for ShapeCS<E> {
       CommitmentKey<E>,
       VerifierKey<E>,
     ),
-    SpartanError,
+    VegaError,
   > {
     let num_rounds = circuit.num_rounds();
     let mut cs: Self = Self::new();
@@ -627,7 +627,7 @@ impl<E: Engine> MultiRoundSpartanShape<E> for ShapeCS<E> {
       let num_challenges =
         circuit
           .num_challenges(round)
-          .map_err(|e| SpartanError::SynthesisError {
+          .map_err(|e| VegaError::SynthesisError {
             reason: format!("Unable to get num_challenges for round {round}: {e}"),
           })?;
       num_challenges_per_round.push(num_challenges);
@@ -636,7 +636,7 @@ impl<E: Engine> MultiRoundSpartanShape<E> for ShapeCS<E> {
       let prev_aux = cs.num_aux();
       let (round_vars, round_challenges) = circuit
         .rounds(&mut cs, round, &vars_per_round, &challenges_per_round, None)
-        .map_err(|e| SpartanError::SynthesisError {
+        .map_err(|e| VegaError::SynthesisError {
           reason: format!("Unable to synthesize round {round}: {e}"),
         })?;
 
@@ -709,12 +709,12 @@ pub struct MultiRoundState<E: Engine> {
   num_rounds: usize,
 }
 
-impl<E: Engine> MultiRoundSpartanWitness<E> for SatisfyingAssignment<E> {
+impl<E: Engine> MultiRoundVegaWitness<E> for SatisfyingAssignment<E> {
   type MultiRoundState = MultiRoundState<E>;
 
   fn initialize_multiround_witness(
     s: &SplitMultiRoundR1CSShape<E>,
-  ) -> Result<Self::MultiRoundState, SpartanError> {
+  ) -> Result<Self::MultiRoundState, VegaError> {
     let cs = Self::new();
     let total_vars: usize = s.num_vars_per_round.iter().sum();
     let w = vec![E::Scalar::ZERO; total_vars];
@@ -739,9 +739,9 @@ impl<E: Engine> MultiRoundSpartanWitness<E> for SatisfyingAssignment<E> {
     circuit: &C,
     round_index: usize,
     transcript: &mut E::TE,
-  ) -> Result<Vec<E::Scalar>, SpartanError> {
+  ) -> Result<Vec<E::Scalar>, VegaError> {
     if round_index != state.current_round {
-      return Err(SpartanError::SynthesisError {
+      return Err(VegaError::SynthesisError {
         reason: format!(
           "Expected round {}, got {}",
           state.current_round, round_index
@@ -764,7 +764,7 @@ impl<E: Engine> MultiRoundSpartanWitness<E> for SatisfyingAssignment<E> {
         &state.challenges_per_round,
         chals,
       )
-      .map_err(|e| SpartanError::SynthesisError {
+      .map_err(|e| VegaError::SynthesisError {
         reason: format!("Unable to synthesize round {round_index}: {e}"),
       })?;
 
@@ -802,7 +802,7 @@ impl<E: Engine> MultiRoundSpartanWitness<E> for SatisfyingAssignment<E> {
     // Generate challenges for this round
     let challenges = (0..s.num_challenges_per_round[round_index])
       .map(|_| transcript.squeeze(b"challenge"))
-      .collect::<Result<Vec<E::Scalar>, SpartanError>>()?;
+      .collect::<Result<Vec<E::Scalar>, VegaError>>()?;
 
     state.vars_per_round.push(round_vars);
     state.challenges_per_round.push(round_challenges);
@@ -818,9 +818,9 @@ impl<E: Engine> MultiRoundSpartanWitness<E> for SatisfyingAssignment<E> {
   fn finalize_multiround_witness(
     state: &mut Self::MultiRoundState,
     s: &SplitMultiRoundR1CSShape<E>,
-  ) -> Result<(SplitMultiRoundR1CSInstance<E>, R1CSWitness<E>), SpartanError> {
+  ) -> Result<(SplitMultiRoundR1CSInstance<E>, R1CSWitness<E>), VegaError> {
     if state.current_round != state.num_rounds {
-      return Err(SpartanError::SynthesisError {
+      return Err(VegaError::SynthesisError {
         reason: format!(
           "Expected {} rounds, processed {}",
           state.num_rounds, state.current_round

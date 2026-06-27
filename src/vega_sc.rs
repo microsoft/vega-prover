@@ -1,21 +1,20 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
-//! This module implements the Spartan SNARK protocol.
-//! It provides the prover and verifier keys, as well as the SNARK itself.
+//! Single-circuit (SC) prover. Implements the Spartan SNARK protocol (https://eprint.iacr.org/2019/550).
 use crate::{
   Blind, CommitmentKey,
   bellpepper::{
-    r1cs::{PrecommittedState, SpartanShape, SpartanWitness},
+    r1cs::{PrecommittedState, VegaShape, VegaWitness},
     shape_cs::ShapeCS,
     solver::SatisfyingAssignment,
   },
   big_num::DelayedReduction,
   digest::DigestComputer,
-  errors::SpartanError,
+  errors::VegaError,
   math::Math,
   polys::{
     eq::EqPolynomial,
@@ -27,9 +26,9 @@ use crate::{
   sumcheck::SumcheckProof,
   traits::{
     Engine,
-    circuit::SpartanCircuit,
+    circuit::VegaCircuit,
     pcs::PCSEngineTrait,
-    snark::{DigestHelperTrait, R1CSSNARKTrait, SpartanDigest},
+    snark::{DigestHelperTrait, R1CSSNARKTrait, VegaDigest},
     transcript::TranscriptEngineTrait,
   },
 };
@@ -41,14 +40,14 @@ use tracing::info;
 /// A type that represents the prover's key
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct SpartanProverKey<E: Engine> {
+pub struct VegaProverKey<E: Engine> {
   ck: CommitmentKey<E>,
   ck_s: CommitmentKey<E>,
   S: SplitR1CSShape<E>,
-  vk_digest: SpartanDigest, // digest of the verifier's key
+  vk_digest: VegaDigest, // digest of the verifier's key
 }
 
-impl<E: Engine> SpartanProverKey<E> {
+impl<E: Engine> VegaProverKey<E> {
   /// Returns sizes associated with the SplitR1CSShape.
   /// It returns an array of 10 elements containing:
   /// [num_cons_unpadded, num_shared_unpadded, num_precommitted_unpadded, num_rest_unpadded,
@@ -62,15 +61,15 @@ impl<E: Engine> SpartanProverKey<E> {
 /// A type that represents the verifier's key
 #[derive(Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct SpartanVerifierKey<E: Engine> {
+pub struct VegaVerifierKey<E: Engine> {
   vk_ee: <E::PCS as PCSEngineTrait<E>>::VerifierKey,
   ck_s: CommitmentKey<E>,
   S: SplitR1CSShape<E>,
   #[serde(skip, default = "OnceCell::new")]
-  digest: OnceCell<SpartanDigest>,
+  digest: OnceCell<VegaDigest>,
 }
 
-impl<E: Engine> crate::digest::Digestible for SpartanVerifierKey<E> {
+impl<E: Engine> crate::digest::Digestible for VegaVerifierKey<E> {
   fn write_bytes<W: Sized + std::io::Write>(&self, w: &mut W) -> Result<(), std::io::Error> {
     use bincode::Options;
     let config = bincode::DefaultOptions::new()
@@ -87,9 +86,9 @@ impl<E: Engine> crate::digest::Digestible for SpartanVerifierKey<E> {
   }
 }
 
-impl<E: Engine> DigestHelperTrait<E> for SpartanVerifierKey<E> {
+impl<E: Engine> DigestHelperTrait<E> for VegaVerifierKey<E> {
   /// Returns the digest of the verifier's key.
-  fn digest(&self) -> Result<SpartanDigest, SpartanError> {
+  fn digest(&self) -> Result<VegaDigest, VegaError> {
     self
       .digest
       .get_or_try_init(|| {
@@ -97,8 +96,8 @@ impl<E: Engine> DigestHelperTrait<E> for SpartanVerifierKey<E> {
         dc.digest()
       })
       .cloned()
-      .map_err(|_| SpartanError::DigestError {
-        reason: "Unable to compute digest for SpartanVerifierKey".to_string(),
+      .map_err(|_| VegaError::DigestError {
+        reason: "Unable to compute digest for VegaVerifierKey".to_string(),
       })
   }
 }
@@ -106,7 +105,7 @@ impl<E: Engine> DigestHelperTrait<E> for SpartanVerifierKey<E> {
 /// A type that holds the pre-processed state for proving
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct SpartanPrepSNARK<E: Engine> {
+pub struct VegaPrepSNARK<E: Engine> {
   ps: PrecommittedState<E>,
   // Cached partial matrix-vector products for precommitted witness columns (deterministic)
   cached_az: Vec<E::Scalar>,
@@ -128,7 +127,7 @@ pub struct SpartanPrepSNARK<E: Engine> {
 /// the commitment to a vector viewed as a polynomial commitment
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct SpartanSNARK<E: Engine> {
+pub struct VegaSNARK<E: Engine> {
   U: SplitR1CSInstance<E>,
   sc_proof_outer: SumcheckProof<E>,
   claims_outer: (E::Scalar, E::Scalar, E::Scalar),
@@ -138,21 +137,21 @@ pub struct SpartanSNARK<E: Engine> {
   eval_arg: <E::PCS as PCSEngineTrait<E>>::EvaluationArgument,
 }
 
-impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
-  type ProverKey = SpartanProverKey<E>;
-  type VerifierKey = SpartanVerifierKey<E>;
-  type PrepSNARK = SpartanPrepSNARK<E>;
+impl<E: Engine> R1CSSNARKTrait<E> for VegaSNARK<E> {
+  type ProverKey = VegaProverKey<E>;
+  type VerifierKey = VegaVerifierKey<E>;
+  type PrepSNARK = VegaPrepSNARK<E>;
 
-  fn setup<C: SpartanCircuit<E>>(
+  fn setup<C: VegaCircuit<E>>(
     circuit: C,
-  ) -> Result<(Self::ProverKey, Self::VerifierKey), SpartanError> {
+  ) -> Result<(Self::ProverKey, Self::VerifierKey), VegaError> {
     let S = ShapeCS::r1cs_shape(&circuit)?;
     let (ck, vk_ee) = SplitR1CSShape::commitment_key(&[&S])?;
     E::PCS::precompute_ck(&ck);
     let (ck_s, _) = E::PCS::setup(b"ck_s", 1, 1); // 1 base for committing a single scalar
     E::PCS::precompute_ck(&ck_s);
 
-    let vk: SpartanVerifierKey<E> = SpartanVerifierKey {
+    let vk: VegaVerifierKey<E> = VegaVerifierKey {
       S: S.clone(),
       vk_ee,
       ck_s: ck_s.clone(),
@@ -173,11 +172,11 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
   }
 
   /// Prepares the SNARK for proving
-  fn prep_prove<C: SpartanCircuit<E>>(
+  fn prep_prove<C: VegaCircuit<E>>(
     pk: &Self::ProverKey,
     circuit: C,
     is_small: bool, // do witness elements fit in machine words?
-  ) -> Result<Self::PrepSNARK, SpartanError> {
+  ) -> Result<Self::PrepSNARK, VegaError> {
     let mut ps = SatisfyingAssignment::shared_witness(&pk.S, &pk.ck, &circuit, is_small)?;
     SatisfyingAssignment::precommitted_witness(&mut ps, &pk.S, &pk.ck, &circuit, is_small)?;
 
@@ -200,7 +199,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
     let z_buffer = vec![E::Scalar::ZERO; num_z];
     let evals_rx_buffer = Vec::with_capacity(num_cons);
 
-    Ok(SpartanPrepSNARK {
+    Ok(VegaPrepSNARK {
       ps,
       cached_az,
       cached_bz,
@@ -216,19 +215,19 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
   }
 
   /// produces a succinct proof of satisfiability of an R1CS instance
-  fn prove<C: SpartanCircuit<E>>(
+  fn prove<C: VegaCircuit<E>>(
     pk: &Self::ProverKey,
     circuit: C,
     mut prep_snark: Self::PrepSNARK,
     is_small: bool,
-  ) -> Result<(Self, Self::PrepSNARK), SpartanError> {
+  ) -> Result<(Self, Self::PrepSNARK), VegaError> {
     let (_prove_span, prove_t) = start_span!("spartan_snark_prove");
-    let mut transcript = E::TE::new(b"SpartanSNARK");
+    let mut transcript = E::TE::new(b"VegaSNARK");
     transcript.absorb(b"vk", &pk.vk_digest);
 
     let public_values = circuit
       .public_values()
-      .map_err(|e| SpartanError::SynthesisError {
+      .map_err(|e| VegaError::SynthesisError {
         reason: format!("Circuit does not provide public IO: {e}"),
       })?;
 
@@ -261,7 +260,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
     // outer sum-check preparation
     let tau = (0..num_rounds_x)
       .map(|_i| transcript.squeeze(b"t"))
-      .collect::<Result<Vec<_>, SpartanError>>()?;
+      .collect::<Result<Vec<_>, VegaError>>()?;
 
     // Use incremental matvec with cached precommitted products and scratch buffers
     let (_mv_span, mv_t) = start_span!("matrix_vector_multiply");
@@ -418,7 +417,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
       SparsePolynomial::new(num_rounds_y - 1, X).evaluate(&r_y[1..])
     };
     let inv: Option<E::Scalar> = (E::Scalar::ONE - r_y[0]).invert().into();
-    let eval_W = (eval_Z - r_y[0] * eval_X) * inv.ok_or(SpartanError::DivisionByZero)?;
+    let eval_W = (eval_Z - r_y[0] * eval_X) * inv.ok_or(VegaError::DivisionByZero)?;
 
     let (_pcs_span, pcs_t) = start_span!("pcs_prove");
     let blind_eval_W = E::PCS::blind(&pk.ck_s, 1);
@@ -438,7 +437,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
 
     info!(elapsed_ms = %prove_t.elapsed().as_millis(), "spartan_snark_prove");
     // Return proof and updated prep state with preserved scratch buffers
-    let updated_prep = SpartanPrepSNARK {
+    let updated_prep = VegaPrepSNARK {
       ps: prep_snark.ps,
       cached_az: prep_snark.cached_az,
       cached_bz: prep_snark.cached_bz,
@@ -452,7 +451,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
       evals_rx_buffer,
     };
     Ok((
-      SpartanSNARK {
+      VegaSNARK {
         U,
         sc_proof_outer,
         claims_outer: (claim_Az, claim_Bz, claim_Cz),
@@ -466,9 +465,9 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
   }
 
   /// verifies a proof of satisfiability of a `RelaxedR1CS` instance
-  fn verify(&self, vk: &Self::VerifierKey) -> Result<Vec<E::Scalar>, SpartanError> {
+  fn verify(&self, vk: &Self::VerifierKey) -> Result<Vec<E::Scalar>, VegaError> {
     let (_verify_span, verify_t) = start_span!("spartan_snark_verify");
-    let mut transcript = E::TE::new(b"SpartanSNARK");
+    let mut transcript = E::TE::new(b"VegaSNARK");
 
     // append the digest of R1CS matrices
     transcript.absorb(b"vk", &vk.digest()?);
@@ -494,7 +493,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
     let (_tau_span, tau_t) = start_span!("compute_tau_verify");
     let tau = (0..num_rounds_x)
       .map(|_i| transcript.squeeze(b"t"))
-      .collect::<Result<EqPolynomial<_>, SpartanError>>()?;
+      .collect::<Result<EqPolynomial<_>, VegaError>>()?;
     info!(elapsed_ms = %tau_t.elapsed().as_millis(), "compute_tau_verify");
 
     let (_outer_sumcheck_span, outer_sumcheck_t) = start_span!("outer_sumcheck_verify");
@@ -508,7 +507,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
     let taus_bound_rx = tau.evaluate(&r_x);
     let claim_outer_final_expected = taus_bound_rx * (claim_Az * claim_Bz - claim_Cz);
     if claim_outer_final != claim_outer_final_expected {
-      return Err(SpartanError::InvalidSumcheckProof);
+      return Err(VegaError::InvalidSumcheckProof);
     }
     info!(elapsed_ms = %outer_sumcheck_t.elapsed().as_millis(), "outer_sumcheck_verify");
 
@@ -554,7 +553,7 @@ impl<E: Engine> R1CSSNARKTrait<E> for SpartanSNARK<E> {
 
     let claim_inner_final_expected = (eval_A + r * eval_B + r * r * eval_C) * eval_Z;
     if claim_inner_final != claim_inner_final_expected {
-      return Err(SpartanError::InvalidSumcheckProof);
+      return Err(VegaError::InvalidSumcheckProof);
     }
     info!(elapsed_ms = %matrix_eval_t.elapsed().as_millis(), "matrix_evaluations");
     info!(elapsed_ms = %inner_sumcheck_t.elapsed().as_millis(), "inner_sumcheck_verify");
@@ -587,7 +586,7 @@ mod tests {
   #[derive(Clone, Debug, Default)]
   struct CubicCircuit {}
 
-  impl<E: Engine> SpartanCircuit<E> for CubicCircuit {
+  impl<E: Engine> VegaCircuit<E> for CubicCircuit {
     fn public_values(&self) -> Result<Vec<<E as Engine>::Scalar>, SynthesisError> {
       Ok(vec![E::Scalar::from(15u64)])
     }
@@ -659,11 +658,11 @@ mod tests {
         .try_init();
 
     type E = crate::provider::PallasHyraxEngine;
-    type S = SpartanSNARK<E>;
+    type S = VegaSNARK<E>;
     test_snark_with::<E, S>();
 
     type E2 = crate::provider::T256HyraxEngine;
-    type S2 = SpartanSNARK<E2>;
+    type S2 = VegaSNARK<E2>;
     test_snark_with::<E2, S2>();
   }
 

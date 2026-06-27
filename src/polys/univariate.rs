@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Main components:
 //! - `UniPoly`: an univariate dense polynomial in coefficient form (big endian),
 //! - `CompressedUniPoly`: a univariate dense polynomial, compressed (omitted linear term), in coefficient form (little endian),
 use crate::{
-  errors::SpartanError,
+  errors::VegaError,
   traits::{Group, transcript::TranscriptReprTrait},
 };
 use ff::PrimeField;
@@ -44,9 +44,9 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
   /// using Gaussian elimination.
   ///
   /// # Errors
-  /// Returns `SpartanError` if the Gaussian elimination fails due to singular matrix
+  /// Returns `VegaError` if the Gaussian elimination fails due to singular matrix
   /// or invalid input dimensions.
-  pub fn from_evals(evals: &[Scalar]) -> Result<Self, SpartanError> {
+  pub fn from_evals(evals: &[Scalar]) -> Result<Self, VegaError> {
     // Use closed-form formulas for common degrees to avoid Gaussian elimination
     match evals.len() {
       3 => Ok(Self::from_evals_deg2(evals)),
@@ -204,11 +204,11 @@ impl<G: Group> TranscriptReprTrait<G> for UniPoly<G::Scalar> {
 /// A vector containing the solution (polynomial coefficients), or an error if the system cannot be solved.
 ///
 /// # Errors
-/// Returns `SpartanError::DivisionByZero` if any diagonal element is zero during the solving process.
-pub fn gaussian_elimination<F: PrimeField>(matrix: &mut [Vec<F>]) -> Result<Vec<F>, SpartanError> {
+/// Returns `VegaError::DivisionByZero` if any diagonal element is zero during the solving process.
+pub fn gaussian_elimination<F: PrimeField>(matrix: &mut [Vec<F>]) -> Result<Vec<F>, VegaError> {
   let size = matrix.len();
   if size != matrix[0].len() - 1 {
-    return Err(SpartanError::InvalidInputLength {
+    return Err(VegaError::InvalidInputLength {
       reason: format!(
         "Gaussian elimination: Expected a square matrix, got {} rows and {} columns",
         size,
@@ -232,7 +232,7 @@ pub fn gaussian_elimination<F: PrimeField>(matrix: &mut [Vec<F>]) -> Result<Vec<
   #[allow(clippy::needless_range_loop)]
   for i in 0..size {
     if matrix[i][i] == F::ZERO {
-      return Err(SpartanError::DivisionByZero);
+      return Err(VegaError::DivisionByZero);
     }
   }
 
@@ -244,7 +244,7 @@ pub fn gaussian_elimination<F: PrimeField>(matrix: &mut [Vec<F>]) -> Result<Vec<
   Ok(result)
 }
 
-fn echelon<F: PrimeField>(matrix: &mut [Vec<F>], i: usize, j: usize) -> Result<(), SpartanError> {
+fn echelon<F: PrimeField>(matrix: &mut [Vec<F>], i: usize, j: usize) -> Result<(), VegaError> {
   let size = matrix.len();
   if matrix[i][i] != F::ZERO {
     let factor = div_f(matrix[j + 1][i], matrix[i][i])?;
@@ -256,7 +256,7 @@ fn echelon<F: PrimeField>(matrix: &mut [Vec<F>], i: usize, j: usize) -> Result<(
   Ok(())
 }
 
-fn eliminate<F: PrimeField>(matrix: &mut [Vec<F>], i: usize) -> Result<(), SpartanError> {
+fn eliminate<F: PrimeField>(matrix: &mut [Vec<F>], i: usize) -> Result<(), VegaError> {
   let size = matrix.len();
   if matrix[i][i] != F::ZERO {
     for j in (1..i + 1).rev() {
@@ -280,13 +280,13 @@ fn eliminate<F: PrimeField>(matrix: &mut [Vec<F>], i: usize) -> Result<(), Spart
 /// The result of `a / b` or an error if `b` is zero
 ///
 /// # Errors
-/// Returns `SpartanError::DivisionByZero` if `b` is zero (not invertible).
-pub fn div_f<F: PrimeField>(a: F, b: F) -> Result<F, SpartanError> {
+/// Returns `VegaError::DivisionByZero` if `b` is zero (not invertible).
+pub fn div_f<F: PrimeField>(a: F, b: F) -> Result<F, VegaError> {
   let inverse_b = b.invert();
 
   match inverse_b.into_option() {
     Some(inv) => Ok(a * inv),
-    None => Err(SpartanError::DivisionByZero),
+    None => Err(VegaError::DivisionByZero),
   }
 }
 

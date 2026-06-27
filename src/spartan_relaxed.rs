@@ -9,7 +9,7 @@
 #![allow(non_snake_case)]
 use crate::{
   CommitmentKey,
-  errors::SpartanError,
+  errors::VegaError,
   math::Math,
   polys::{eq::EqPolynomial, multilinear::MultilinearPolynomial},
   r1cs::{R1CSShape, RelaxedR1CSInstance, RelaxedR1CSWitness, SparseMatrix},
@@ -102,7 +102,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
     X: &[E::Scalar],
     W: &RelaxedR1CSWitness<E>,
     transcript: &mut E::TE,
-  ) -> Result<Self, SpartanError> {
+  ) -> Result<Self, VegaError> {
     transcript.absorb(b"u_relaxed", u);
     transcript.absorb(b"X_relaxed", &X);
 
@@ -123,7 +123,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
     // Outer sumcheck: sum_x eq(tau,x) * (Az(x)*Bz(x) - u*Cz(x) - E(x)) = 0
     let tau = (0..num_rounds_x)
       .map(|_| transcript.squeeze(b"t"))
-      .collect::<Result<Vec<_>, SpartanError>>()?;
+      .collect::<Result<Vec<_>, VegaError>>()?;
 
     // Third polynomial for cubic sumcheck: u*Cz + E
     let uCz_plus_E: Vec<E::Scalar> = Cz
@@ -221,7 +221,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
     vk_ee: &<E::PCS as PCSEngineTrait<E>>::VerifierKey,
     U: &RelaxedR1CSInstance<E>,
     transcript: &mut E::TE,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     // Must match prover: absorb only (u, X) -- not the commitments.
     transcript.absorb(b"u_relaxed", &U.u);
     transcript.absorb(b"X_relaxed", &U.X.as_slice());
@@ -235,7 +235,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
     // Outer sumcheck
     let tau = (0..num_rounds_x)
       .map(|_| transcript.squeeze(b"t"))
-      .collect::<Result<EqPolynomial<_>, SpartanError>>()?;
+      .collect::<Result<EqPolynomial<_>, VegaError>>()?;
 
     let (claim_outer_final, r_x) =
       self
@@ -246,7 +246,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
     let taus_bound_rx = tau.evaluate(&r_x);
     let claim_outer_expected = taus_bound_rx * (claim_Az * claim_Bz - claim_uCzE);
     if claim_outer_final != claim_outer_expected {
-      return Err(SpartanError::InvalidSumcheckProof);
+      return Err(VegaError::InvalidSumcheckProof);
     }
 
     transcript.absorb(
@@ -296,7 +296,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
 
     let claim_inner_expected = eval_ABC * eval_Z;
     if claim_inner_final != claim_inner_expected {
-      return Err(SpartanError::InvalidSumcheckProof);
+      return Err(VegaError::InvalidSumcheckProof);
     }
 
     // Absorb direct opening vectors into transcript (must match prover)

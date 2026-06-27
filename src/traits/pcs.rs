@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module defines a collection of traits that define the behavior of a commitment engine
 //! We require the commitment engine to provide a commitment to vectors with a single group element
 use crate::{
-  errors::SpartanError,
+  errors::VegaError,
   traits::{Engine, TranscriptReprTrait},
 };
 use core::fmt::Debug;
@@ -66,7 +66,7 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     v: &[E::Scalar],
     r: &Self::Blind,
     is_small: bool,
-  ) -> Result<Self::Commitment, SpartanError>;
+  ) -> Result<Self::Commitment, VegaError>;
 
   /// Commits to an all-zero vector of size `n` with the given blind.
   /// Default: creates a zero vector and calls `commit`. Implementations may override
@@ -75,13 +75,13 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     ck: &Self::CommitmentKey,
     n: usize,
     r: &Self::Blind,
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     let zeros = vec![E::Scalar::ZERO; n];
     Self::commit(ck, &zeros, r, true)
   }
 
   /// Checks if the provided commitment commits to a vector of the specified length
-  fn check_commitment(comm: &Self::Commitment, n: usize, width: usize) -> Result<(), SpartanError>;
+  fn check_commitment(comm: &Self::Commitment, n: usize, width: usize) -> Result<(), VegaError>;
 
   /// Rerandomizes the provided commitment using the provided blind
   fn rerandomize_commitment(
@@ -89,7 +89,7 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     comm: &Self::Commitment,
     r_old: &Self::Blind,
     r_new: &Self::Blind,
-  ) -> Result<Self::Commitment, SpartanError>;
+  ) -> Result<Self::Commitment, VegaError>;
 
   /// Combines the provided commitments (each committing to a multilinear polynomial) into a single commitment.
   ///
@@ -102,17 +102,17 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
   ///
   /// # Returns
   /// - A single combined commitment if the operation is successful.
-  /// - An error of type `SpartanError` if the combination fails due to invalid inputs or mismatched constraints.
+  /// - An error of type `VegaError` if the combination fails due to invalid inputs or mismatched constraints.
   ///
   /// # Usage
   /// This method is used to finalize the commitment after multiple commitments have been made.
   /// Ensure that the commitments are provided in the correct order and meet all constraints.
-  fn combine_commitments(comms: &[Self::Commitment]) -> Result<Self::Commitment, SpartanError>;
+  fn combine_commitments(comms: &[Self::Commitment]) -> Result<Self::Commitment, VegaError>;
 
   /// Combines the provided blinds into a single blind.
   /// The order of the blinds must match the order of the commitments used to generate them
   /// Returns an error if the combination fails
-  fn combine_blinds(blinds: &[Self::Blind]) -> Result<Self::Blind, SpartanError>;
+  fn combine_blinds(blinds: &[Self::Blind]) -> Result<Self::Blind, VegaError>;
 
   /// A method to prove the evaluation of a multilinear polynomial
   fn prove(
@@ -125,7 +125,7 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     point: &[E::Scalar],
     comm_eval: &Self::Commitment,
     blind_eval: &Self::Blind,
-  ) -> Result<Self::EvaluationArgument, SpartanError>;
+  ) -> Result<Self::EvaluationArgument, VegaError>;
 
   /// A method to verify the purported evaluation of a multilinear polynomials
   fn verify(
@@ -136,7 +136,7 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     point: &[E::Scalar],
     comm_eval: &Self::Commitment,
     arg: &Self::EvaluationArgument,
-  ) -> Result<(), SpartanError>;
+  ) -> Result<(), VegaError>;
 
   /// Compute raw (unblinded) commitment. Returns per-row group elements.
   /// Default: not supported (panics). Override for schemes that support this.
@@ -144,8 +144,8 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     _ck: &Self::CommitmentKey,
     _v: &[E::Scalar],
     _is_small: bool,
-  ) -> Result<Vec<E::GE>, SpartanError> {
-    Err(SpartanError::InternalError {
+  ) -> Result<Vec<E::GE>, VegaError> {
+    Err(VegaError::InternalError {
       reason: "commit_without_blind not supported for this PCS".to_string(),
     })
   }
@@ -158,8 +158,8 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     _raw: &[E::GE],
     _delta: &[E::Scalar],
     _blind: &Self::Blind,
-  ) -> Result<Self::Commitment, SpartanError> {
-    Err(SpartanError::InternalError {
+  ) -> Result<Self::Commitment, VegaError> {
+    Err(VegaError::InternalError {
       reason: "commit_incremental not supported for this PCS".to_string(),
     })
   }
@@ -176,8 +176,8 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     _poly: &[E::Scalar],
     _blind: &Self::Blind,
     _point: &[E::Scalar],
-  ) -> Result<(Vec<E::Scalar>, E::Scalar), SpartanError> {
-    Err(SpartanError::InternalError {
+  ) -> Result<(Vec<E::Scalar>, E::Scalar), VegaError> {
+    Err(VegaError::InternalError {
       reason: "prove_direct not supported for this PCS".to_string(),
     })
   }
@@ -192,8 +192,8 @@ pub trait PCSEngineTrait<E: Engine>: Clone + Send + Sync {
     _v: &[E::Scalar],
     _combined_blind: &E::Scalar,
     _point: &[E::Scalar],
-  ) -> Result<E::Scalar, SpartanError> {
-    Err(SpartanError::InternalError {
+  ) -> Result<E::Scalar, VegaError> {
+    Err(VegaError::InternalError {
       reason: "verify_direct not supported for this PCS".to_string(),
     })
   }
@@ -207,14 +207,11 @@ pub trait FoldingEngineTrait<E: Engine>: PCSEngineTrait<E> {
   fn fold_commitments(
     comms: &[Self::Commitment],
     weights: &[E::Scalar],
-  ) -> Result<Self::Commitment, SpartanError>;
+  ) -> Result<Self::Commitment, VegaError>;
 
   /// A method to fold the provided blinds into a single blind using the provided weights
   /// The weights should be the same length as the number of blinds
-  fn fold_blinds(
-    blinds: &[Self::Blind],
-    weights: &[E::Scalar],
-  ) -> Result<Self::Blind, SpartanError>;
+  fn fold_blinds(blinds: &[Self::Blind], weights: &[E::Scalar]) -> Result<Self::Blind, VegaError>;
 
   /// Fold commitments, but for rows beyond `num_data_rows`, compute from
   /// folded blind + h instead of full MSM. This is an optimization for
@@ -226,7 +223,7 @@ pub trait FoldingEngineTrait<E: Engine>: PCSEngineTrait<E> {
     _num_data_rows: usize,
     _folded_blind: &Self::Blind,
     _ck: &Self::CommitmentKey,
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     Self::fold_commitments(comms, weights)
   }
 }

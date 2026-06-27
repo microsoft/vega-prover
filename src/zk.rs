@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Zero-knowledge circuit implementing the algebraic checks of the Spartan verifier logic.
 //!
-//! [`SpartanVerifierCircuit`] constrains the complete Spartan verification across
+//! [`VegaVerifierCircuit`] constrains the complete Spartan verification across
 //! `outer_len + inner_len + 3` rounds: outer sum-check, inner sum-check, and bridging rounds.
 //!
 //! Note: This circuit only encodes the algebraic checks of the verifier. It does **not**
@@ -227,7 +227,7 @@ fn enforce_inner_sc_final_check<E: Engine, CS: ConstraintSystem<E::Scalar>>(
 
 /// Circuit constraining Spartan verifier computation across multiple rounds.
 #[derive(Clone, Debug)]
-pub struct SpartanVerifierCircuit<E: Engine> {
+pub struct VegaVerifierCircuit<E: Engine> {
   pub(crate) outer_polys: Vec<[E::Scalar; 4]>,
   pub(crate) claim_Az: E::Scalar,
   pub(crate) claim_Bz: E::Scalar,
@@ -239,7 +239,7 @@ pub struct SpartanVerifierCircuit<E: Engine> {
   pub(crate) mr_commitment_width: usize,
 }
 
-impl<E: Engine> SpartanVerifierCircuit<E> {
+impl<E: Engine> VegaVerifierCircuit<E> {
   pub fn default(num_rounds_x: usize, num_rounds_y: usize, mr_commitment_width: usize) -> Self {
     Self {
       outer_polys: vec![[E::Scalar::ZERO; 4]; num_rounds_x],
@@ -277,7 +277,7 @@ impl<E: Engine> SpartanVerifierCircuit<E> {
   }
 }
 
-impl<E: Engine> MultiRoundCircuit<E> for SpartanVerifierCircuit<E> {
+impl<E: Engine> MultiRoundCircuit<E> for VegaVerifierCircuit<E> {
   fn num_challenges(&self, round_index: usize) -> Result<usize, SynthesisError> {
     if round_index < self.idx_inner_final() {
       Ok(1)
@@ -470,7 +470,7 @@ impl<E: Engine> MultiRoundCircuit<E> for SpartanVerifierCircuit<E> {
 
 /// NeutronNova verifier circuit constraining computation across multiple rounds.
 #[derive(Clone, Debug)]
-pub struct NeutronNovaVerifierCircuit<E: Engine> {
+pub struct VegaMcVerifierCircuit<E: Engine> {
   // NeutronNova folding scheme verifier state across multiple rounds
   // NIFS cubic sum-check polynomials (4 coeffs per round)
   pub(crate) nifs_polys: Vec<[E::Scalar; 4]>,
@@ -504,7 +504,7 @@ pub struct NeutronNovaVerifierCircuit<E: Engine> {
   pub(crate) mr_commitment_width: usize,
 }
 
-impl<E: Engine> NeutronNovaVerifierCircuit<E> {
+impl<E: Engine> VegaMcVerifierCircuit<E> {
   /// Creates a default instance of the NeutronNova verifier circuit with zeroed fields.
   pub fn default(
     num_rounds_z: usize,
@@ -579,7 +579,7 @@ impl<E: Engine> NeutronNovaVerifierCircuit<E> {
   }
 }
 
-impl<E: Engine> MultiRoundCircuit<E> for NeutronNovaVerifierCircuit<E> {
+impl<E: Engine> MultiRoundCircuit<E> for VegaMcVerifierCircuit<E> {
   fn num_challenges(&self, round_index: usize) -> Result<usize, SynthesisError> {
     if round_index < self.num_nifs_rounds() {
       Ok(1)

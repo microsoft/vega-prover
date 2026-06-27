@@ -1,12 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
-//! This library implements Spartan, a high-speed SNARK.
-//! We currently implement a non-preprocessing version of Spartan
-//! that is generic over the polynomial commitment and evaluation argument (i.e., a PCS).
+//! This library implements the ZK provers of Vega, optimized for low-latency
+//! client-side proving of statements over signed data.
 #![deny(
   warnings,
   unused,
@@ -43,10 +42,10 @@ mod polys;
 mod sumcheck;
 
 // public modules for proof systems
-pub mod neutronnova_zk; // NeutronNova with zero-knowledge
-pub mod spartan; // Spartan without zero-knowledge
-pub mod spartan_relaxed; // Spartan for relaxed R1CS (non-ZK)
-pub mod spartan_zk; // Spartan with zero-knowledge
+pub mod spartan_relaxed; // single-circuit prover for relaxed R1CS (non-ZK)
+pub mod vega_mc_zkp; // multi-circuit (NeutronNova folding) prover with zero-knowledge
+pub mod vega_sc; // single-circuit (Spartan) prover without zero-knowledge
+pub mod vega_sc_zkp; // single-circuit (Spartan) prover with zero-knowledge
 
 /// Start a span + timer, return `(Span, Instant)`.
 macro_rules! start_span {

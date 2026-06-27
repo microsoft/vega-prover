@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Inner Product Argument (IPA) implementation
 use crate::{
-  errors::SpartanError,
+  errors::VegaError,
   provider::traits::{DlogGroup, DlogGroupExt},
   traits::{
     Engine,
@@ -130,7 +130,7 @@ where
     U: &InnerProductInstance<E>,
     W: &InnerProductWitness<E>,
     transcript: &mut E::TE,
-  ) -> Result<Self, SpartanError> {
+  ) -> Result<Self, VegaError> {
     transcript.dom_sep(Self::protocol_name());
 
     // absorb the instance in the transcript
@@ -179,7 +179,7 @@ where
     n: usize,
     U: &InnerProductInstance<E>,
     transcript: &mut E::TE,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     transcript.dom_sep(Self::protocol_name());
 
     // absorb the instance in the transcript
@@ -191,7 +191,7 @@ where
     let r = transcript.squeeze(b"r")?;
 
     if self.z_vec.len() != n || ck.len() < self.z_vec.len() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "Inner product argument verify: Expected {} elements in z_vec, got {}",
           n,
@@ -204,7 +204,7 @@ where
       != E::GE::vartime_multiscalar_mul(&self.z_vec, &ck[0..self.z_vec.len()], true)?
         + *h * self.z_delta
     {
-      return Err(SpartanError::InvalidPCS {
+      return Err(VegaError::InvalidPCS {
         reason: "Inner product argument verify: First equation failed".to_string(),
       });
     }
@@ -212,7 +212,7 @@ where
     if U.comm_c * r + self.beta
       != E::GE::group(ck_c) * inner_product(&self.z_vec, &U.b_vec) + *h_c * self.z_beta
     {
-      return Err(SpartanError::InvalidPCS {
+      return Err(VegaError::InvalidPCS {
         reason: "Inner product argument verify: Second equation failed".to_string(),
       });
     }

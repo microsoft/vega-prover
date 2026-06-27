@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module provides an implementation of `TranscriptEngineTrait` using keccak256
 use crate::{
-  errors::SpartanError,
+  errors::VegaError,
   traits::{
     Engine, PrimeFieldExt,
     transcript::{TranscriptEngineTrait, TranscriptReprTrait},
@@ -67,7 +67,7 @@ impl<E: Engine> TranscriptEngineTrait<E> for Keccak256Transcript<E> {
     }
   }
 
-  fn squeeze(&mut self, label: &'static [u8]) -> Result<E::Scalar, SpartanError> {
+  fn squeeze(&mut self, label: &'static [u8]) -> Result<E::Scalar, VegaError> {
     // we gather the full input from the round, preceded by the current state of the transcript
     let input = [
       DOM_SEP_TAG,
@@ -83,7 +83,7 @@ impl<E: Engine> TranscriptEngineTrait<E> for Keccak256Transcript<E> {
       if let Some(v) = self.round.checked_add(1) {
         v
       } else {
-        return Err(SpartanError::InternalTranscriptError);
+        return Err(VegaError::InternalTranscriptError);
       }
     };
     self.state.copy_from_slice(&output);

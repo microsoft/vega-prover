@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module defines traits that a circuit provider must implement to be used with Spartan.
 use crate::traits::Engine;
@@ -16,7 +16,7 @@ use bellpepper_core::{ConstraintSystem, SynthesisError, num::AllocatedNum};
 /// (3) the prover commits to aux variables
 /// (4) The circuit checks a set of constraints over witness = (shared, precommitted, aux)
 /// The public IO includes the challenge and other things made public by the circuit
-pub trait SpartanCircuit<E: Engine>: Send + Sync + Clone {
+pub trait VegaCircuit<E: Engine>: Send + Sync + Clone {
   /// Returns the public values of the circuit, which is the list of values that will be made public
   /// The circuit must make public these values followed by the challenges generated via the transcript
   fn public_values(&self) -> Result<Vec<E::Scalar>, SynthesisError>;
@@ -53,7 +53,7 @@ pub trait SpartanCircuit<E: Engine>: Send + Sync + Clone {
 }
 
 /// A helper trait for defining a multi-round randomized circuit that Spartan proves.
-/// Unlike the standard SpartanCircuit, this trait allows the circuit to be processed in multiple rounds,
+/// Unlike the standard VegaCircuit, this trait allows the circuit to be processed in multiple rounds,
 /// where each round can allocate different constraints and witness variables based on the round index.
 /// The public IO includes the challenges and other things made public by the circuit across all rounds.
 pub trait MultiRoundCircuit<E: Engine>: Send + Sync + Clone {

@@ -1,4 +1,4 @@
-name: Build and Test Spartan2
+name: Build and Test vega-prover
 
 permissions:
   contents: read

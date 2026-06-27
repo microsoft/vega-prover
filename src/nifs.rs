@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Nova's non-Interactive Folding Scheme (NIFS)
 use crate::{
   Blind, Commitment, CommitmentKey, PCS,
-  errors::SpartanError,
+  errors::VegaError,
   r1cs::{R1CSInstance, R1CSShape, R1CSWitness, RelaxedR1CSInstance, RelaxedR1CSWitness},
   traits::{
     Engine,
@@ -39,7 +39,7 @@ where
     U2: &R1CSInstance<E>,
     W2: &R1CSWitness<E>,
     transcript: &mut E::TE,
-  ) -> Result<(Self, RelaxedR1CSWitness<E>, E::Scalar, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Self, RelaxedR1CSWitness<E>, E::Scalar, Vec<E::Scalar>), VegaError> {
     // Use the caller-provided transcript and absorb both instances.
     transcript.absorb(b"U1", U1);
     transcript.absorb(b"U2", U2);
@@ -67,7 +67,7 @@ where
     transcript: &mut E::TE,
     U1: &RelaxedR1CSInstance<E>,
     U2: &R1CSInstance<E>,
-  ) -> Result<RelaxedR1CSInstance<E>, SpartanError> {
+  ) -> Result<RelaxedR1CSInstance<E>, VegaError> {
     transcript.absorb(b"U1", U1);
     transcript.absorb(b"U2", U2);
     transcript.absorb(b"comm_T", &self.comm_T);

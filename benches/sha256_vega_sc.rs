@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
-//! benches/sha256_spartan.rs
-//! Criterion benchmarks for Spartan {setup, prep_prove, prove, verify}
+//! benches/sha256_vega_sc.rs
+//! Criterion benchmarks for Vega SC {setup, prep_prove, prove, verify}
 //! on a SHA-256 circuit with varying message lengths.
 //!
-//! Run with: `RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_spartan`
+//! Run with: `RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_vega_sc`
 #[cfg(feature = "jem")]
 use tikv_jemallocator::Jemalloc;
 #[cfg(feature = "jem")]
@@ -24,12 +24,12 @@ use bellpepper_core::{
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use ff::{Field, PrimeField, PrimeFieldBits};
 use sha2::{Digest, Sha256};
-use spartan2::{
-  provider::T256HyraxEngine,
-  spartan::SpartanSNARK,
-  traits::{Engine, circuit::SpartanCircuit, snark::R1CSSNARKTrait},
-};
 use std::{marker::PhantomData, time::Duration};
+use vega_prover::{
+  provider::T256HyraxEngine,
+  traits::{Engine, circuit::VegaCircuit, snark::R1CSSNARKTrait},
+  vega_sc::VegaSNARK,
+};
 
 type E = T256HyraxEngine;
 
@@ -48,7 +48,7 @@ impl<Scalar: PrimeField + PrimeFieldBits> Sha256Circuit<Scalar> {
   }
 }
 
-impl<E: Engine> SpartanCircuit<E> for Sha256Circuit<E::Scalar> {
+impl<E: Engine> VegaCircuit<E> for Sha256Circuit<E::Scalar> {
   fn public_values(&self) -> Result<Vec<<E as Engine>::Scalar>, SynthesisError> {
     let mut hasher = Sha256::new();
     hasher.update(&self.preimage);
@@ -163,25 +163,25 @@ fn thread_counts() -> Vec<usize> {
   }
 }
 
-fn spartan_benches(c: &mut Criterion) {
+fn vega_sc_benches(c: &mut Criterion) {
   let sizes = [1024usize, 2048];
   let thread_counts = thread_counts();
 
   // Report proof sizes once (outside measurements)
   for &size in &sizes {
     let circuit = Sha256Circuit::<<E as Engine>::Scalar>::new(vec![0u8; size]);
-    let (pk, _vk) = SpartanSNARK::<E>::setup(circuit.clone()).unwrap();
-    let prep = SpartanSNARK::<E>::prep_prove(&pk, circuit.clone(), true).unwrap();
-    let (proof, _) = SpartanSNARK::<E>::prove(&pk, circuit, prep, true).unwrap();
+    let (pk, _vk) = VegaSNARK::<E>::setup(circuit.clone()).unwrap();
+    let prep = VegaSNARK::<E>::prep_prove(&pk, circuit.clone(), true).unwrap();
+    let (proof, _) = VegaSNARK::<E>::prove(&pk, circuit, prep, true).unwrap();
     let proof_bytes = bincode::serialize(&proof).unwrap();
     println!(
-      "Spartan SHA-256 msg={}B: proof_size={} bytes",
+      "Vega SC SHA-256 msg={}B: proof_size={} bytes",
       size,
       proof_bytes.len()
     );
   }
 
-  let mut g = c.benchmark_group("spartan_sha256");
+  let mut g = c.benchmark_group("vega_sc_sha256");
   g.sample_size(10);
   g.warm_up_time(Duration::from_millis(100));
   g.measurement_time(Duration::from_secs(10));
@@ -198,7 +198,7 @@ fn spartan_benches(c: &mut Criterion) {
         b.iter(|| {
           pool.install(|| {
             let circuit = Sha256Circuit::<<E as Engine>::Scalar>::new(vec![0u8; size]);
-            let _ = SpartanSNARK::<E>::setup(circuit).unwrap();
+            let _ = VegaSNARK::<E>::setup(circuit).unwrap();
           });
         });
       });
@@ -208,13 +208,13 @@ fn spartan_benches(c: &mut Criterion) {
           || {
             pool.install(|| {
               let circuit = Sha256Circuit::<<E as Engine>::Scalar>::new(vec![0u8; size]);
-              SpartanSNARK::<E>::setup(circuit).unwrap().0
+              VegaSNARK::<E>::setup(circuit).unwrap().0
             })
           },
           |pk| {
             pool.install(|| {
               let circuit = Sha256Circuit::<<E as Engine>::Scalar>::new(vec![0u8; size]);
-              let _ = SpartanSNARK::<E>::prep_prove(&pk, circuit, true).unwrap();
+              let _ = VegaSNARK::<E>::prep_prove(&pk, circuit, true).unwrap();
             });
           },
           BatchSize::LargeInput,
@@ -226,17 +226,17 @@ fn spartan_benches(c: &mut Criterion) {
           || {
             pool.install(|| {
               let circuit = Sha256Circuit::<<E as Engine>::Scalar>::new(vec![0u8; size]);
-              let (pk, _vk) = SpartanSNARK::<E>::setup(circuit.clone()).unwrap();
-              let prep = SpartanSNARK::<E>::prep_prove(&pk, circuit.clone(), true).unwrap();
+              let (pk, _vk) = VegaSNARK::<E>::setup(circuit.clone()).unwrap();
+              let prep = VegaSNARK::<E>::prep_prove(&pk, circuit.clone(), true).unwrap();
               // Warm-up prove
               let (_proof, prep_back) =
-                SpartanSNARK::<E>::prove(&pk, circuit.clone(), prep, true).unwrap();
+                VegaSNARK::<E>::prove(&pk, circuit.clone(), prep, true).unwrap();
               (pk, circuit, prep_back)
             })
           },
           |(pk, circuit, prep)| {
             pool.install(|| {
-              let _ = SpartanSNARK::<E>::prove(&pk, circuit, prep, true).unwrap();
+              let _ = VegaSNARK::<E>::prove(&pk, circuit, prep, true).unwrap();
             });
           },
           BatchSize::LargeInput,
@@ -248,9 +248,9 @@ fn spartan_benches(c: &mut Criterion) {
           || {
             pool.install(|| {
               let circuit = Sha256Circuit::<<E as Engine>::Scalar>::new(vec![0u8; size]);
-              let (pk, vk) = SpartanSNARK::<E>::setup(circuit.clone()).unwrap();
-              let prep = SpartanSNARK::<E>::prep_prove(&pk, circuit.clone(), true).unwrap();
-              let (proof, _) = SpartanSNARK::<E>::prove(&pk, circuit, prep, true).unwrap();
+              let (pk, vk) = VegaSNARK::<E>::setup(circuit.clone()).unwrap();
+              let prep = VegaSNARK::<E>::prep_prove(&pk, circuit.clone(), true).unwrap();
+              let (proof, _) = VegaSNARK::<E>::prove(&pk, circuit, prep, true).unwrap();
               (vk, proof)
             })
           },
@@ -267,5 +267,5 @@ fn spartan_benches(c: &mut Criterion) {
   g.finish();
 }
 
-criterion_group!(benches, spartan_benches);
+criterion_group!(benches, vega_sc_benches);
 criterion_main!(benches);

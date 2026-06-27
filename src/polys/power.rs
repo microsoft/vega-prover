@@ -1,11 +1,11 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! `PowPolynomial`: Represents multilinear extension of power polynomials
-use crate::errors::SpartanError;
+use crate::errors::VegaError;
 use core::iter::successors;
 use ff::PrimeField;
 
@@ -31,9 +31,9 @@ impl<Scalar: PrimeField> PowPolynomial<Scalar> {
   }
 
   /// Evaluates the polynomial at a given point `r`.
-  pub fn evaluate(&self, r: &[Scalar]) -> Result<Scalar, SpartanError> {
+  pub fn evaluate(&self, r: &[Scalar]) -> Result<Scalar, VegaError> {
     if r.len() != self.t_pow.len() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "PowPolynomial: Expected {} elements in r, got {}",
           self.t_pow.len(),

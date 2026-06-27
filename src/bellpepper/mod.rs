@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Support for generating R1CS from Bellpepper
 pub mod r1cs;
@@ -16,7 +16,7 @@ mod tests {
   use crate::{
     bellpepper::{
       solver::SatisfyingAssignment,
-      test_r1cs::{TestSpartanShape, TestSpartanWitness},
+      test_r1cs::{TestVegaShape, TestVegaWitness},
       test_shape_cs::TestShapeCS,
     },
     provider::PallasHyraxEngine,
@@ -73,7 +73,7 @@ mod tests {
   // ------------------------------------------------------------
   use crate::{
     bellpepper::{
-      r1cs::{MultiRoundSpartanShape, MultiRoundSpartanWitness},
+      r1cs::{MultiRoundVegaShape, MultiRoundVegaWitness},
       shape_cs::ShapeCS,
     },
     traits::{circuit::MultiRoundCircuit, transcript::TranscriptEngineTrait},
@@ -122,7 +122,7 @@ mod tests {
 
     // Generate shape
     let (shape, ck, _vk) =
-      <ShapeCS<E> as MultiRoundSpartanShape<E>>::multiround_r1cs_shape(&circuit).unwrap();
+      <ShapeCS<E> as MultiRoundVegaShape<E>>::multiround_r1cs_shape(&circuit).unwrap();
 
     // Initialize witness state
     let mut state = SatisfyingAssignment::<E>::initialize_multiround_witness(&shape).unwrap();
@@ -342,7 +342,7 @@ mod tests {
 
     // Generate shape
     let (shape, ck, _vk) =
-      <ShapeCS<E> as MultiRoundSpartanShape<E>>::multiround_r1cs_shape(&circuit).unwrap();
+      <ShapeCS<E> as MultiRoundVegaShape<E>>::multiround_r1cs_shape(&circuit).unwrap();
 
     // Initialize witness state
     let mut state = SatisfyingAssignment::<E>::initialize_multiround_witness(&shape).unwrap();

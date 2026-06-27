@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module defines R1CS related types
 use crate::{
@@ -10,7 +10,7 @@ use crate::{
   big_num::DelayedReduction,
   big_num::montgomery::MontgomeryLimbs,
   digest::SimpleDigestible,
-  errors::SpartanError,
+  errors::VegaError,
   traits::{
     Engine,
     pcs::{FoldingEngineTrait, PCSEngineTrait},
@@ -219,10 +219,7 @@ pub struct RelaxedR1CSInstance<E: Engine> {
 
 impl<E: Engine> RelaxedR1CSWitness<E> {
   /// Commits to the witness using the supplied generators
-  pub fn commit(
-    &self,
-    ck: &CommitmentKey<E>,
-  ) -> Result<(Commitment<E>, Commitment<E>), SpartanError> {
+  pub fn commit(&self, ck: &CommitmentKey<E>) -> Result<(Commitment<E>, Commitment<E>), VegaError> {
     Ok((
       PCS::<E>::commit(ck, &self.W, &self.r_W, false)?,
       PCS::<E>::commit(ck, &self.E, &self.r_E, false)?,
@@ -314,11 +311,11 @@ fn is_sparse_matrix_valid<E: Engine>(
   num_rows: usize,
   num_cols: usize,
   M: &SparseMatrix<E::Scalar>,
-) -> Result<(), SpartanError> {
+) -> Result<(), VegaError> {
   // Check if the indices and indptr are valid for the given number of rows and columns
   M.iter().try_for_each(|(row, col, _val)| {
     if row >= num_rows || col >= num_cols {
-      Err(SpartanError::InvalidIndex)
+      Err(VegaError::InvalidIndex)
     } else {
       Ok(())
     }
@@ -334,7 +331,7 @@ impl<E: Engine> R1CSShape<E> {
     A: SparseMatrix<E::Scalar>,
     B: SparseMatrix<E::Scalar>,
     C: SparseMatrix<E::Scalar>,
-  ) -> Result<R1CSShape<E>, SpartanError> {
+  ) -> Result<R1CSShape<E>, VegaError> {
     let num_rows = num_cons;
     let num_cols = num_vars + 1 + num_io; // +1 for the constant term
 
@@ -360,7 +357,7 @@ impl<E: Engine> R1CSShape<E> {
     ck: &CommitmentKey<E>,
     U: &R1CSInstance<E>,
     W: &R1CSWitness<E>,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     assert_eq!(W.W.len(), self.num_vars);
     assert_eq!(U.X.len(), self.num_io);
 
@@ -379,13 +376,13 @@ impl<E: Engine> R1CSShape<E> {
     let res_comm = U.comm_W == PCS::<E>::commit(ck, &W.W, &W.r_W, W.is_small)?;
 
     if !res_eq {
-      return Err(SpartanError::UnSat {
+      return Err(VegaError::UnSat {
         reason: "R1CS is unsatisfiable".to_string(),
       });
     }
 
     if !res_comm {
-      return Err(SpartanError::UnSat {
+      return Err(VegaError::UnSat {
         reason: "Invalid commitment".to_string(),
       });
     }
@@ -408,9 +405,9 @@ impl<E: Engine> R1CSShape<E> {
   pub fn multiply_vec(
     &self,
     z: &[E::Scalar],
-  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     if z.len() != self.num_io + 1 + self.num_vars {
-      return Err(SpartanError::InvalidWitnessLength);
+      return Err(VegaError::InvalidWitnessLength);
     }
 
     if rayon::current_num_threads() <= 1 {
@@ -432,7 +429,7 @@ impl<E: Engine> R1CSShape<E> {
     ck: &CommitmentKey<E>,
     U: &RelaxedR1CSInstance<E>,
     W: &RelaxedR1CSWitness<E>,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     assert_eq!(W.W.len(), self.num_vars);
     assert_eq!(W.E.len(), self.num_cons);
     assert_eq!(U.X.len(), self.num_io);
@@ -456,13 +453,13 @@ impl<E: Engine> R1CSShape<E> {
     };
 
     if !res_eq {
-      return Err(SpartanError::UnSat {
+      return Err(VegaError::UnSat {
         reason: "Relaxed R1CS is unsatisfiable".to_string(),
       });
     }
 
     if !res_comm {
-      return Err(SpartanError::UnSat {
+      return Err(VegaError::UnSat {
         reason: "Invalid commitments".to_string(),
       });
     }
@@ -474,7 +471,7 @@ impl<E: Engine> R1CSShape<E> {
   pub fn sample_random_instance_witness(
     &self,
     ck: &CommitmentKey<E>,
-  ) -> Result<(RelaxedR1CSInstance<E>, RelaxedR1CSWitness<E>), SpartanError> {
+  ) -> Result<(RelaxedR1CSInstance<E>, RelaxedR1CSWitness<E>), VegaError> {
     // Bulk random generation: generate all random bytes at once via ChaCha CSPRNG,
     // then reduce each 64-byte chunk mod p via from_uniform (wide reduction).
     use crate::traits::PrimeFieldExt;
@@ -538,7 +535,7 @@ impl<E: Engine> R1CSWitness<E> {
     S: &R1CSShape<E>,
     W: &mut Vec<E::Scalar>,
     is_small: bool,
-  ) -> Result<(R1CSWitness<E>, Commitment<E>), SpartanError> {
+  ) -> Result<(R1CSWitness<E>, Commitment<E>), VegaError> {
     let r_W = PCS::<E>::blind(ck, W.len());
 
     // pad with zeros
@@ -562,7 +559,7 @@ impl<E: Engine> R1CSWitness<E> {
     W: Vec<E::Scalar>,
     r_W: Blind<E>,
     is_small: bool,
-  ) -> Result<R1CSWitness<E>, SpartanError> {
+  ) -> Result<R1CSWitness<E>, VegaError> {
     Ok(Self { W, r_W, is_small })
   }
 
@@ -570,13 +567,13 @@ impl<E: Engine> R1CSWitness<E> {
   pub fn fold_multiple(
     r_bs: &[E::Scalar],
     Ws: &[R1CSWitness<E>],
-  ) -> Result<R1CSWitness<E>, SpartanError>
+  ) -> Result<R1CSWitness<E>, VegaError>
   where
     E::PCS: FoldingEngineTrait<E>,
   {
     let n = Ws.len();
     if n == 0 {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_multiple: empty witness list".into(),
       });
     }
@@ -584,7 +581,7 @@ impl<E: Engine> R1CSWitness<E> {
     let w = weights_from_r::<E::Scalar>(r_bs, n);
 
     if w.len() != n {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_multiple: weights length mismatch".into(),
       });
     }
@@ -592,7 +589,7 @@ impl<E: Engine> R1CSWitness<E> {
     let dim = Ws[0].W.len();
 
     if !Ws.iter().all(|z| z.W.len() == dim) {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_multiple: all W vectors must have the same length".into(),
       });
     }
@@ -666,9 +663,9 @@ impl<E: Engine> R1CSInstance<E> {
     S: &R1CSShape<E>,
     comm_W: &Commitment<E>,
     X: &[E::Scalar],
-  ) -> Result<R1CSInstance<E>, SpartanError> {
+  ) -> Result<R1CSInstance<E>, VegaError> {
     if S.num_io != X.len() {
-      Err(SpartanError::InvalidInputLength {
+      Err(VegaError::InvalidInputLength {
         reason: format!(
           "R1CS instance: Expected {} elements in X, got {}",
           S.num_io,
@@ -687,7 +684,7 @@ impl<E: Engine> R1CSInstance<E> {
   pub fn new_unchecked(
     comm_W: Commitment<E>,
     X: Vec<E::Scalar>,
-  ) -> Result<R1CSInstance<E>, SpartanError> {
+  ) -> Result<R1CSInstance<E>, VegaError> {
     Ok(R1CSInstance { comm_W, X })
   }
 
@@ -695,7 +692,7 @@ impl<E: Engine> R1CSInstance<E> {
   pub fn fold_multiple(
     r_bs: &[E::Scalar],
     Us: &[R1CSInstance<E>],
-  ) -> Result<R1CSInstance<E>, SpartanError>
+  ) -> Result<R1CSInstance<E>, VegaError>
   where
     E::PCS: FoldingEngineTrait<E>,
   {
@@ -817,7 +814,7 @@ impl<E: Engine> SplitR1CSShape<E> {
     A: SparseMatrix<E::Scalar>,
     B: SparseMatrix<E::Scalar>,
     C: SparseMatrix<E::Scalar>,
-  ) -> Result<SplitR1CSShape<E>, SpartanError> {
+  ) -> Result<SplitR1CSShape<E>, VegaError> {
     let width = DEFAULT_COMMITMENT_WIDTH;
 
     let num_rows = num_cons;
@@ -1030,12 +1027,12 @@ impl<E: Engine> SplitR1CSShape<E> {
   ///
   pub fn commitment_key(
     shapes: &[&SplitR1CSShape<E>],
-  ) -> Result<(CommitmentKey<E>, VerifierKey<E>), SpartanError> {
+  ) -> Result<(CommitmentKey<E>, VerifierKey<E>), VegaError> {
     let max = shapes
       .iter()
       .map(|s| s.num_shared + s.num_precommitted + s.num_rest)
       .max()
-      .ok_or(SpartanError::InvalidInputLength {
+      .ok_or(VegaError::InvalidInputLength {
         reason: "commitment_key: unable to find max number of variables".to_string(),
       })?;
 
@@ -1075,7 +1072,7 @@ impl<E: Engine> SplitR1CSShape<E> {
   pub fn multiply_vec(
     &self,
     z: &[E::Scalar],
-  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     if z.len()
       != self.num_public
         + self.num_challenges
@@ -1084,7 +1081,7 @@ impl<E: Engine> SplitR1CSShape<E> {
         + self.num_precommitted
         + self.num_rest
     {
-      return Err(SpartanError::InvalidWitnessLength);
+      return Err(VegaError::InvalidWitnessLength);
     }
 
     self.ensure_precomputed();
@@ -1112,7 +1109,7 @@ impl<E: Engine> SplitR1CSShape<E> {
   pub fn multiply_vec_precommitted(
     &self,
     z_cached: &[E::Scalar],
-  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     let cached_len = self.num_shared + self.num_precommitted;
     assert_eq!(
       z_cached.len(),
@@ -1132,7 +1129,7 @@ impl<E: Engine> SplitR1CSShape<E> {
   pub fn multiply_vec_batched(
     &self,
     zs: &[Vec<E::Scalar>],
-  ) -> Result<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>, SpartanError> {
+  ) -> Result<Vec<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>)>, VegaError> {
     let expected_len = self.num_public
       + self.num_challenges
       + 1
@@ -1141,7 +1138,7 @@ impl<E: Engine> SplitR1CSShape<E> {
       + self.num_rest;
     for z in zs {
       if z.len() != expected_len {
-        return Err(SpartanError::InvalidWitnessLength);
+        return Err(VegaError::InvalidWitnessLength);
       }
     }
 
@@ -1176,7 +1173,7 @@ impl<E: Engine> SplitR1CSShape<E> {
     az: &mut Vec<E::Scalar>,
     bz: &mut Vec<E::Scalar>,
     cz: &mut Vec<E::Scalar>,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     // Use filtered entries (built during precompute/setup)
     let col_min = self.num_shared + self.num_precommitted;
     let nr = self.num_cons_unpadded;
@@ -1438,9 +1435,9 @@ impl<E: Engine> SplitR1CSInstance<E> {
     comm_W_rest: Commitment<E>,
     public_values: Vec<E::Scalar>,
     challenges: Vec<E::Scalar>,
-  ) -> Result<SplitR1CSInstance<E>, SpartanError> {
+  ) -> Result<SplitR1CSInstance<E>, VegaError> {
     if public_values.len() != S.num_public {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SplitR1CS instance: Expected {} public values, got {}",
           S.num_public,
@@ -1449,7 +1446,7 @@ impl<E: Engine> SplitR1CSInstance<E> {
       });
     }
     if challenges.len() != S.num_challenges {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SplitR1CS instance: Expected {} challenges, got {}",
           S.num_challenges,
@@ -1460,12 +1457,12 @@ impl<E: Engine> SplitR1CSInstance<E> {
 
     // check if the commitments commit to the right number of variables
     if S.num_shared > 0 && comm_W_shared.is_none() {
-      return Err(SpartanError::InvalidCommitmentLength {
+      return Err(VegaError::InvalidCommitmentLength {
         reason: "comm_W_shared is missing".to_string(),
       });
     }
     if S.num_precommitted > 0 && comm_W_precommitted.is_none() {
-      return Err(SpartanError::InvalidCommitmentLength {
+      return Err(VegaError::InvalidCommitmentLength {
         reason: "comm_W_precommitted is missing".to_string(),
       });
     }
@@ -1487,17 +1484,13 @@ impl<E: Engine> SplitR1CSInstance<E> {
     })
   }
 
-  pub fn validate(
-    &self,
-    S: &SplitR1CSShape<E>,
-    transcript: &mut E::TE,
-  ) -> Result<(), SpartanError> {
+  pub fn validate(&self, S: &SplitR1CSShape<E>, transcript: &mut E::TE) -> Result<(), VegaError> {
     if S.num_shared > 0 {
       if let Some(comm) = &self.comm_W_shared {
         E::PCS::check_commitment(comm, S.num_shared, DEFAULT_COMMITMENT_WIDTH)?;
         transcript.absorb(b"comm_W_shared", comm);
       } else {
-        return Err(SpartanError::ProofVerifyError {
+        return Err(VegaError::ProofVerifyError {
           reason: "comm_W_shared is missing".to_string(),
         });
       }
@@ -1508,7 +1501,7 @@ impl<E: Engine> SplitR1CSInstance<E> {
         E::PCS::check_commitment(comm, S.num_precommitted, DEFAULT_COMMITMENT_WIDTH)?;
         transcript.absorb(b"comm_W_precommitted", comm);
       } else {
-        return Err(SpartanError::ProofVerifyError {
+        return Err(VegaError::ProofVerifyError {
           reason: "comm_W_precommitted is missing".to_string(),
         });
       }
@@ -1517,11 +1510,11 @@ impl<E: Engine> SplitR1CSInstance<E> {
     // obtain challenges from the transcript
     let challenges = (0..S.num_challenges)
       .map(|_| transcript.squeeze(b"challenge"))
-      .collect::<Result<Vec<E::Scalar>, SpartanError>>()?;
+      .collect::<Result<Vec<E::Scalar>, VegaError>>()?;
 
     // check that the challenges of the circuit matches the expected values
     if challenges != self.challenges {
-      return Err(SpartanError::ProofVerifyError {
+      return Err(VegaError::ProofVerifyError {
         reason: "Challenges do not match".to_string(),
       });
     }
@@ -1532,7 +1525,7 @@ impl<E: Engine> SplitR1CSInstance<E> {
     Ok(())
   }
 
-  pub fn to_regular_instance(&self) -> Result<R1CSInstance<E>, SpartanError> {
+  pub fn to_regular_instance(&self) -> Result<R1CSInstance<E>, VegaError> {
     let partial_comms = [
       self.comm_W_shared.clone(),
       self.comm_W_precommitted.clone(),
@@ -1561,10 +1554,10 @@ impl<E: Engine> SplitMultiRoundR1CSShape<E> {
     A: SparseMatrix<E::Scalar>,
     B: SparseMatrix<E::Scalar>,
     C: SparseMatrix<E::Scalar>,
-  ) -> Result<SplitMultiRoundR1CSShape<E>, SpartanError> {
+  ) -> Result<SplitMultiRoundR1CSShape<E>, VegaError> {
     let num_rounds = num_vars_per_round.len();
     if width == 0 || !width.is_power_of_two() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SplitMultiRoundR1CSShape: width must be a non-zero power of two, got {}",
           width
@@ -1572,7 +1565,7 @@ impl<E: Engine> SplitMultiRoundR1CSShape<E> {
       });
     }
     if num_challenges_per_round.len() != num_rounds {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SplitMultiRoundR1CSShape: Expected {} challenges per round, got {}",
           num_rounds,
@@ -1691,12 +1684,12 @@ impl<E: Engine> SplitMultiRoundR1CSShape<E> {
   pub fn multiply_vec(
     &self,
     z: &[E::Scalar],
-  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     let total_vars: usize = self.num_vars_per_round.iter().sum();
     let total_challenges: usize = self.num_challenges_per_round.iter().sum();
 
     if z.len() != self.num_public + total_challenges + 1 + total_vars {
-      return Err(SpartanError::InvalidWitnessLength);
+      return Err(VegaError::InvalidWitnessLength);
     }
 
     let (az, (bz, cz)) = rayon::join(
@@ -1715,9 +1708,9 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
     comm_w_per_round: Vec<Commitment<E>>,
     public_values: Vec<E::Scalar>,
     challenges_per_round: Vec<Vec<E::Scalar>>,
-  ) -> Result<SplitMultiRoundR1CSInstance<E>, SpartanError> {
+  ) -> Result<SplitMultiRoundR1CSInstance<E>, VegaError> {
     if public_values.len() != s.num_public {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SplitMultiRoundR1CS instance: Expected {} public values, got {}",
           s.num_public,
@@ -1726,7 +1719,7 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
       });
     }
     if challenges_per_round.len() != s.num_rounds {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SplitMultiRoundR1CS instance: Expected {} rounds, got {}",
           s.num_rounds,
@@ -1735,7 +1728,7 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
       });
     }
     if comm_w_per_round.len() != s.num_rounds {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SplitMultiRoundR1CS instance: Expected {} rounds, got {}",
           s.num_rounds,
@@ -1747,7 +1740,7 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
     // Validate challenges per round
     for (round, challenges) in challenges_per_round.iter().enumerate() {
       if challenges.len() != s.num_challenges_per_round[round] {
-        return Err(SpartanError::InvalidInputLength {
+        return Err(VegaError::InvalidInputLength {
           reason: format!(
             "SplitMultiRoundR1CS instance: Expected {} challenges in round {}, got {}",
             s.num_challenges_per_round[round],
@@ -1774,7 +1767,7 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
     &self,
     s: &SplitMultiRoundR1CSShape<E>,
     transcript: &mut E::TE,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     // Process each round, absorbing the previous round's commitment before deriving this round's challenges
     for round in 0..s.num_rounds {
       E::PCS::check_commitment(
@@ -1786,10 +1779,10 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
 
       let derived_challenges = (0..s.num_challenges_per_round[round])
         .map(|_| transcript.squeeze(b"challenge"))
-        .collect::<Result<Vec<E::Scalar>, SpartanError>>()?;
+        .collect::<Result<Vec<E::Scalar>, VegaError>>()?;
 
       if self.challenges_per_round[round] != derived_challenges {
-        return Err(SpartanError::ProofVerifyError {
+        return Err(VegaError::ProofVerifyError {
           reason: format!("MultiRoundR1CSInstance:: Challenges do not match for round {round}"),
         });
       }
@@ -1798,7 +1791,7 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
     Ok(())
   }
 
-  pub fn to_regular_instance(&self) -> Result<R1CSInstance<E>, SpartanError> {
+  pub fn to_regular_instance(&self) -> Result<R1CSInstance<E>, VegaError> {
     let partial_comms = self.comm_w_per_round.clone();
     let comm_w = PCS::<E>::combine_commitments(&partial_comms)?;
 
