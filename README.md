@@ -1,11 +1,14 @@
 # vega-prover: Low-latency client-side ZK proving over signed data
 
-This repository implements the ZK provers of [Vega](https://eprint.iacr.org/2025/2094). They are used for client-side ZK proving of statements over signed data. We focus on optimizing low proving latency, and on settings where statements are proven repeatedly over the same signed data.
+This repository implements the ZK provers of [Vega](https://eprint.iacr.org/2025/2094). They are used for client-side ZK proving of statements over signed data. We focus on optimizing low ZK proving latency, and on settings where statements are proven repeatedly over the same signed data.
 
-## Running benchmarks
+This [blog post](https://www.microsoft.com/en-us/research/blog/vega-zero-knowledge-proofs-for-digital-identity-in-the-age-of-ai/) describes the typical application this library targets.
+
+## Performance
+The prover in this repository is the fastest proof system for client-side ZK proving of statements over signed data: it generates a zero-knowledge proof of age from a typical mobile driver's license of about 2 KB in about 92 ms on a commodity client device. The resulting proof is about 108 KB, and it can be verified in 23 ms. No trusted setup is required. The prover key is 464 KB; it fits comfortably on any phone. For smaller credentials, proving drops to 62 ms, with 83 KB proofs, and 17 ms verification.
 
 > [!IMPORTANT]
-> We optimize for low ZK proving latency on the signed messages typical in practice — not for raw throughput on artificial, high-volume workloads.
+> We optimize for low ZK proving latency on signed messages typical in practice — not for raw throughput.
 
 The `benches/` directory contains SHA-256 benchmarks using [Criterion](https://github.com/bheisler/criterion.rs). Each benchmark measures setup, prep_prove, prove, and verify times across multiple iterations and thread counts, and reports proof sizes.
 
