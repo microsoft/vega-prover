@@ -1,79 +1,29 @@
-# Spartan and NeutronNova: Fast client-side zero-knowledge proving systems
+# vega-prover: Low-latency client-side ZK proving over signed data
 
-A client-side zkSNARK library built on the Spartan sum-check proof
-system and NeutronNova's folding scheme. Spartan2 powers
-[Vega](https://eprint.iacr.org/2025/2094).
-
-## What this library provides
-
-- **Spartan zkSNARK** — a PCS-generic Rust implementation of
-  [Spartan](https://eprint.iacr.org/2019/550), a sum-check-based zkSNARK
-  with a linear-time prover. Accepts R1CS circuits written with
-  [bellpepper](https://github.com/lurk-lab/bellpepper). Spartan is
-  PCS-agnostic and works with any multilinear polynomial commitment
-  scheme (Hyrax, HyperKZG, Binius, WHIR, BaseFold, Dory, PST13, …); the
-  choice determines field size, security model (pre- or post-quantum),
-  setup assumptions (transparent or universal), and commitment style
-  (hash- or curve-based). While Spartan supports R1CS, Plonkish, AIR,
-  and CCS in principle (with lookup constraints fitting natively via
-  Spartan's internal lookup arguments), this library currently exposes
-  the R1CS frontend. Zero-knowledge is obtained via Nova's folding
-  scheme. The Spark optimization is not implemented, so verifier work
-  is proportional to the number of non-zero R1CS entries.
-
-- **NeutronNova zkSNARK** — a non-recursive implementation of
-  [NeutronNova](https://eprint.iacr.org/2024/1606) folding for uniform
-  computations: given many instances of a single **step circuit**, all
-  R1CS instances are multi-folded into one and the folded instance is
-  proved with Spartan, amortizing the prover across the batch. An
-  optional **core circuit** can tie the batch together (e.g., to
-  enforce cross-step consistency).
-
-- **Precomputable / online witness split.** Both protocols expose
-  `setup` → `prep_prove` → `prove`. `setup` produces circuit-shape key
-  material. `prep_prove` processes the *precomputable* witness — the
-  portion known ahead of proving time — synthesizing and committing to
-  it; for NeutronNova it also caches the per-step matrix-vector
-  products (`Az`, `Bz`, `Cz`). `prove` consumes fresh *online* witness
-  data (challenges, rest-witness, fresh randomness), runs NeutronNova's
-  multi-folding rounds where applicable, and produces the final proof.
-  The `prep_prove` state can be reused across multiple `prove` calls,
-  so amortizable work is paid once. This is the pattern
-  [Vega](https://eprint.iacr.org/2025/2094) relies on for low-latency
-  proving.
-
-- **Criterion benchmarks** — `benches/sha256_spartan.rs` and
-  `benches/sha256_neutronnova.rs` measure setup, prep_prove, prove, and
-  verify across message sizes and thread counts, and report proof
-  sizes.
+This repository implements the ZK provers of [Vega](https://eprint.iacr.org/2025/2094). They are used for client-side ZK proving of statements over signed data. We focus on optimizing low proving latency, and on settings where statements are proven repeatedly over the same signed data.
 
 ## Running benchmarks
 
-The `benches/` directory contains SHA-256 benchmarks for both protocols using [Criterion](https://github.com/bheisler/criterion.rs). Each benchmark measures setup, prep_prove, prove, and verify times across multiple iterations and thread counts, and reports proof sizes.
+> [!IMPORTANT]
+> We optimize for low ZK proving latency on the signed messages typical in practice — not for raw throughput on artificial, high-volume workloads.
+
+The `benches/` directory contains SHA-256 benchmarks using [Criterion](https://github.com/bheisler/criterion.rs). Each benchmark measures setup, prep_prove, prove, and verify times across multiple iterations and thread counts, and reports proof sizes.
 
 ```bash
-# Spartan: SHA-256 over 1 KiB and 2 KiB messages
-RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_spartan
+# Single-circuit (SC) prover: SHA-256 over 1 KiB and 2 KiB messages
+RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_vega_sc
 
-# NeutronNova: 32 SHA-256 step circuits (2048 bytes total)
-RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_neutronnova
+# Multi-circuit (MC) prover: 32 SHA-256 step circuits (2048 bytes total)
+RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_vega_mc_zkp
 ```
 
 Override thread counts with `BENCH_THREADS` (comma-separated):
 
 ```bash
-BENCH_THREADS=1,8 RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_spartan
+BENCH_THREADS=1,8 RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_vega_sc
 ```
 
 ## References
-
-[Spartan: Efficient and general-purpose zkSNARKs without trusted setup](https://eprint.iacr.org/2019/550) \
-Srinath Setty \
-CRYPTO 2020
-
-[NeutronNova: Folding everything that reduces to zero-check](https://eprint.iacr.org/2024/1606) \
-Abhiram Kothapalli, Srinath Setty \
-IACR ePrint 2024/1606
 
 [Vega: Low-latency zero-knowledge proofs over existing credentials](https://eprint.iacr.org/2025/2094) \
 Darya Kaviani, Srinath Setty \

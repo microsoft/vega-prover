@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module provides a multi-scalar multiplication routine
 //! The generic implementation is adapted from halo2; we add an optimization to commit to bits more efficiently
 //! The specialized implementations are adapted from jolt, with additional optimizations and parallelization.
 use crate::{
-  errors::SpartanError,
+  errors::VegaError,
   provider::traits::{DlogGroup, DlogGroupExt},
   start_span,
   traits::Engine,
@@ -183,16 +183,16 @@ fn cpu_msm_serial<C: CurveAffine>(coeffs: &[C::Scalar], bases: &[C]) -> C::Curve
 /// Adapted from zcash/halo2
 ///
 /// # Errors
-/// Returns `SpartanError::InvalidInputLength` if coeffs and bases have different lengths.
+/// Returns `VegaError::InvalidInputLength` if coeffs and bases have different lengths.
 pub fn msm<C: CurveAffine>(
   coeffs: &[C::Scalar],
   bases: &[C],
   use_parallelism_internally: bool,
-) -> Result<C::Curve, SpartanError> {
+) -> Result<C::Curve, VegaError> {
   let (_msm_span, msm_t) = start_span!("msm", size = coeffs.len());
 
   if coeffs.len() != bases.len() {
-    return Err(SpartanError::InvalidInputLength {
+    return Err(VegaError::InvalidInputLength {
       reason: "MSM: Coefficients and bases must have the same length".to_string(),
     });
   }
@@ -228,7 +228,7 @@ pub fn msm<C: CurveAffine>(
 pub fn msm_shared_weights<C: CurveAffine>(
   weights: &[C::Scalar],
   bases_rows: &[&[C]],
-) -> Result<Vec<C::Curve>, SpartanError> {
+) -> Result<Vec<C::Curve>, VegaError> {
   let n = weights.len();
   if n == 0 || bases_rows.is_empty() {
     return Ok(vec![C::Curve::identity(); bases_rows.len()]);
@@ -362,25 +362,25 @@ fn num_bits(n: usize) -> usize {
 /// Multi-scalar multiplication using the best algorithm for the given scalars.
 ///
 /// # Errors
-/// Returns `SpartanError::InvalidInputLength` if bases and scalars have different lengths.
-/// Returns `SpartanError::InternalError` if scalars contain values that cannot be processed.
+/// Returns `VegaError::InvalidInputLength` if bases and scalars have different lengths.
+/// Returns `VegaError::InternalError` if scalars contain values that cannot be processed.
 pub fn msm_small<C: CurveAffine, T: Integer + Into<u64> + Copy + Sync + ToPrimitive>(
   scalars: &[T],
   bases: &[C],
   use_parallelism_internally: bool,
-) -> Result<C::Curve, SpartanError> {
+) -> Result<C::Curve, VegaError> {
   let (_msm_small_span, msm_small_t) = start_span!("msm_small", size = scalars.len());
 
   if bases.len() != scalars.len() {
-    return Err(SpartanError::InvalidInputLength {
+    return Err(VegaError::InvalidInputLength {
       reason: "MSM Small: Coefficients and bases must have the same length".to_string(),
     });
   }
 
-  let max_scalar = scalars.iter().max().ok_or(SpartanError::InternalError {
+  let max_scalar = scalars.iter().max().ok_or(VegaError::InternalError {
     reason: "Unable to find maximum value".to_string(),
   })?;
-  let max_scalar_usize = max_scalar.to_usize().ok_or(SpartanError::InternalError {
+  let max_scalar_usize = max_scalar.to_usize().ok_or(VegaError::InternalError {
     reason: "Unable to convert maximum value to usize".to_string(),
   })?;
   let max_num_bits = num_bits(max_scalar_usize);

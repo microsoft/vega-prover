@@ -1,14 +1,14 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
-//! benches/sha256_neutronnova.rs
-//! Criterion benchmarks for NeutronNova {setup, prep_prove, prove, verify}
+//! benches/sha256_vega_mc_zkp.rs
+//! Criterion benchmarks for Vega MC {setup, prep_prove, prove, verify}
 //! on a batch of SHA-256 single-block compressions.
 //!
-//! Run with: `RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_neutronnova`
+//! Run with: `RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_vega_mc_zkp`
 //! Override thread counts with `BENCH_THREADS=1,4,8`.
 
 #[cfg(feature = "jem")]
@@ -25,12 +25,12 @@ use bellpepper_core::{
 };
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use ff::Field;
-use spartan2::{
-  neutronnova_zk::NeutronNovaZkSNARK,
-  provider::T256HyraxEngine,
-  traits::{Engine, circuit::SpartanCircuit},
-};
 use std::{marker::PhantomData, time::Duration};
+use vega_prover::{
+  provider::T256HyraxEngine,
+  traits::{Engine, circuit::VegaCircuit},
+  vega_mc_zkp::VegaMcZkSNARK,
+};
 
 type E = T256HyraxEngine;
 
@@ -63,7 +63,7 @@ impl<Eng: Engine> Sha256StepCircuit<Eng> {
   }
 }
 
-impl<Eng: Engine> SpartanCircuit<Eng> for Sha256StepCircuit<Eng> {
+impl<Eng: Engine> VegaCircuit<Eng> for Sha256StepCircuit<Eng> {
   fn public_values(&self) -> Result<Vec<Eng::Scalar>, SynthesisError> {
     Ok(vec![Eng::Scalar::ZERO])
   }
@@ -128,7 +128,7 @@ impl<Eng: Engine> SpartanCircuit<Eng> for Sha256StepCircuit<Eng> {
 }
 
 /// Trivial core circuit: just exposes a single public input. Preserves the
-/// "N step circuits + 1 core circuit" structure that NeutronNova requires.
+/// "N step circuits + 1 core circuit" structure that Vega MC requires.
 #[derive(Clone, Debug)]
 struct CoreCircuit<Eng: Engine>(PhantomData<Eng>);
 
@@ -138,7 +138,7 @@ impl<Eng: Engine> CoreCircuit<Eng> {
   }
 }
 
-impl<Eng: Engine> SpartanCircuit<Eng> for CoreCircuit<Eng> {
+impl<Eng: Engine> VegaCircuit<Eng> for CoreCircuit<Eng> {
   fn public_values(&self) -> Result<Vec<Eng::Scalar>, SynthesisError> {
     Ok(vec![Eng::Scalar::ZERO])
   }
@@ -222,7 +222,7 @@ fn make_step_circuits(num_steps: usize) -> Vec<Sha256StepCircuit<E>> {
     .collect()
 }
 
-fn neutronnova_benches(c: &mut Criterion) {
+fn vega_mc_zkp_benches(c: &mut Criterion) {
   let thread_counts = thread_counts();
 
   // Report proof sizes once per size (outside measurements).
@@ -230,16 +230,15 @@ fn neutronnova_benches(c: &mut Criterion) {
     let num_steps = num_steps_for_size(size);
     let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
     let core_proto = CoreCircuit::<E>::new();
-    let (pk, _vk) = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
+    let (pk, _vk) = VegaMcZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
     let step_circuits = make_step_circuits(num_steps);
     let core_circuit = CoreCircuit::<E>::new();
-    let prep =
-      NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true).unwrap();
+    let prep = VegaMcZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true).unwrap();
     let (proof, _) =
-      NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true).unwrap();
+      VegaMcZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true).unwrap();
     let proof_bytes = bincode::serialize(&proof).unwrap();
     println!(
-      "NeutronNova SHA-256 size={}B num_steps={} (= {} compressions): proof_size={} bytes",
+      "Vega MC SHA-256 size={}B num_steps={} (= {} compressions): proof_size={} bytes",
       size,
       num_steps,
       num_steps,
@@ -247,7 +246,7 @@ fn neutronnova_benches(c: &mut Criterion) {
     );
   }
 
-  let mut g = c.benchmark_group("neutronnova_sha256");
+  let mut g = c.benchmark_group("vega_mc_zkp_sha256");
   g.sample_size(10);
   g.warm_up_time(Duration::from_millis(100));
   g.measurement_time(Duration::from_secs(10));
@@ -267,7 +266,7 @@ fn neutronnova_benches(c: &mut Criterion) {
           pool.install(|| {
             let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
             let core_proto = CoreCircuit::<E>::new();
-            let _ = NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
+            let _ = VegaMcZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
           });
         });
       });
@@ -278,7 +277,7 @@ fn neutronnova_benches(c: &mut Criterion) {
             pool.install(|| {
               let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
               let core_proto = CoreCircuit::<E>::new();
-              NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps)
+              VegaMcZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps)
                 .unwrap()
                 .0
             })
@@ -287,8 +286,8 @@ fn neutronnova_benches(c: &mut Criterion) {
             pool.install(|| {
               let step_circuits = make_step_circuits(num_steps);
               let core_circuit = CoreCircuit::<E>::new();
-              let _ = NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true)
-                .unwrap();
+              let _ =
+                VegaMcZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true).unwrap();
             });
           },
           BatchSize::LargeInput,
@@ -302,24 +301,21 @@ fn neutronnova_benches(c: &mut Criterion) {
               let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
               let core_proto = CoreCircuit::<E>::new();
               let (pk, _vk) =
-                NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
+                VegaMcZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
               let step_circuits = make_step_circuits(num_steps);
               let core_circuit = CoreCircuit::<E>::new();
               let prep =
-                NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true)
-                  .unwrap();
+                VegaMcZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true).unwrap();
               // Warm-up prove
               let (_proof, prep_back) =
-                NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true)
-                  .unwrap();
+                VegaMcZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true).unwrap();
               (pk, step_circuits, core_circuit, prep_back)
             })
           },
           |(pk, step_circuits, core_circuit, prep)| {
             pool.install(|| {
               let _ =
-                NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true)
-                  .unwrap();
+                VegaMcZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true).unwrap();
             });
           },
           BatchSize::LargeInput,
@@ -333,15 +329,13 @@ fn neutronnova_benches(c: &mut Criterion) {
               let step_proto = Sha256StepCircuit::<E>::new([0u8; BLOCK_BYTES]);
               let core_proto = CoreCircuit::<E>::new();
               let (pk, vk) =
-                NeutronNovaZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
+                VegaMcZkSNARK::<E>::setup(&step_proto, &core_proto, num_steps).unwrap();
               let step_circuits = make_step_circuits(num_steps);
               let core_circuit = CoreCircuit::<E>::new();
               let prep =
-                NeutronNovaZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true)
-                  .unwrap();
+                VegaMcZkSNARK::<E>::prep_prove(&pk, &step_circuits, &core_circuit, true).unwrap();
               let (proof, _) =
-                NeutronNovaZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true)
-                  .unwrap();
+                VegaMcZkSNARK::<E>::prove(&pk, &step_circuits, &core_circuit, prep, true).unwrap();
               (vk, proof)
             })
           },
@@ -358,5 +352,5 @@ fn neutronnova_benches(c: &mut Criterion) {
   g.finish();
 }
 
-criterion_group!(benches, neutronnova_benches);
+criterion_group!(benches, vega_mc_zkp_benches);
 criterion_main!(benches);

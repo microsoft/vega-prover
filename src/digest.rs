@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! Cryptographic digest functionality for Spartan.
 //!
@@ -12,7 +12,7 @@
 //! marker trait for serializable types, and the `DigestComputer` utility for
 //! computing SHA-256 digests.
 
-use crate::traits::snark::SpartanDigest;
+use crate::traits::snark::VegaDigest;
 use bincode::Options;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -61,7 +61,7 @@ impl<'a, T: Digestible> DigestComputer<'a, T> {
   }
 
   /// Compute the digest of a `Digestible` instance.
-  pub fn digest(&self) -> Result<SpartanDigest, io::Error> {
+  pub fn digest(&self) -> Result<VegaDigest, io::Error> {
     // Stream bytes directly into the hasher via a small buffered adapter.
     // A 64 KiB buffer is large enough to amortize per-call overhead from
     // bincode while avoiding the large upfront allocation that a

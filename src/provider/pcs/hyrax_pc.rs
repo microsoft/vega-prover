@@ -1,12 +1,12 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module implements the Hyrax polynomial commitment scheme
 use crate::{
-  errors::SpartanError,
+  errors::VegaError,
   math::Math,
   polys::eq::EqPolynomial,
   provider::{
@@ -209,7 +209,7 @@ where
     v: &[E::Scalar],
     r: &Self::Blind,
     is_small: bool,
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     let n = v.len();
 
     // compute the expected number of columns
@@ -306,7 +306,7 @@ where
     ck: &Self::CommitmentKey,
     n: usize,
     r: &Self::Blind,
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     let num_cols = ck.num_cols;
     let num_rows = div_ceil(n, num_cols);
     let h_table = ck
@@ -323,9 +323,9 @@ where
     comm: &Self::Commitment,
     r_old: &Self::Blind,
     r_new: &Self::Blind,
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     if comm.comm.len() != r_old.blind.len() || comm.comm.len() != r_new.blind.len() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "rerandomize_commitment: commitment and blinds must have the same length"
           .to_string(),
       });
@@ -343,10 +343,10 @@ where
     Ok(HyraxCommitment { comm: new_comm })
   }
 
-  fn check_commitment(comm: &Self::Commitment, n: usize, width: usize) -> Result<(), SpartanError> {
+  fn check_commitment(comm: &Self::Commitment, n: usize, width: usize) -> Result<(), VegaError> {
     let min_rows = div_ceil(n, width);
     if comm.comm.len() != min_rows {
-      return Err(SpartanError::InvalidCommitmentLength {
+      return Err(VegaError::InvalidCommitmentLength {
         reason: format!(
           "InvalidCommitmentLength: actual: {}, expected: {}",
           comm.comm.len(),
@@ -357,9 +357,9 @@ where
     Ok(())
   }
 
-  fn combine_commitments(comms: &[Self::Commitment]) -> Result<Self::Commitment, SpartanError> {
+  fn combine_commitments(comms: &[Self::Commitment]) -> Result<Self::Commitment, VegaError> {
     if comms.is_empty() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "combine_commitments: No commitments provided".to_string(),
       });
     }
@@ -371,9 +371,9 @@ where
     Ok(HyraxCommitment { comm })
   }
 
-  fn combine_blinds(blinds: &[Self::Blind]) -> Result<Self::Blind, SpartanError> {
+  fn combine_blinds(blinds: &[Self::Blind]) -> Result<Self::Blind, VegaError> {
     if blinds.is_empty() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "combine_blinds: No blinds provided".to_string(),
       });
     }
@@ -394,11 +394,11 @@ where
     point: &[E::Scalar],
     comm_eval: &Self::Commitment,
     blind_eval: &Self::Blind,
-  ) -> Result<Self::EvaluationArgument, SpartanError> {
+  ) -> Result<Self::EvaluationArgument, VegaError> {
     let n = poly.len();
     let (_setup_span, setup_t) = start_span!("hyrax_prove_prep");
     if n != (2usize).pow(point.len() as u32) {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "Hyrax prove: Expected {} elements in poly, got {}",
           (2_usize).pow(point.len() as u32),
@@ -485,7 +485,7 @@ where
     point: &[E::Scalar],
     comm_eval: &Self::Commitment,
     arg: &Self::EvaluationArgument,
-  ) -> Result<(), SpartanError> {
+  ) -> Result<(), VegaError> {
     let (_verify_span, verify_t) = start_span!("hyrax_pcs_verify");
     transcript.absorb(b"poly_com", comm);
 
@@ -534,7 +534,7 @@ where
     ck: &Self::CommitmentKey,
     v: &[E::Scalar],
     is_small: bool,
-  ) -> Result<Vec<E::GE>, SpartanError> {
+  ) -> Result<Vec<E::GE>, VegaError> {
     use ff::Field;
     let n = v.len();
     let num_cols = ck.ck.len();
@@ -571,7 +571,7 @@ where
     raw: &[E::GE],
     delta: &[E::Scalar],
     blind: &Self::Blind,
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     use ff::Field;
     let num_cols = ck.ck.len();
     let n = delta.len();
@@ -580,7 +580,7 @@ where
       .h_table
       .get_or_init(|| FixedBaseMul::precompute(&ck.h, 8));
 
-    let comm: Result<Vec<E::GE>, SpartanError> = (0..num_rows)
+    let comm: Result<Vec<E::GE>, VegaError> = (0..num_rows)
       .into_par_iter()
       .map(|i| {
         let row_start = i * num_cols;
@@ -611,7 +611,7 @@ where
     poly: &[E::Scalar],
     blind: &Self::Blind,
     point: &[E::Scalar],
-  ) -> Result<(Vec<E::Scalar>, E::Scalar), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, E::Scalar), VegaError> {
     let num_cols = ck.num_cols;
     // Derive dimensions from point length (must match how commitment was structured)
     let n = (2_usize).pow(point.len() as u32);
@@ -657,10 +657,10 @@ where
     v: &[E::Scalar],
     combined_blind: &E::Scalar,
     point: &[E::Scalar],
-  ) -> Result<E::Scalar, SpartanError> {
+  ) -> Result<E::Scalar, VegaError> {
     let num_cols = vk.num_cols;
     if v.len() != num_cols {
-      return Err(SpartanError::ProofVerifyError {
+      return Err(VegaError::ProofVerifyError {
         reason: format!(
           "Direct opening: v.len() ({}) != num_cols ({})",
           v.len(),
@@ -693,7 +693,7 @@ where
       E::GE::vartime_multiscalar_mul(v, &vk.ck[..v.len()], false)? + vk.h * *combined_blind;
 
     if comm_LZ != expected {
-      return Err(SpartanError::ProofVerifyError {
+      return Err(VegaError::ProofVerifyError {
         reason: "Direct opening: commitment mismatch".to_string(),
       });
     }
@@ -737,9 +737,9 @@ where
   fn fold_commitments(
     comms: &[Self::Commitment],
     weights: &[E::Scalar],
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     if comms.is_empty() || weights.is_empty() || comms.len() != weights.len() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_commitments: Commitments and weights must have the same length".to_string(),
       });
     }
@@ -747,7 +747,7 @@ where
     // take weighted sum of commitments via MSM
     let n = comms[0].comm.len();
     if !comms.iter().all(|c| c.comm.len() == n) {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_commitments: all inner commitment vectors must have the same length".into(),
       });
     }
@@ -795,15 +795,15 @@ where
   fn fold_blinds(
     blinds: &[Self::Blind],
     weights: &[<E as Engine>::Scalar],
-  ) -> Result<Self::Blind, SpartanError> {
+  ) -> Result<Self::Blind, VegaError> {
     if blinds.is_empty() || blinds.len() != weights.len() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_blinds: blinds and weights must be non-empty and same length".into(),
       });
     }
     let n = blinds[0].blind.len();
     if !blinds.iter().all(|b| b.blind.len() == n) {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_blinds: all inner blind vectors must have the same length".into(),
       });
     }
@@ -824,9 +824,9 @@ where
     num_data_rows: usize,
     folded_blind: &Self::Blind,
     ck: &Self::CommitmentKey,
-  ) -> Result<Self::Commitment, SpartanError> {
+  ) -> Result<Self::Commitment, VegaError> {
     if comms.is_empty() || weights.is_empty() || comms.len() != weights.len() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: "fold_commitments_partial: Commitments and weights must have the same length"
           .to_string(),
       });
@@ -834,7 +834,7 @@ where
 
     let total_rows = comms[0].comm.len();
     if num_data_rows > total_rows {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "fold_commitments_partial: num_data_rows ({}) exceeds total_rows ({})",
           num_data_rows, total_rows

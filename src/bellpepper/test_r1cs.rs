@@ -1,44 +1,40 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module supports generating R1CS instance-witness pairs for test constraint systems.
 //! This currently does not support generating split R1CS instances, but it can be extended to do so.
 use crate::{
   CommitmentKey, VerifierKey,
   bellpepper::{r1cs::add_constraint, solver::SatisfyingAssignment, test_shape_cs::TestShapeCS},
-  errors::SpartanError,
+  errors::VegaError,
   r1cs::{R1CSInstance, R1CSShape, R1CSWitness, SparseMatrix},
   start_span,
   traits::Engine,
 };
 use tracing::info;
 
-/// `TestSpartanShape` provides methods for acquiring `R1CSShape` and `CommitmentKey` from implementers.
-pub trait TestSpartanShape<E: Engine> {
+/// `TestVegaShape` provides methods for acquiring `R1CSShape` and `CommitmentKey` from implementers.
+pub trait TestVegaShape<E: Engine> {
   /// Return an appropriate `R1CSShape` and `CommitmentKey` structs.
-  fn r1cs_shape(
-    &mut self,
-  ) -> Result<(R1CSShape<E>, CommitmentKey<E>, VerifierKey<E>), SpartanError>;
+  fn r1cs_shape(&mut self) -> Result<(R1CSShape<E>, CommitmentKey<E>, VerifierKey<E>), VegaError>;
 }
 
-/// `TestSpartanWitness` provide a method for acquiring an `R1CSInstance` and `R1CSWitness` from implementers.
-pub trait TestSpartanWitness<E: Engine> {
+/// `TestVegaWitness` provide a method for acquiring an `R1CSInstance` and `R1CSWitness` from implementers.
+pub trait TestVegaWitness<E: Engine> {
   /// Return an instance and witness, given a shape and ck.
   fn r1cs_instance_and_witness(
     &mut self,
     S: &R1CSShape<E>,
     ck: &CommitmentKey<E>,
     is_small: bool,
-  ) -> Result<(R1CSInstance<E>, R1CSWitness<E>), SpartanError>;
+  ) -> Result<(R1CSInstance<E>, R1CSWitness<E>), VegaError>;
 }
 
-impl<E: Engine> TestSpartanShape<E> for TestShapeCS<E> {
-  fn r1cs_shape(
-    &mut self,
-  ) -> Result<(R1CSShape<E>, CommitmentKey<E>, VerifierKey<E>), SpartanError> {
+impl<E: Engine> TestVegaShape<E> for TestShapeCS<E> {
+  fn r1cs_shape(&mut self) -> Result<(R1CSShape<E>, CommitmentKey<E>, VerifierKey<E>), VegaError> {
     let mut A = SparseMatrix::<E::Scalar>::empty();
     let mut B = SparseMatrix::<E::Scalar>::empty();
     let mut C = SparseMatrix::<E::Scalar>::empty();
@@ -72,13 +68,13 @@ impl<E: Engine> TestSpartanShape<E> for TestShapeCS<E> {
   }
 }
 
-impl<E: Engine> TestSpartanWitness<E> for SatisfyingAssignment<E> {
+impl<E: Engine> TestVegaWitness<E> for SatisfyingAssignment<E> {
   fn r1cs_instance_and_witness(
     &mut self,
     shape: &R1CSShape<E>,
     ck: &CommitmentKey<E>,
     is_small: bool,
-  ) -> Result<(R1CSInstance<E>, R1CSWitness<E>), SpartanError> {
+  ) -> Result<(R1CSInstance<E>, R1CSWitness<E>), VegaError> {
     let (_witness_span, witness_t) = start_span!("create_r1cs_witness");
     let (W, comm_W) = R1CSWitness::<E>::new(ck, shape, &mut self.aux_assignment, is_small)?;
     info!(elapsed_ms = %witness_t.elapsed().as_millis(), "create_r1cs_witness");

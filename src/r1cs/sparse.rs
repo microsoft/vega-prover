@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! # Sparse Matrices
 //!
@@ -13,7 +13,7 @@ use ff::PrimeField;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::errors::SpartanError;
+use crate::errors::VegaError;
 
 /// Threshold below which we use sequential (non-rayon) iteration.
 const PARALLEL_THRESHOLD: usize = 4096;
@@ -472,10 +472,10 @@ impl<F: PrimeField> SparseMatrix<F> {
   /// Multiply by a dense vector; uses rayon/gpu.
   ///
   /// # Errors
-  /// Returns `SpartanError::InvalidInputLength` if the vector length doesn't match the matrix dimensions.
-  pub fn multiply_vec(&self, vector: &[F]) -> Result<Vec<F>, SpartanError> {
+  /// Returns `VegaError::InvalidInputLength` if the vector length doesn't match the matrix dimensions.
+  pub fn multiply_vec(&self, vector: &[F]) -> Result<Vec<F>, VegaError> {
     if self.cols != vector.len() {
-      return Err(SpartanError::InvalidInputLength {
+      return Err(VegaError::InvalidInputLength {
         reason: format!(
           "SparseMatrix multiply_vec: Expected {} elements in vector, got {}",
           self.cols,

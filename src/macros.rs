@@ -1,13 +1,13 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 /// Macros to give syntactic sugar for zipWith pattern and variants.
 ///
 /// ```ignore
-/// use crate::spartan::zip_with;
+/// use crate::vega_sc::zip_with;
 /// use itertools::Itertools as _; // we use zip_eq to zip!
 /// let v = vec![0, 1, 2];
 /// let w = vec![2, 3, 4];

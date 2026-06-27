@@ -1,8 +1,8 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module implements the sum-check protocol used in Spartan.
 //!
@@ -13,11 +13,11 @@
 use crate::{
   CommitmentKey,
   bellpepper::{
-    r1cs::{MultiRoundSpartanWitness, MultiRoundState},
+    r1cs::{MultiRoundState, MultiRoundVegaWitness},
     solver::SatisfyingAssignment,
   },
   big_num::DelayedReduction,
-  errors::SpartanError,
+  errors::VegaError,
   polys::{
     multilinear::MultilinearPolynomial,
     univariate::{CompressedUniPoly, UniPoly},
@@ -25,7 +25,7 @@ use crate::{
   r1cs::SplitMultiRoundR1CSShape,
   start_span,
   traits::{Engine, transcript::TranscriptEngineTrait},
-  zk::{NeutronNovaVerifierCircuit, SpartanVerifierCircuit},
+  zk::{VegaMcVerifierCircuit, VegaVerifierCircuit},
 };
 use ff::Field;
 use rayon::prelude::*;
@@ -70,14 +70,14 @@ impl<E: Engine> SumcheckProof<E> {
     num_rounds: usize,
     degree_bound: usize,
     transcript: &mut E::TE,
-  ) -> Result<(E::Scalar, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(E::Scalar, Vec<E::Scalar>), VegaError> {
     let (_verify_span, verify_t) = start_span!("sumcheck_verify");
     let mut e = claim;
     let mut r: Vec<E::Scalar> = Vec::new();
 
     // verify that there is a univariate polynomial for each round
     if self.compressed_polys.len() != num_rounds {
-      return Err(SpartanError::InvalidSumcheckProof);
+      return Err(VegaError::InvalidSumcheckProof);
     }
 
     for i in 0..self.compressed_polys.len() {
@@ -86,7 +86,7 @@ impl<E: Engine> SumcheckProof<E> {
 
       // verify degree bound
       if poly.degree() != degree_bound {
-        return Err(SpartanError::InvalidSumcheckProof);
+        return Err(VegaError::InvalidSumcheckProof);
       }
 
       // we do not need to check if poly(0) + poly(1) = e, as
@@ -193,7 +193,7 @@ impl<E: Engine> SumcheckProof<E> {
     poly_A: &mut MultilinearPolynomial<E::Scalar>,
     poly_B: &mut MultilinearPolynomial<E::Scalar>,
     transcript: &mut E::TE,
-  ) -> Result<(Self, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Self, Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     let mut r: Vec<E::Scalar> = Vec::new();
     let mut polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::new();
     let mut claim_per_round = *claim;
@@ -506,7 +506,7 @@ impl<E: Engine> SumcheckProof<E> {
     poly_B: &mut MultilinearPolynomial<E::Scalar>,
     poly_C: &mut MultilinearPolynomial<E::Scalar>,
     transcript: &mut E::TE,
-  ) -> Result<(Self, Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Self, Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     let mut r: Vec<E::Scalar> = Vec::new();
     let mut polys: Vec<CompressedUniPoly<E::Scalar>> = Vec::new();
     let mut claim_per_round = *claim;
@@ -578,12 +578,12 @@ impl<E: Engine> SumcheckProof<E> {
     poly_Az: &mut MultilinearPolynomial<E::Scalar>,
     poly_Bz: &mut MultilinearPolynomial<E::Scalar>,
     poly_Cz: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut SpartanVerifierCircuit<E>,
+    verifier_circuit: &mut VegaVerifierCircuit<E>,
     state: &mut MultiRoundState<E>,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
     vc_ck: &CommitmentKey<E>,
     transcript: &mut E::TE,
-  ) -> Result<Vec<E::Scalar>, SpartanError> {
+  ) -> Result<Vec<E::Scalar>, VegaError> {
     let mut r_x: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
     let mut claim_outer_round = E::Scalar::ZERO;
     let mut eq_instance = eq_sumcheck::EqSumCheckInstance::<E>::new(taus.to_vec());
@@ -648,14 +648,14 @@ impl<E: Engine> SumcheckProof<E> {
     num_rounds: usize,
     poly_ABC: &mut MultilinearPolynomial<E::Scalar>,
     poly_z: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut SpartanVerifierCircuit<E>,
+    verifier_circuit: &mut VegaVerifierCircuit<E>,
     state: &mut MultiRoundState<E>,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
     vc_ck: &CommitmentKey<E>,
     transcript: &mut E::TE,
     start_round: usize,
     inner_poly_offset: usize,
-  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     let mut r_y: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
     let mut claim_current_round = *claim;
 
@@ -706,13 +706,13 @@ impl<E: Engine> SumcheckProof<E> {
     poly_A_1: &mut MultilinearPolynomial<E::Scalar>,
     poly_B_0: &mut MultilinearPolynomial<E::Scalar>,
     poly_B_1: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut NeutronNovaVerifierCircuit<E>,
+    verifier_circuit: &mut VegaMcVerifierCircuit<E>,
     state: &mut MultiRoundState<E>,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
     vc_ck: &CommitmentKey<E>,
     transcript: &mut E::TE,
     start_round: usize,
-  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>), SpartanError> {
+  ) -> Result<(Vec<E::Scalar>, Vec<E::Scalar>), VegaError> {
     let mut r_y: Vec<E::Scalar> = Vec::with_capacity(num_rounds);
     // Maintain separate claims for step and core branches
     let mut claim_step_round = claims[0];
@@ -793,13 +793,13 @@ impl<E: Engine> SumcheckProof<E> {
     poly_B_core: &mut MultilinearPolynomial<E::Scalar>,
     poly_C_step: &mut MultilinearPolynomial<E::Scalar>,
     poly_C_core: &mut MultilinearPolynomial<E::Scalar>,
-    verifier_circuit: &mut NeutronNovaVerifierCircuit<E>,
+    verifier_circuit: &mut VegaMcVerifierCircuit<E>,
     state: &mut MultiRoundState<E>,
     vc_shape: &SplitMultiRoundR1CSShape<E>,
     vc_ck: &CommitmentKey<E>,
     transcript: &mut E::TE,
     start_round: usize,
-  ) -> Result<Vec<E::Scalar>, SpartanError> {
+  ) -> Result<Vec<E::Scalar>, VegaError> {
     let mut base_tau = E::Scalar::ONE;
     let mut len_pow_tau = pow_tau_left.Z.len() * pow_tau_right.Z.len();
 

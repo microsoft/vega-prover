@@ -1,16 +1,16 @@
 // Copyright (c) Microsoft Corporation.
 // SPDX-License-Identifier: MIT
-// This file is part of the Spartan2 project.
+// This file is part of the vega-prover project.
 // See the LICENSE file in the project root for full license information.
-// Source repository: https://github.com/Microsoft/Spartan2
+// Source repository: https://github.com/Microsoft/vega-prover
 
 //! This module defines errors returned by the library.
 use core::fmt::Debug;
 use thiserror::Error;
 
-/// Errors returned by Spartan2
+/// Errors returned by vega-prover
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
-pub enum SpartanError {
+pub enum VegaError {
   /// returned if the supplied row or col in (row,col,val) tuple is out of range
   #[error("InvalidIndex")]
   InvalidIndex,
