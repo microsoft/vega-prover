@@ -149,9 +149,9 @@ pub struct VegaPrepZkSNARK<E: Engine> {
   evals_rx_buffer: Vec<E::Scalar>,
 }
 
-/// A succinct non-interactive argument of knowledge (SNARK) for a relaxed R1CS instance,
+/// A zero-knowledge succinct non-interactive argument of knowledge (zkSNARK) for a relaxed R1CS instance,
 /// produced using Spartan's combination of sum-check protocols and polynomial commitments.
-/// This proof attests to knowledge of a witness satisfying the given R1CS constraints.
+/// This proof attests to knowledge of a witness satisfying the given R1CS constraints, without revealing the witness.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct VegaZkSNARK<E: Engine> {
@@ -266,7 +266,7 @@ where
     Ok(prep)
   }
 
-  /// produces a succinct proof of satisfiability of an R1CS instance.
+  /// produces a zero-knowledge succinct proof of satisfiability of an R1CS instance.
   /// Takes ownership of prep state, rerandomizes in-place, and returns it for reuse.
   fn prove<C: VegaCircuit<E>>(
     pk: &Self::ProverKey,

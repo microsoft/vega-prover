@@ -4,7 +4,7 @@
 // See the LICENSE file in the project root for full license information.
 // Source repository: https://github.com/Microsoft/vega-prover
 
-//! Multi-circuit (MC) prover using NeutronNova folding (https://eprint.iacr.org/2024/1606), proved with the single-circuit prover.
+//! Zero-knowledge multi-circuit (MC) prover using NeutronNova folding (https://eprint.iacr.org/2024/1606), proved with the single-circuit prover.
 use crate::start_span;
 use crate::{
   Commitment, CommitmentKey, DEFAULT_COMMITMENT_WIDTH, VerifierKey,
@@ -1362,7 +1362,7 @@ pub struct VegaMcPrepZkSNARK<E: Engine> {
   cached_step_public_values: Vec<Vec<E::Scalar>>,
 }
 
-/// Holds the proof produced by the NeutronNova folding scheme followed by NeutronNova SNARK
+/// Holds the zero-knowledge proof produced by the NeutronNova folding scheme followed by NeutronNova SNARK
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
 pub struct VegaMcZkSNARK<E: Engine> {
