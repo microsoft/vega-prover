@@ -73,12 +73,13 @@ fn evaluate_matrix_with_tables<E: Engine>(
 ///
 /// # Soundness note
 ///
-/// This proof does NOT absorb `comm_W`/`comm_E` into its transcript -- only `(u, X)`.
-/// It is sound only when used within an outer protocol (e.g., NIFS) that has already
-/// bound the commitments to the transcript. Do not use as a standalone proof system.
+/// This crate-internal proof does NOT absorb `comm_W`/`comm_E` into its transcript --
+/// only `(u, X)`. It is sound only when composed after a step (e.g., NIFS) that has
+/// already bound the commitments to the transcript, and is intentionally not exposed
+/// as a standalone proof system.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(bound = "")]
-pub struct RelaxedR1CSSpartanProof<E: Engine> {
+pub(crate) struct RelaxedR1CSSpartanProof<E: Engine> {
   pub(crate) sc_proof_outer: SumcheckProof<E>,
   pub(crate) claims_outer: (E::Scalar, E::Scalar, E::Scalar),
   pub(crate) sc_proof_inner: SumcheckProof<E>,
@@ -95,7 +96,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
   ///
   /// The relation is: Az * Bz = u*Cz + E, where z = (W, u, X).
   /// Takes `u` and `X` separately to avoid computing folded commitments on the prover side.
-  pub fn prove(
+  pub(crate) fn prove(
     S: &R1CSShape<E>,
     ck: &CommitmentKey<E>,
     u: &E::Scalar,
@@ -215,7 +216,7 @@ impl<E: Engine> RelaxedR1CSSpartanProof<E> {
   /// Verify a relaxed R1CS Spartan proof.
   ///
   /// The verifier provides the full folded instance (with commitments) from NIFS::verify.
-  pub fn verify(
+  pub(crate) fn verify(
     &self,
     S: &R1CSShape<E>,
     vk_ee: &<E::PCS as PCSEngineTrait<E>>::VerifierKey,

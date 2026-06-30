@@ -42,7 +42,7 @@ mod polys;
 mod sumcheck;
 
 // public modules for proof systems
-pub mod spartan_relaxed; // single-circuit prover for relaxed R1CS (non-ZK)
+pub(crate) mod spartan_relaxed; // single-circuit prover for relaxed R1CS (non-ZK)
 pub mod vega_mc_zkp; // multi-circuit (NeutronNova folding) prover with zero-knowledge
 pub mod vega_sc; // single-circuit (Spartan) prover without zero-knowledge
 pub mod vega_sc_zkp; // single-circuit (Spartan) prover with zero-knowledge

@@ -40,6 +40,13 @@ where
     W2: &R1CSWitness<E>,
     transcript: &mut E::TE,
   ) -> Result<(Self, RelaxedR1CSWitness<E>, E::Scalar, Vec<E::Scalar>), VegaError> {
+    // Folding combines the instances coordinate-wise, so their public IO must align.
+    if U1.X.len() != U2.X.len() {
+      return Err(VegaError::InvalidInputLength {
+        reason: "NIFS::prove: instances have mismatched public IO lengths".into(),
+      });
+    }
+
     // Use the caller-provided transcript and absorb both instances.
     transcript.absorb(b"U1", U1);
     transcript.absorb(b"U2", U2);
@@ -68,6 +75,13 @@ where
     U1: &RelaxedR1CSInstance<E>,
     U2: &R1CSInstance<E>,
   ) -> Result<RelaxedR1CSInstance<E>, VegaError> {
+    // Folding combines the instances coordinate-wise, so their public IO must align.
+    if U1.X.len() != U2.X.len() {
+      return Err(VegaError::InvalidInputLength {
+        reason: "NIFS::verify: instances have mismatched public IO lengths".into(),
+      });
+    }
+
     transcript.absorb(b"U1", U1);
     transcript.absorb(b"U2", U2);
     transcript.absorb(b"comm_T", &self.comm_T);

@@ -293,6 +293,29 @@ mod tests_relaxed_sample {
   fn test_random_sample() {
     test_random_sample_with::<P256HyraxEngine>();
   }
+
+  #[test]
+  fn test_fold_multiple_rejects_mismatched_x() {
+    type E = P256HyraxEngine;
+    let s = tiny_r1cs::<E>(4);
+    let (ck, _) = s.commitment_key();
+    let one = <<E as Engine>::Scalar as Field>::ONE;
+    let r_w = PCS::<E>::blind(&ck, 1);
+    let comm = PCS::<E>::commit(&ck, &[one], &r_w, false).unwrap();
+
+    let u_a = R1CSInstance::<E> {
+      comm_W: comm.clone(),
+      X: vec![one, one],
+    };
+    let u_b = R1CSInstance::<E> {
+      comm_W: comm,
+      X: vec![one, one, one],
+    };
+
+    // equal-length instances fold; mismatched public IO lengths are rejected
+    assert!(R1CSInstance::fold_multiple(&[one], &[u_a.clone(), u_a.clone()]).is_ok());
+    assert!(R1CSInstance::fold_multiple(&[one], &[u_a, u_b]).is_err());
+  }
 }
 
 /// Round `n` up to the next multiple of width.
@@ -697,8 +720,27 @@ impl<E: Engine> R1CSInstance<E> {
     E::PCS: FoldingEngineTrait<E>,
   {
     let n = Us.len();
+    if n == 0 {
+      return Err(VegaError::InvalidInputLength {
+        reason: "fold_multiple: empty instance list".into(),
+      });
+    }
+
     let w = weights_from_r::<E::Scalar>(r_bs, n);
+
+    if w.len() != n {
+      return Err(VegaError::InvalidInputLength {
+        reason: "fold_multiple: weights length mismatch".into(),
+      });
+    }
+
     let d = Us[0].X.len();
+
+    if !Us.iter().all(|U| U.X.len() == d) {
+      return Err(VegaError::InvalidInputLength {
+        reason: "fold_multiple: all X vectors must have the same length".into(),
+      });
+    }
 
     // X
     let mut X_acc = vec![E::Scalar::ZERO; d];
@@ -1466,6 +1508,17 @@ impl<E: Engine> SplitR1CSInstance<E> {
         reason: "comm_W_precommitted is missing".to_string(),
       });
     }
+    // a commitment must be absent when its segment is empty
+    if S.num_shared == 0 && comm_W_shared.is_some() {
+      return Err(VegaError::InvalidCommitmentLength {
+        reason: "comm_W_shared present for an empty segment".to_string(),
+      });
+    }
+    if S.num_precommitted == 0 && comm_W_precommitted.is_some() {
+      return Err(VegaError::InvalidCommitmentLength {
+        reason: "comm_W_precommitted present for an empty segment".to_string(),
+      });
+    }
 
     if let Some(ref comm) = comm_W_shared {
       E::PCS::check_commitment(comm, S.num_shared, DEFAULT_COMMITMENT_WIDTH)?;
@@ -1485,6 +1538,20 @@ impl<E: Engine> SplitR1CSInstance<E> {
   }
 
   pub fn validate(&self, S: &SplitR1CSShape<E>, transcript: &mut E::TE) -> Result<(), VegaError> {
+    // `public_values` must have exactly `num_public` entries: the regular
+    // instance places `[public_values, challenges]` into `X`.
+    if self.public_values.len() != S.num_public {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "public_values length ({}) does not match shape num_public ({})",
+          self.public_values.len(),
+          S.num_public
+        ),
+      });
+    }
+
+    // A split commitment is present exactly when its segment is non-empty;
+    // `to_regular_instance` folds every present commitment into the witness commitment.
     if S.num_shared > 0 {
       if let Some(comm) = &self.comm_W_shared {
         E::PCS::check_commitment(comm, S.num_shared, DEFAULT_COMMITMENT_WIDTH)?;
@@ -1494,6 +1561,10 @@ impl<E: Engine> SplitR1CSInstance<E> {
           reason: "comm_W_shared is missing".to_string(),
         });
       }
+    } else if self.comm_W_shared.is_some() {
+      return Err(VegaError::ProofVerifyError {
+        reason: "comm_W_shared present for an empty segment".to_string(),
+      });
     }
 
     if S.num_precommitted > 0 {
@@ -1505,6 +1576,10 @@ impl<E: Engine> SplitR1CSInstance<E> {
           reason: "comm_W_precommitted is missing".to_string(),
         });
       }
+    } else if self.comm_W_precommitted.is_some() {
+      return Err(VegaError::ProofVerifyError {
+        reason: "comm_W_precommitted present for an empty segment".to_string(),
+      });
     }
 
     // obtain challenges from the transcript
@@ -1768,6 +1843,36 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
     s: &SplitMultiRoundR1CSShape<E>,
     transcript: &mut E::TE,
   ) -> Result<(), VegaError> {
+    // The regular instance folds every per-round commitment and flattens every
+    // per-round challenge into `X`, so the instance must match the shape exactly.
+    if self.public_values.len() != s.num_public {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "public_values length ({}) does not match shape num_public ({})",
+          self.public_values.len(),
+          s.num_public
+        ),
+      });
+    }
+    if self.comm_w_per_round.len() != s.num_rounds {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "comm_w_per_round length ({}) does not match shape num_rounds ({})",
+          self.comm_w_per_round.len(),
+          s.num_rounds
+        ),
+      });
+    }
+    if self.challenges_per_round.len() != s.num_rounds {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "challenges_per_round length ({}) does not match shape num_rounds ({})",
+          self.challenges_per_round.len(),
+          s.num_rounds
+        ),
+      });
+    }
+
     // Process each round, absorbing the previous round's commitment before deriving this round's challenges
     for round in 0..s.num_rounds {
       E::PCS::check_commitment(

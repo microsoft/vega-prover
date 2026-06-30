@@ -159,6 +159,48 @@ mod tests {
     test_multiround_bits_with::<PallasHyraxEngine>();
   }
 
+  #[test]
+  fn test_multiround_validate_rejects_length_mismatch() {
+    type E = PallasHyraxEngine;
+    let circuit = TwoRoundBitsCircuit;
+
+    let (shape, ck, _vk) =
+      <ShapeCS<E> as MultiRoundVegaShape<E>>::multiround_r1cs_shape(&circuit).unwrap();
+    let mut state = SatisfyingAssignment::<E>::initialize_multiround_witness(&shape).unwrap();
+    let mut transcript = <E as Engine>::TE::new(b"test");
+    let num_rounds = <TwoRoundBitsCircuit as MultiRoundCircuit<E>>::num_rounds(&circuit);
+    for r in 0..num_rounds {
+      let _ = SatisfyingAssignment::<E>::process_round(
+        &mut state,
+        &shape,
+        &ck,
+        &circuit,
+        r,
+        &mut transcript,
+      )
+      .unwrap();
+    }
+    let (instance, _witness) =
+      SatisfyingAssignment::<E>::finalize_multiround_witness(&mut state, &shape).unwrap();
+
+    // the well-formed instance validates
+    let mut t = <E as Engine>::TE::new(b"test");
+    assert!(instance.validate(&shape, &mut t).is_ok());
+
+    // an over-length public_values vector is rejected
+    let mut bad = instance.clone();
+    bad.public_values.push(<E as Engine>::Scalar::from(1u64));
+    let mut t = <E as Engine>::TE::new(b"test");
+    assert!(bad.validate(&shape, &mut t).is_err());
+
+    // an extra per-round commitment is rejected
+    let mut bad = instance.clone();
+    let extra = bad.comm_w_per_round[0].clone();
+    bad.comm_w_per_round.push(extra);
+    let mut t = <E as Engine>::TE::new(b"test");
+    assert!(bad.validate(&shape, &mut t).is_err());
+  }
+
   // ------------------------------------------------------------
   // Multi-round permutation circuit test
   // ------------------------------------------------------------
