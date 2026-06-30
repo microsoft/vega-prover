@@ -1466,6 +1466,17 @@ impl<E: Engine> SplitR1CSInstance<E> {
         reason: "comm_W_precommitted is missing".to_string(),
       });
     }
+    // a commitment must be absent when its segment is empty
+    if S.num_shared == 0 && comm_W_shared.is_some() {
+      return Err(VegaError::InvalidCommitmentLength {
+        reason: "comm_W_shared present for an empty segment".to_string(),
+      });
+    }
+    if S.num_precommitted == 0 && comm_W_precommitted.is_some() {
+      return Err(VegaError::InvalidCommitmentLength {
+        reason: "comm_W_precommitted present for an empty segment".to_string(),
+      });
+    }
 
     if let Some(ref comm) = comm_W_shared {
       E::PCS::check_commitment(comm, S.num_shared, DEFAULT_COMMITMENT_WIDTH)?;
@@ -1497,6 +1508,8 @@ impl<E: Engine> SplitR1CSInstance<E> {
       });
     }
 
+    // A split commitment is present exactly when its segment is non-empty;
+    // `to_regular_instance` folds every present commitment into the witness commitment.
     if S.num_shared > 0 {
       if let Some(comm) = &self.comm_W_shared {
         E::PCS::check_commitment(comm, S.num_shared, DEFAULT_COMMITMENT_WIDTH)?;
@@ -1506,6 +1519,10 @@ impl<E: Engine> SplitR1CSInstance<E> {
           reason: "comm_W_shared is missing".to_string(),
         });
       }
+    } else if self.comm_W_shared.is_some() {
+      return Err(VegaError::ProofVerifyError {
+        reason: "comm_W_shared present for an empty segment".to_string(),
+      });
     }
 
     if S.num_precommitted > 0 {
@@ -1517,6 +1534,10 @@ impl<E: Engine> SplitR1CSInstance<E> {
           reason: "comm_W_precommitted is missing".to_string(),
         });
       }
+    } else if self.comm_W_precommitted.is_some() {
+      return Err(VegaError::ProofVerifyError {
+        reason: "comm_W_precommitted present for an empty segment".to_string(),
+      });
     }
 
     // obtain challenges from the transcript

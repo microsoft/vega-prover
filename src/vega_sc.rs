@@ -707,4 +707,26 @@ mod tests {
     let mut transcript = <E as Engine>::TE::new(b"test");
     assert!(snark.U.validate(&vk.S, &mut transcript).is_err());
   }
+
+  #[test]
+  fn test_validate_rejects_commitment_for_empty_segment() {
+    type E = crate::provider::PallasHyraxEngine;
+    let circuit = CubicCircuit::default();
+
+    let (pk, vk) = VegaSNARK::<E>::setup(circuit.clone()).unwrap();
+    let prep_snark = VegaSNARK::<E>::prep_prove(&pk, circuit.clone(), false).unwrap();
+    let (mut snark, _prep_snark) = VegaSNARK::<E>::prove(&pk, circuit, prep_snark, false).unwrap();
+
+    // this circuit has no shared segment
+    assert_eq!(vk.S.num_shared, 0);
+
+    // a well-formed instance passes validation
+    let mut transcript = <E as Engine>::TE::new(b"test");
+    assert!(snark.U.validate(&vk.S, &mut transcript).is_ok());
+
+    // a commitment supplied for the empty shared segment is rejected
+    snark.U.comm_W_shared = Some(snark.U.comm_W_rest.clone());
+    let mut transcript = <E as Engine>::TE::new(b"test");
+    assert!(snark.U.validate(&vk.S, &mut transcript).is_err());
+  }
 }
