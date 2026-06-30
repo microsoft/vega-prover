@@ -1801,6 +1801,36 @@ impl<E: Engine> SplitMultiRoundR1CSInstance<E> {
     s: &SplitMultiRoundR1CSShape<E>,
     transcript: &mut E::TE,
   ) -> Result<(), VegaError> {
+    // The regular instance folds every per-round commitment and flattens every
+    // per-round challenge into `X`, so the instance must match the shape exactly.
+    if self.public_values.len() != s.num_public {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "public_values length ({}) does not match shape num_public ({})",
+          self.public_values.len(),
+          s.num_public
+        ),
+      });
+    }
+    if self.comm_w_per_round.len() != s.num_rounds {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "comm_w_per_round length ({}) does not match shape num_rounds ({})",
+          self.comm_w_per_round.len(),
+          s.num_rounds
+        ),
+      });
+    }
+    if self.challenges_per_round.len() != s.num_rounds {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "challenges_per_round length ({}) does not match shape num_rounds ({})",
+          self.challenges_per_round.len(),
+          s.num_rounds
+        ),
+      });
+    }
+
     // Process each round, absorbing the previous round's commitment before deriving this round's challenges
     for round in 0..s.num_rounds {
       E::PCS::check_commitment(
