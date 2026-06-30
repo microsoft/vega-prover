@@ -117,11 +117,6 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
     }
   }
 
-  /// Returns the degree of the polynomial.
-  pub fn degree(&self) -> usize {
-    self.coeffs.len() - 1
-  }
-
   /// Evaluates the polynomial at zero.
   pub fn eval_at_zero(&self) -> Scalar {
     self.coeffs[0]
@@ -154,6 +149,19 @@ impl<Scalar: PrimeField> UniPoly<Scalar> {
 }
 
 impl<Scalar: PrimeField> CompressedUniPoly<Scalar> {
+  /// Returns the degree of the polynomial once the linear term is restored.
+  pub(crate) fn degree(&self) -> usize {
+    self.coeffs_except_linear_term.len()
+  }
+
+  /// Builds a compressed polynomial directly from its stored coefficients.
+  #[cfg(test)]
+  pub(crate) fn new_for_test(coeffs_except_linear_term: Vec<Scalar>) -> Self {
+    CompressedUniPoly {
+      coeffs_except_linear_term,
+    }
+  }
+
   // we require eval(0) + eval(1) = hint, so we can solve for the linear term as:
   // linear_term = hint - 2 * constant_term - deg2 term - deg3 term
   /// Decompresses the polynomial by reconstructing the linear coefficient.
