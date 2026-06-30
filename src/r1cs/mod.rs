@@ -293,6 +293,29 @@ mod tests_relaxed_sample {
   fn test_random_sample() {
     test_random_sample_with::<P256HyraxEngine>();
   }
+
+  #[test]
+  fn test_fold_multiple_rejects_mismatched_x() {
+    type E = P256HyraxEngine;
+    let s = tiny_r1cs::<E>(4);
+    let (ck, _) = s.commitment_key();
+    let one = <<E as Engine>::Scalar as Field>::ONE;
+    let r_w = PCS::<E>::blind(&ck, 1);
+    let comm = PCS::<E>::commit(&ck, &[one], &r_w, false).unwrap();
+
+    let u_a = R1CSInstance::<E> {
+      comm_W: comm.clone(),
+      X: vec![one, one],
+    };
+    let u_b = R1CSInstance::<E> {
+      comm_W: comm,
+      X: vec![one, one, one],
+    };
+
+    // equal-length instances fold; mismatched public IO lengths are rejected
+    assert!(R1CSInstance::fold_multiple(&[one], &[u_a.clone(), u_a.clone()]).is_ok());
+    assert!(R1CSInstance::fold_multiple(&[one], &[u_a, u_b]).is_err());
+  }
 }
 
 /// Round `n` up to the next multiple of width.
@@ -697,8 +720,27 @@ impl<E: Engine> R1CSInstance<E> {
     E::PCS: FoldingEngineTrait<E>,
   {
     let n = Us.len();
+    if n == 0 {
+      return Err(VegaError::InvalidInputLength {
+        reason: "fold_multiple: empty instance list".into(),
+      });
+    }
+
     let w = weights_from_r::<E::Scalar>(r_bs, n);
+
+    if w.len() != n {
+      return Err(VegaError::InvalidInputLength {
+        reason: "fold_multiple: weights length mismatch".into(),
+      });
+    }
+
     let d = Us[0].X.len();
+
+    if !Us.iter().all(|U| U.X.len() == d) {
+      return Err(VegaError::InvalidInputLength {
+        reason: "fold_multiple: all X vectors must have the same length".into(),
+      });
+    }
 
     // X
     let mut X_acc = vec![E::Scalar::ZERO; d];
