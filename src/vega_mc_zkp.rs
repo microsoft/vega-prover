@@ -1620,6 +1620,17 @@ where
     })?;
     info!(elapsed_ms = %rerandomize_t.elapsed().as_millis(), "rerandomize_prep_state");
 
+    // The prepared step state corresponds one-to-one with the step circuits.
+    if prep_snark.ps_step.len() != step_circuits.len() {
+      return Err(VegaError::InvalidInputLength {
+        reason: format!(
+          "prove received {} step circuits but prep state holds {} step instances",
+          step_circuits.len(),
+          prep_snark.ps_step.len()
+        ),
+      });
+    }
+
     // Validate that cached matvec matches current step circuit public values.
     // The cache computed in prep_prove includes public_values in the z vector;
     // if the circuits changed, the cache is stale and would produce incorrect proofs.
@@ -2490,5 +2501,15 @@ mod tests {
         );
       }
     }
+  }
+
+  #[test]
+  fn test_mc_zk_prove_rejects_prep_state_with_fewer_steps() {
+    type E = T256HyraxEngine;
+    let (pk, _vk, circuits) = generate_sha_r1cs::<E>(7, 32);
+    // Prepare with only 5 of the 7 step circuits, then prove with all 7.
+    let ps = VegaMcZkSNARK::<E>::prep_prove(&pk, &circuits[..5], &circuits[0], true).unwrap();
+    let res = VegaMcZkSNARK::prove(&pk, &circuits, &circuits[0], ps, true);
+    assert!(res.is_err());
   }
 }
