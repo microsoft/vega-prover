@@ -1485,6 +1485,18 @@ impl<E: Engine> SplitR1CSInstance<E> {
   }
 
   pub fn validate(&self, S: &SplitR1CSShape<E>, transcript: &mut E::TE) -> Result<(), VegaError> {
+    // `public_values` must have exactly `num_public` entries: the regular
+    // instance places `[public_values, challenges]` into `X`.
+    if self.public_values.len() != S.num_public {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "public_values length ({}) does not match shape num_public ({})",
+          self.public_values.len(),
+          S.num_public
+        ),
+      });
+    }
+
     if S.num_shared > 0 {
       if let Some(comm) = &self.comm_W_shared {
         E::PCS::check_commitment(comm, S.num_shared, DEFAULT_COMMITMENT_WIDTH)?;

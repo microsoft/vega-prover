@@ -685,4 +685,26 @@ mod tests {
     assert!(res.is_ok());
     assert_eq!(res.unwrap(), [<E as Engine>::Scalar::from(15u64)])
   }
+
+  #[test]
+  fn test_validate_rejects_overlong_public_io() {
+    type E = crate::provider::PallasHyraxEngine;
+    let circuit = CubicCircuit::default();
+
+    let (pk, vk) = VegaSNARK::<E>::setup(circuit.clone()).unwrap();
+    let prep_snark = VegaSNARK::<E>::prep_prove(&pk, circuit.clone(), false).unwrap();
+    let (mut snark, _prep_snark) = VegaSNARK::<E>::prove(&pk, circuit, prep_snark, false).unwrap();
+
+    // a well-formed instance passes validation
+    let mut transcript = <E as Engine>::TE::new(b"test");
+    assert!(snark.U.validate(&vk.S, &mut transcript).is_ok());
+
+    // a `public_values` length that does not match `num_public` is rejected
+    snark
+      .U
+      .public_values
+      .push(<E as Engine>::Scalar::from(42u64));
+    let mut transcript = <E as Engine>::TE::new(b"test");
+    assert!(snark.U.validate(&vk.S, &mut transcript).is_err());
+  }
 }
