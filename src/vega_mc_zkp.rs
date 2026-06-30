@@ -1291,6 +1291,7 @@ pub struct VegaMcVerifierKey<E: Engine> {
   vc_shape_regular: R1CSShape<E>,
   vc_ck: CommitmentKey<E>,
   vc_vk: VerifierKey<E>,
+  num_steps: usize,
   #[serde(skip, default = "OnceCell::new")]
   digest: OnceCell<VegaDigest>,
 }
@@ -1322,6 +1323,9 @@ impl<E: Engine> crate::digest::Digestible for VegaMcVerifierKey<E> {
       .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     config
       .serialize_into(&mut *w, &self.vc_vk)
+      .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    config
+      .serialize_into(&mut *w, &self.num_steps)
       .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     Ok(())
   }
@@ -1443,6 +1447,7 @@ where
       vc_shape_regular: vc_shape_regular.clone(),
       vc_ck: vc_ck.clone(),
       vc_vk: vc_vk.clone(),
+      num_steps,
       digest: OnceCell::new(),
     };
 
@@ -2111,6 +2116,14 @@ where
         ),
       });
     }
+    if num_instances != vk.num_steps {
+      return Err(VegaError::ProofVerifyError {
+        reason: format!(
+          "Verifier key is bound to {} step instances, got {}",
+          vk.num_steps, num_instances
+        ),
+      });
+    }
 
     // Reconstruct step instances and core instance with the shared commitment
     let step_instances: Vec<SplitR1CSInstance<E>> = self
@@ -2511,5 +2524,21 @@ mod tests {
     let ps = VegaMcZkSNARK::<E>::prep_prove(&pk, &circuits[..5], &circuits[0], true).unwrap();
     let res = VegaMcZkSNARK::prove(&pk, &circuits, &circuits[0], ps, true);
     assert!(res.is_err());
+  }
+
+  #[test]
+  fn test_mc_zk_rejects_step_count_different_from_setup_count() {
+    type E = T256HyraxEngine;
+    // A valid 5-step proof under a key set up for exactly 5 steps.
+    let (pk5, vk5, circuits5) = generate_sha_r1cs::<E>(5, 32);
+    let ps = VegaMcZkSNARK::<E>::prep_prove(&pk5, &circuits5, &circuits5[0], true).unwrap();
+    let (snark, _) = VegaMcZkSNARK::prove(&pk5, &circuits5, &circuits5[0], ps, true).unwrap();
+
+    // It verifies under its own 5-step key.
+    assert!(snark.verify(&vk5, 5).is_ok());
+
+    // A key set up for a different number of steps must reject this proof.
+    let (_pk7, vk7, _c7) = generate_sha_r1cs::<E>(7, 32);
+    assert!(snark.verify(&vk7, 5).is_err());
   }
 }
