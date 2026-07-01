@@ -174,13 +174,13 @@ where
   /// * `r` - The folding challenge
   ///
   /// # Returns
-  /// The folded relaxed R1CS instance.
+  /// The folded relaxed R1CS instance, or an error if the commitment dimensions don't match.
   pub fn fold(
     &self,
     U2: &R1CSInstance<E>,
     comm_T: &Commitment<E>,
     r: &E::Scalar,
-  ) -> RelaxedR1CSInstance<E> {
+  ) -> Result<RelaxedR1CSInstance<E>, VegaError> {
     let X = self
       .X
       .par_iter()
@@ -191,21 +191,19 @@ where
     let comm_W = <E::PCS as FoldingEngineTrait<E>>::fold_commitments(
       &[self.comm_W.clone(), U2.comm_W.clone()],
       &[<E::Scalar as Field>::ONE, *r],
-    )
-    .expect("fold commitments");
+    )?;
 
     let comm_E = <E::PCS as FoldingEngineTrait<E>>::fold_commitments(
       &[self.comm_E.clone(), comm_T.clone()],
       &[<E::Scalar as Field>::ONE, *r],
-    )
-    .expect("fold commitments");
+    )?;
 
-    RelaxedR1CSInstance {
+    Ok(RelaxedR1CSInstance {
       comm_W,
       comm_E,
       X,
       u: self.u + *r,
-    }
+    })
   }
 }
 
@@ -258,5 +256,59 @@ where
       r_W: r_w,
       is_small: false, // after folding, witnesses are not small
     })
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use crate::provider::PallasHyraxEngine;
+
+  type E = PallasHyraxEngine;
+  type Scalar = <E as Engine>::Scalar;
+
+  fn commit_with_len(label: &'static [u8], n: usize, width: usize) -> Commitment<E> {
+    let (ck, _) = <E as Engine>::PCS::setup(label, n, width);
+    let poly = (0..n)
+      .map(|i| Scalar::from(i as u64 + 1))
+      .collect::<Vec<_>>();
+    let blind = <E as Engine>::PCS::blind(&ck, n);
+    <E as Engine>::PCS::commit(&ck, &poly, &blind, false).unwrap()
+  }
+
+  // Folding must surface an error rather than panicking when the instance
+  // commitments disagree in length.
+  #[test]
+  fn fold_rejects_mismatched_commitment_lengths() {
+    let width = 32;
+    let comm_one = commit_with_len(b"fold-one-row", 16, width); // one row
+    let comm_two = commit_with_len(b"fold-two-rows", 64, width); // two rows
+    let r = Scalar::from(3u64);
+
+    // Mismatched witness commitment lengths.
+    let u1 = RelaxedR1CSInstance::<E> {
+      comm_W: comm_two.clone(),
+      comm_E: comm_two.clone(),
+      X: vec![],
+      u: Scalar::from(1u64),
+    };
+    let u2 = R1CSInstance::<E> {
+      comm_W: comm_one.clone(),
+      X: vec![],
+    };
+    assert!(u1.fold(&u2, &comm_two, &r).is_err());
+
+    // Mismatched cross-term commitment lengths.
+    let u1 = RelaxedR1CSInstance::<E> {
+      comm_W: comm_one.clone(),
+      comm_E: comm_one.clone(),
+      X: vec![],
+      u: Scalar::from(1u64),
+    };
+    let u2 = R1CSInstance::<E> {
+      comm_W: comm_one.clone(),
+      X: vec![],
+    };
+    assert!(u1.fold(&u2, &comm_two, &r).is_err());
   }
 }
