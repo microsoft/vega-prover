@@ -82,12 +82,13 @@ impl<E: Engine> SumcheckProof<E> {
 
     for i in 0..self.compressed_polys.len() {
       let (_round_span, round_t) = start_span!("sumcheck_verify_round", round = i);
-      let poly = self.compressed_polys[i].decompress(&e);
 
       // verify degree bound
-      if poly.degree() != degree_bound {
+      if self.compressed_polys[i].degree() != degree_bound {
         return Err(VegaError::InvalidSumcheckProof);
       }
+
+      let poly = self.compressed_polys[i].decompress(&e);
 
       // we do not need to check if poly(0) + poly(1) = e, as
       // decompress() call above already ensures that holds
@@ -1569,5 +1570,27 @@ mod perf_tests {
       test_inner_sumcheck_with::<PallasHyraxEngine>();
       test_inner_sumcheck_with::<T256HyraxEngine>();
     }
+  }
+}
+
+#[cfg(test)]
+mod verify_tests {
+  use super::SumcheckProof;
+  use crate::polys::univariate::CompressedUniPoly;
+  use crate::provider::Bn254Engine;
+  use crate::traits::{Engine, transcript::TranscriptEngineTrait};
+  use ff::Field;
+
+  // A round polynomial carrying no coefficients must be rejected during verification.
+  #[test]
+  fn test_verify_rejects_malformed_round_poly() {
+    type E = Bn254Engine;
+    let empty = CompressedUniPoly::<<E as Engine>::Scalar>::new_for_test(Vec::new());
+    let proof = SumcheckProof::<E> {
+      compressed_polys: vec![empty],
+    };
+    let mut transcript = <E as Engine>::TE::new(b"test_malformed_round");
+    let claim = <E as Engine>::Scalar::ZERO;
+    assert!(proof.verify(claim, 1, 3, &mut transcript).is_err());
   }
 }
