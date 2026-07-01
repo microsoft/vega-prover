@@ -87,6 +87,6 @@ where
     transcript.absorb(b"comm_T", &self.comm_T);
     let r = transcript.squeeze(b"r")?;
 
-    Ok(U1.fold(U2, &self.comm_T, &r))
+    U1.fold(U2, &self.comm_T, &r)
   }
 }
