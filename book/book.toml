@@ -8,5 +8,6 @@ src = "src"
 [output.html]
 mathjax-support = true
 git-repository-url = "https://github.com/Microsoft/vega-prover"
+site-url = "/vega-prover/"
 default-theme = "light"
 preferred-dark-theme = "navy"
