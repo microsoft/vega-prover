@@ -112,6 +112,11 @@ Then fix \\(x\_1=3\\):
 (1-3)g(0) + 3g(1) = (-2)0 + 3\cdot 3 = 2 \pmod 7.
 \\]
 
+This primer fixes variables low-to-high (\\(x\_0\\) first) for exposition. Vega's implementation
+instead restricts the top variable first — high-to-low — as described in
+[Multilinear polynomials](../building-blocks/multilinear.md); because the multilinear extension is
+symmetric in the order its variables are fixed, both orders yield the same value.
+
 ## Why MLEs matter in proof systems
 
 MLEs let protocols treat a vector \\(\mathbf{v} \in \mathbb{F}^{2^\ell}\\) as a low-degree object \\(\tilde{v} : \mathbb{F}^\ell \to \mathbb{F}\\). This changes statements about many coordinates into statements about one polynomial evaluated at a verifier-chosen point.

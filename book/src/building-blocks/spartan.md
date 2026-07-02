@@ -26,20 +26,20 @@ W\_\tau(\mathbf{x}) = \widetilde{\mathrm{eq}}(\tau,\mathbf{x}).
 \\]
 In the reference implementation, the outer zero-check routine `prove_cubic_with_additive_term_zk` returns \\(r\_x\\). The verifier recomputes \\(\widetilde{\mathrm{eq}}(\tau,r\_x)\\) as `tau_at_rx` and checks the public values
 \\[
-\bigl[\tau\_{r\_x},\\,\widetilde{X}(r\_y),\\,\widetilde{A}(r\_x,r\_y)+r\widetilde{B}(r\_x,r\_y)+r^2\widetilde{C}(r\_x,r\_y)\bigr].
+\bigl[\tau\_{r\_x},\\,\widetilde{X}(r\_y'),\\,\widetilde{A}(r\_x,r\_y)+r\widetilde{B}(r\_x,r\_y)+r^2\widetilde{C}(r\_x,r\_y)\bigr].
 \\]
 
 \\(\mathrm{Vega}\_{\mathrm{MC}}\\), the focus of this book, uses a powers-polynomial weight derived from \\(\tau\\). The powers polynomial is the multilinear extension whose Boolean evaluations are \\(1,\tau,\tau^2,\dots\\), with the bit ordering fixed by [Notation and conventions](../overview/notation.md). The folded step branch and the core branch pass through one batched outer round schedule rather than two independent schedules.
 
 For \\(\mathrm{Vega}\_{\mathrm{MC}}\\), the verifier recomputes the powers weight at \\(r\_x\\) as `tau_at_rx`. It also recomputes \\(\widetilde{\mathrm{eq}}(r\_b,\rho)\\), written `eq_rho_at_rb`, from the [NeutronNova fold](neutronnova.md). The six public values pinned by the verifier circuit are, in order,
 \\[
-\tau\_{r\_x},\quad \widetilde{X}\_{\mathrm{step}}(r\_y),\quad \widetilde{X}\_{\mathrm{core}}(r\_y),\quad \widetilde{\mathrm{eq}}(r\_b,\rho),\quad Q\_{\mathrm{step}},\quad Q\_{\mathrm{core}},
+\tau\_{r\_x},\quad \widetilde{X}\_{\mathrm{step}}(r\_y'),\quad \widetilde{X}\_{\mathrm{core}}(r\_y'),\quad \widetilde{\mathrm{eq}}(r\_b,\rho),\quad Q\_{\mathrm{step}},\quad Q\_{\mathrm{core}},
 \\]
 where
 \\[
 Q\_\star = \widetilde{A}\_\star(r\_x,r\_y)+r\widetilde{B}\_\star(r\_x,r\_y)+r^2\widetilde{C}\_\star(r\_x,r\_y)
 \\]
-for \\(\star\in\\{\mathrm{step},\mathrm{core}\\}\\).
+for \\(\star\in\\{\mathrm{step},\mathrm{core}\\}\\). The public-input polynomials \\(\widetilde{X}\_\star\\) are evaluated at \\(r\_y' = r\_y[1..]\\) — the inner point with its leading selector coordinate \\(r\_{y,0}\\) dropped — while the matrix evaluations \\(Q\_\star\\) use the full \\(r\_y\\).
 
 ## The inner matrix-evaluation sum-check
 

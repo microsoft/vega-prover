@@ -60,9 +60,12 @@ A vector \\(\mathbf{v} \in \mathbb{F}^{2^\ell}\\) is routinely identified with t
 \widetilde{\mathrm{eq}}(\mathbf{r}, \mathbf{x}) \\;=\\; \prod\_{k=0}^{\ell-1}\bigl(r\_k x\_k + (1 - r\_k)(1 - x\_k)\bigr).
 \\]
   It is the MLE of the indicator \\([\mathbf{r} = \mathbf{x}]\\) on the hypercube.
-- **Powers polynomial.** A challenge \\(\tau \in \mathbb{F}\\) induces the weights
-  \\(\bigl(\tau^{2^0}, \tau^{2^1}, \dots, \tau^{2^{\ell-1}}\bigr)\\), used to batch many
-  constraints into one. Its precise definition and role are given in
+- **Powers polynomial.** A challenge \\(\tau \in \mathbb{F}\\) induces the consecutive powers
+  \\(\bigl(1, \tau, \tau^2, \dots, \tau^{2^\ell - 1}\bigr)\\) as weights on the hypercube: the
+  Boolean point with index \\(i\\) receives weight \\(\tau^i\\). These weights are assembled from
+  the \\(\ell\\) per-variable factors \\(\tau^{2^0}, \tau^{2^1}, \dots, \tau^{2^{\ell-1}}\\), whose
+  product over the set bits of \\(i\\) reproduces \\(\tau^i\\). They batch many constraints into
+  one; the precise definition and role are given in
   [The sum-check protocol](../building-blocks/sumcheck.md).
 
 ## R1CS objects
@@ -81,10 +84,13 @@ The vector \\(\mathbf{z}\\) is partitioned into a constant \\(1\\), the public i
 ## Commitments
 
 \\(\mathrm{Com}(\mathbf{v}; \rho)\\) denotes a *hiding* commitment to a vector
-\\(\mathbf{v}\\) under blind \\(\rho \in \mathbb{F}\\). Vega uses an additively homomorphic
+\\(\mathbf{v}\\) under blind \\(\rho\\). Vega uses an additively homomorphic
 Pedersen/Hyrax commitment, so
 \\(\mathrm{Com}(\mathbf{a}; \rho\_a) + \mathrm{Com}(\mathbf{b}; \rho\_b)
 = \mathrm{Com}(\mathbf{a} + \mathbf{b}; \rho\_a + \rho\_b)\\).
+When \\(\mathbf{v}\\) is long enough to span several committed rows, the blind is correspondingly a
+tuple with one scalar per row, and \\(\rho\\) denotes that tuple; a single-row commitment uses one
+scalar.
 The commitment key, the reshaping of long vectors, and the opening argument are described in
 [Polynomial commitments and the ZK opening](../building-blocks/pcs.md).
 

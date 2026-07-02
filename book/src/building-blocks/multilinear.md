@@ -38,7 +38,7 @@ Conceptually,
 
 The reusable `EqPolynomial` type stores the point and can evaluate a single equality polynomial or materialize the full vector of \\(2^\ell\\) equality weights. Polynomial commitments also reuse these weights when reducing an opening claim to inner products.
 
-Vega also uses a powers polynomial as another reusable family of weights. For a challenge \\(\tau\\), its weights are derived from \\(\tau^{2^0}, \tau^{2^1}, \dots, \tau^{2^{\ell-1}}\\) and are used to batch constraint terms in sum-check. The concrete role of these weights belongs to [The sum-check protocol](../building-blocks/sumcheck.md).
+Vega also uses a powers polynomial as another reusable family of weights. For a challenge \\(\tau\\), the Boolean point with index \\(i\\) receives weight \\(\tau^i\\), so the weight vector is \\(1, \tau, \tau^2, \dots, \tau^{2^\ell - 1}\\); it is assembled from the per-variable factors \\(\tau^{2^0}, \tau^{2^1}, \dots, \tau^{2^{\ell-1}}\\). These weights batch constraint terms in sum-check. The concrete role belongs to [The sum-check protocol](../building-blocks/sumcheck.md).
 
 ## Binding the top variable
 

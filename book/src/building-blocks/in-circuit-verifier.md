@@ -20,7 +20,7 @@ The first \\(\ell\_b\\) challenges are the folding/sum-check challenges \\(r\_b\
 
 Each sum-check round sends a univariate polynomial. Inside the circuit, `enforce_sc_claim` checks the local sum-check relation: the polynomial's evaluations at \\(0\\) and \\(1\\) add to the previous claim. With coefficient vectors, this is enforced as the sum of all coefficients plus the constant coefficient equaling the current claim. `eval_poly_horner` evaluates the previous round polynomial at the next challenge, and `alloc_coeffs` allocates the round polynomial coefficients as witness variables.
 
-The folding region ends by enforcing that the final folding claim equals the accumulated equality weight times the folded step output value. Conceptually, the circuit checks
+The folding region ends by enforcing that the final folding claim equals the accumulated equality weight times the folded step target \\(t\_{\mathrm{step}}\\) — the evaluation/error term the NeutronNova fold carries for the step batch. Conceptually, the circuit checks
 
 \\[
 \widetilde{\mathrm{eq}}(r\_b, \rho)\\, t\_{\mathrm{step}} = q\_b,
@@ -50,13 +50,19 @@ Finally, `enforce_inner_sc_final_check` checks the inner final relation. The fir
 z(r\_y) = (1-r\_{y,0})\\,W(r\_y') + r\_{y,0}\\,X(r\_y'),
 \\]
 
-where \\(r\_y'\\) is the remaining suffix of \\(r\_y\\). The circuit then enforces a quotient relation
+where \\(r\_y'\\) is the remaining suffix of \\(r\_y\\). Let \\(q\_y\\) be the terminal inner sum-check claim, and let
 
 \\[
-q\_{ABC}\\, z(r\_y) = q\_y,
+Q = \widetilde{A}(r\_x,r\_y) + r\\,\widetilde{B}(r\_x,r\_y) + r^2\\,\widetilde{C}(r\_x,r\_y)
 \\]
 
-equivalently exposing \\(q\_{ABC}=q\_y/z(r\_y)\\) as a public value. The native verifier recomputes the matrix-evaluation quotient for the folded step branch and the core branch and compares both values.
+be the combined matrix evaluation at the inner point. The terminal claim factors as \\(q\_y = Q\\, z(r\_y)\\), so the circuit enforces the quotient relation
+
+\\[
+Q\\, z(r\_y) = q\_y,
+\\]
+
+exposing \\(Q = q\_y / z(r\_y)\\) as a public value. This \\(Q\\) is the terminal matrix evaluation, not the initial batched claim \\(q\_{ABC}\\) formed above. The native verifier independently recomputes \\(Q = \widetilde{A}+r\widetilde{B}+r^2\widetilde{C}\\) at \\((r\_x,r\_y)\\) for the folded step branch and the core branch and compares both values.
 
 ## Public values that close the check
 
