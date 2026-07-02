@@ -1,0 +1,12 @@
+[book]
+title = "The Vega Book"
+description = "Design and specification of the Vega zero-knowledge proof system"
+authors = ["Srinath Setty"]
+language = "en"
+src = "src"
+
+[output.html]
+mathjax-support = true
+git-repository-url = "https://github.com/Microsoft/vega-prover"
+default-theme = "light"
+preferred-dark-theme = "navy"

@@ -1,0 +1,1 @@
+# Verifier key and digest
