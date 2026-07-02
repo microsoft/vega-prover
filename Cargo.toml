@@ -1,6 +1,6 @@
 [package]
 name = "vega-prover"
-version = "0.9.0"
+version = "0.1.0"
 authors = ["Srinath Setty <srinath@microsoft.com>"]
 edition = "2024"
 description = "Client-side ZK provers of Vega for low-latency proving over signed data"
