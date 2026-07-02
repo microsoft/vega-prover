@@ -1,6 +1,6 @@
 [book]
-title = "The Vega Book"
-description = "Design and specification of the Vega zero-knowledge proof system"
+title = "The Vega Prover Book"
+description = "Design and specification of the Vega prover"
 authors = ["Srinath Setty"]
 language = "en"
 src = "src"
