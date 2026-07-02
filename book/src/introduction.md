@@ -2,6 +2,8 @@
 
 Vega is a zero-knowledge proof system for proving statements about existing signed credentials. A prover can hold signed data, such as a mobile driver's license, and convince a verifier that a statement about that data is true without revealing anything beyond the statement. The implementation targets client devices, low proving latency, repeated presentations over the same signed data, and transparent setup.
 
+> **Work in progress.** This book is under active development and is written incrementally. Some chapters are complete while others are still placeholders — most notably the chapters under *The Vega-MC prover* and *Implementable specification*, together with a few building-block and appendix pages. Structure and content may change as the book matures.
+
 ## What this book specifies
 
 This book has two purposes.
