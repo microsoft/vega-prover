@@ -1,0 +1,13 @@
+[book]
+title = "The Vega Prover Book"
+description = "Design and specification of the Vega prover"
+authors = ["Srinath Setty"]
+language = "en"
+src = "src"
+
+[output.html]
+mathjax-support = true
+git-repository-url = "https://github.com/Microsoft/vega-prover"
+site-url = "/vega-prover/"
+default-theme = "light"
+preferred-dark-theme = "navy"
