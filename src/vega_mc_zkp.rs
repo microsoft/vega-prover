@@ -1390,12 +1390,20 @@ where
   /// # Parameters
   /// - `step_circuit`: The circuit to be folded in the batch
   /// - `core_circuit`: The core circuit that connects the batch together
-  /// - `num_steps`: The number of step circuits in the batch (will be padded to next power of two internally)
+  /// - `num_steps`: The number of step circuits in the batch (must be at least 2; padded to next power of two internally)
   pub fn setup<C1: VegaCircuit<E>, C2: VegaCircuit<E>>(
     step_circuit: &C1,
     core_circuit: &C2,
     num_steps: usize,
   ) -> Result<(VegaMcProverKey<E>, VegaMcVerifierKey<E>), VegaError> {
+    // NeutronNova folds a batch of at least two step instances; a single
+    // instance should use the single-circuit SNARK instead.
+    if num_steps < 2 {
+      return Err(VegaError::InvalidInputLength {
+        reason: format!("num_steps must be at least 2, got {num_steps}"),
+      });
+    }
+
     let (_setup_span, setup_t) = start_span!("neutronnova_setup");
 
     let (_r1cs_span, r1cs_t) = start_span!("r1cs_shape_generation");
@@ -2540,5 +2548,18 @@ mod tests {
     // A key set up for a different number of steps must reject this proof.
     let (_pk7, vk7, _c7) = generate_sha_r1cs::<E>(7, 32);
     assert!(snark.verify(&vk7, 5).is_err());
+  }
+
+  #[test]
+  fn test_mc_setup_rejects_fewer_than_two_steps() {
+    type E = T256HyraxEngine;
+    let circuit = Sha256Circuit::<E> {
+      preimage: vec![0u8; 32],
+      _p: Default::default(),
+    };
+    // NeutronNova folding requires at least two step instances.
+    for num_steps in [0, 1] {
+      assert!(VegaMcZkSNARK::<E>::setup(&circuit, &circuit, num_steps).is_err());
+    }
   }
 }
