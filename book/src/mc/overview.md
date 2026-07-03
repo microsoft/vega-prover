@@ -25,7 +25,7 @@ The prover first forms a [split R1CS](../building-blocks/r1cs.md) instance and w
 
 The folded-step branch and the core branch are reduced by the [Spartan](../building-blocks/spartan.md) outer and inner [sum-checks](../building-blocks/sumcheck.md), which bind the challenge vectors \\(r\_x\\) and \\(r\_y\\) and produce six algebraic values: the power-polynomial evaluation \\(\mathrm{tau\\_at\\_rx}\\), the public-input evaluations \\(\mathrm{eval\\_X\\_step}\\) and \\(\mathrm{eval\\_X\\_core}\\), the equality evaluation \\(\mathrm{eq\\_rho\\_at\\_rb}\\), and the matrix-quotient values \\(\mathrm{quotient\\_step}\\) and \\(\mathrm{quotient\\_core}\\). These six values are exactly what the [in-circuit verifier](../building-blocks/in-circuit-verifier.md) exposes as public output.
 
-The in-circuit verifier instance is then made zero-knowledge by [Nova folding](../building-blocks/nova-zk.md): the prover samples a fresh random satisfying instance and folds it with the real verifier instance, masking it. The masked instance is proved with [relaxed Spartan](../building-blocks/relaxed-spartan.md), and the shared witness evaluation that the checks need is opened by the zero-knowledge [linear IPA](../building-blocks/pcs.md) at the point \\(r\_y[1..]\\).
+The in-circuit verifier instance is then made zero-knowledge by [Nova folding](../building-blocks/nova-zk.md): the prover samples a fresh random satisfying instance and folds it with the real verifier instance, masking it. The masked instance is proved with [relaxed Spartan](../building-blocks/relaxed-spartan.md), and the committed-witness evaluation the checks need --- folded across the step and core branches --- is opened by the zero-knowledge [linear IPA](../building-blocks/pcs.md) at the point \\(r\_y[1..]\\).
 
 Two distinct folding schemes appear, for two distinct purposes:
 
@@ -41,7 +41,7 @@ Proving emits one object whose fields carry everything verification needs:
 | `comm_W_shared` | the one shared witness commitment reused by every step and the core instance |
 | `step_instances` | the public parts of the \\(n\\) step split R1CS instances |
 | `core_instance` | the public part of the core split R1CS instance |
-| `eval_arg` | the zero-knowledge IPA opening of the shared witness evaluation |
+| `eval_arg` | the zero-knowledge IPA opening of the folded step-and-core witness evaluation |
 | `U_verifier` | the in-circuit verifier instance exposing the six public values |
 | `nifs` | the Nova folding proof that folds the random mask with `U_verifier` |
 | `random_U` | the fresh random satisfying instance used to mask `U_verifier` |

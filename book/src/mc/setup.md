@@ -24,9 +24,9 @@ The reference implementation sets `DEFAULT_COMMITMENT_WIDTH` to 2048. This width
 
 Setup also constructs the verifier circuit used later inside the proof. Its shape depends on the public setup data:
 
-- `num_rounds_b` is derived from `num_steps.next_power_of_two()`;
-- `num_rounds_x` is derived from the number of step constraints;
-- `num_rounds_y` is derived from the total number of step witness variables.
+- `num_rounds_b` is the base-two logarithm of the padded step count `num_steps.next_power_of_two()`;
+- `num_rounds_x` is the base-two logarithm of the number of step constraints;
+- `num_rounds_y` is one more than the base-two logarithm of the total number of step witness variables.
 
 Those dimensions parameterize the in-circuit verifier described in [The in-circuit verifier](../building-blocks/in-circuit-verifier.md). Shape synthesis for that verifier circuit produces `vc_shape`, `vc_ck`, and `vc_vk`; setup also derives `vc_shape_regular` from `vc_shape`. The verifier-circuit commitment key is precomputed before the keys are returned.
 
