@@ -4,6 +4,10 @@ This repository implements the ZK provers of [Vega](https://eprint.iacr.org/2025
 
 This [blog post](https://www.microsoft.com/en-us/research/blog/vega-zero-knowledge-proofs-for-digital-identity-in-the-age-of-ai/) describes the typical application this library targets.
 
+## Documentation
+
+The [Vega Prover Book](https://microsoft.github.io/vega-prover/) documents how the proof system is designed, walks through its building blocks, and develops an implementable specification of the multi-circuit prover. It is a work in progress.
+
 ## Performance
 The prover in this repository is the fastest proof system for client-side ZK proving of statements over signed data: it generates a zero-knowledge proof of age from a typical mobile driver's license of about 2 KB in about 92 ms on a commodity client device. The resulting proof is about 108 KB, and it can be verified in 23 ms. No trusted setup is required. The prover key is 464 KB; it fits comfortably on any phone. For smaller credentials, proving drops to 62 ms, with 83 KB proofs, and 17 ms verification.
 
