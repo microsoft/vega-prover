@@ -32,7 +32,7 @@ At the end of the \\(r\_b\\) rounds, the prover has one accumulated target. The 
 
 The in-circuit verifier later pins this scalar to the folding transcript by enforcing
 
-\\[ \mathrm{eq\_rho\_at\_rb}\\,\mathrm{t\_out\_step} = \mathrm{claim}. \\]
+\\[ \mathrm{eq\\_rho\\_at\\_rb}\\,\mathrm{t\\_out\\_step} = \mathrm{claim}. \\]
 
 This constraint prevents the prover from choosing an arbitrary folded error after the verifier-circuit challenges are fixed: the claimed folding result must equal the equality-weighted normalized output.
 

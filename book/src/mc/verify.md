@@ -58,7 +58,7 @@ The proof is accepted exactly when every check below succeeds, in this order. Fa
 
    The verifier then applies an exact six-way equality gate:
 
-   \\[ (\mathrm{tau\_at\_rx},\mathrm{eval\_X\_step},\mathrm{eval\_X\_core},\mathrm{eq\_rho\_at\_rb},\mathrm{quotient\_step},\mathrm{quotient\_core})
+   \\[ (\mathrm{tau\\_at\\_rx},\mathrm{eval\\_X\\_step},\mathrm{eval\\_X\\_core},\mathrm{eq\\_rho\\_at\\_rb},\mathrm{quotient\\_step},\mathrm{quotient\\_core})
    = (x\_0,x\_1,x\_2,x\_3,x\_4,x\_5). \\]
 
    Here \\((x\_0,\ldots,x\_5)\\) are the six public values read from `U_verifier`. Any mismatch rejects.
