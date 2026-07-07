@@ -12,10 +12,9 @@ The effective `bincode` configuration is:
 integer encoding: fixed-width integers (fixint), not varint
 byte order:       little-endian for integer primitives
 byte limit:       none
-deserialization: reject trailing bytes
 ```
 
-Equivalently, the bytes match `DefaultOptions::new().with_little_endian().with_fixint_encoding()`. The verifier-key digest uses the same configuration; its object and digest domain are specified in [Verifier key and digest](./verifier-key.md).
+Equivalently, the emitted bytes match `DefaultOptions::new().with_little_endian().with_fixint_encoding()`. This equivalence concerns the produced bytes only; trailing-byte handling is a deserialization policy and does not change the serialized output. The verifier-key digest reuses this `bincode` configuration for most of its fields but encodes the constraint-system matrices through a separate manual byte routine; its object and digest domain are specified in [Verifier key and digest](./verifier-key.md).
 
 An implementation does not need to use `bincode`. The following sections are the complete wire-format rules.
 
@@ -87,13 +86,15 @@ The transcript encoding of a scalar is different: [the transcript chapter](../bu
 
 ## Base-field elements
 
-A base-field element serializes as the base field's canonical 32-byte representation. For the base field in the canonical engine, this representation is big-endian.
+A base-field element serializes on the wire as its canonical 32-byte `to_repr` output. For the base field in the canonical engine this representation is little-endian, exactly as for the scalar field.
 
 ```text
-wire_base(x) = be32(integer representative of x)
+wire_base(x) = le32(integer representative of x)
 ```
 
-The transcript encoding of a base-field element is the reverse: [the transcript chapter](../building-blocks/encodings.md#base-field-elements) encodes base-field elements as 32 little-endian bytes. Thus, for both fields, the wire encoding is the byte-reverse of the corresponding transcript encoding. The two fields use opposite native byte orders in the canonical engine: the scalar field's canonical representation is little-endian, while the base field's is big-endian. Each field's wire encoding uses its own native order, so scalars serialize little-endian and base-field coordinates serialize big-endian.
+Both fields therefore serialize little-endian on the wire. The two fields differ only in the transcript path: the scalar field's transcript encoding is big-endian, while the base field's is little-endian ([the transcript chapter](../building-blocks/encodings.md#base-field-elements)). That asymmetry comes from the field backends' `to_bytes` methods — little-endian for the scalar field and big-endian for the base field — which the transcript reverses. The wire path uses `to_repr`, which is little-endian for both fields, so it is unaffected by that asymmetry.
+
+A bare base-field element never appears as a standalone value in the proof object. The base field reaches the wire only as the x-coordinate inside a compressed group element, described next, where the point-compression routine writes it big-endian.
 
 ## Group elements
 
@@ -103,10 +104,10 @@ A group element in \\(\mathbb{G}\\) serializes to exactly 33 bytes in compressed
 wire_point(P) = flag_byte || x
 
 flag_byte: 1 byte
-x:         32 bytes, the affine x-coordinate as wire_base(x)
+x:         32 bytes, the affine x-coordinate in big-endian byte order
 ```
 
-The x-coordinate occupies bytes 1 through 32 after the flag byte. It is written as a base-field element on the wire, so it is a 32-byte big-endian integer.
+The x-coordinate occupies the 32 bytes following the flag byte, written as a 32-byte big-endian integer. This big-endian order is produced by the point-compression routine, which uses the base field's `to_bytes` method; it is not the little-endian `wire_base` encoding used for a standalone base-field element.
 
 The flag byte uses two bits. All other bits are zero.
 
@@ -129,7 +130,7 @@ The canonical generator has x-coordinate 3 and an odd y-coordinate. Its compress
 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 03
 ```
 
-The transcript encoding of a group element is different: [the transcript chapter](../building-blocks/encodings.md#group-elements) uses the uncompressed 64-byte string `x || y`, where each coordinate is a 32-byte little-endian base-field element. The wire encoding uses the compressed 33-byte string `flag || x`, where `x` is big-endian. The same point therefore has two byte representations in two domains: transcript input and proof wire serialization.
+The transcript encoding of a group element is different: [the transcript chapter](../building-blocks/encodings.md#group-elements) uses the uncompressed 64-byte string `x || y`, where each coordinate is a 32-byte little-endian base-field element (defined for non-identity points; the transcript path does not encode the identity). The wire encoding uses the compressed 33-byte string `flag || x`, where `x` is big-endian and the identity is encoded explicitly. The same point therefore has two byte representations in two domains: transcript input and proof wire serialization.
 
 ## Commitment example
 
