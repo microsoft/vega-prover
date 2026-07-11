@@ -2377,6 +2377,7 @@ mod tests {
   };
   use bellpepper_core::{ConstraintSystem, SynthesisError};
   use core::marker::PhantomData;
+  use ff::PrimeField;
 
   #[derive(Clone, Debug)]
   struct Sha256Circuit<E: Engine> {
@@ -2466,6 +2467,85 @@ mod tests {
       })
       .collect::<Vec<_>>();
 
+    (pk, vk, circuits)
+  }
+
+  // A tiny example circuit `x^3 + x + 5 = y` (x = 2, y = 15), used as a small
+  // oracle for the stand-alone reference implementation. Same public/shared/
+  // precommitted/challenge structure as the SHA circuit but only 3 constraints.
+  #[derive(Clone, Debug, Default)]
+  struct CubicCircuit {}
+
+  impl<E: Engine> VegaCircuit<E> for CubicCircuit {
+    fn public_values(&self) -> Result<Vec<E::Scalar>, SynthesisError> {
+      Ok(vec![E::Scalar::from(15u64)])
+    }
+
+    fn shared<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      _: &mut CS,
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      Ok(vec![])
+    }
+
+    fn precommitted<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      _: &mut CS,
+      _: &[AllocatedNum<E::Scalar>],
+    ) -> Result<Vec<AllocatedNum<E::Scalar>>, SynthesisError> {
+      Ok(vec![])
+    }
+
+    fn num_challenges(&self) -> usize {
+      0
+    }
+
+    fn synthesize<CS: ConstraintSystem<E::Scalar>>(
+      &self,
+      cs: &mut CS,
+      _shared: &[AllocatedNum<E::Scalar>],
+      _precommitted: &[AllocatedNum<E::Scalar>],
+      _challenges: Option<&[E::Scalar]>,
+    ) -> Result<(), SynthesisError> {
+      let x = AllocatedNum::alloc(cs.namespace(|| "x"), || Ok(E::Scalar::ONE + E::Scalar::ONE))?;
+      let x_sq = x.square(cs.namespace(|| "x_sq"))?;
+      let x_cu = x_sq.mul(cs.namespace(|| "x_cu"), &x)?;
+      let y = AllocatedNum::alloc(cs.namespace(|| "y"), || {
+        Ok(x_cu.get_value().unwrap() + x.get_value().unwrap() + E::Scalar::from(5u64))
+      })?;
+
+      cs.enforce(
+        || "y = x^3 + x + 5",
+        |lc| {
+          lc + x_cu.get_variable()
+            + x.get_variable()
+            + CS::one()
+            + CS::one()
+            + CS::one()
+            + CS::one()
+            + CS::one()
+        },
+        |lc| lc + CS::one(),
+        |lc| lc + y.get_variable(),
+      );
+
+      let _ = y.inputize(cs.namespace(|| "output"));
+
+      Ok(())
+    }
+  }
+
+  fn generate_cubic_r1cs<E: Engine>(
+    num_circuits: usize,
+  ) -> (VegaMcProverKey<E>, VegaMcVerifierKey<E>, Vec<CubicCircuit>)
+  where
+    E::PCS: FoldingEngineTrait<E>,
+  {
+    let circuit = CubicCircuit::default();
+    let (pk, vk) = VegaMcZkSNARK::<E>::setup(&circuit, &circuit, num_circuits).unwrap();
+    let circuits = (0..num_circuits)
+      .map(|_| CubicCircuit::default())
+      .collect::<Vec<_>>();
     (pk, vk, circuits)
   }
 
@@ -2561,5 +2641,254 @@ mod tests {
     for num_steps in [0, 1] {
       assert!(VegaMcZkSNARK::<E>::setup(&circuit, &circuit, num_steps).is_err());
     }
+  }
+
+  // Emits a deterministic Keccak-transcript conformance vector for the external
+  // reference implementation. It exercises new/absorb(scalar,scalars,point)/squeeze
+  // exactly as the protocol does, then writes the squeezed challenges to
+  // reference/fixtures/transcript_vector.json. Run explicitly with:
+  //   cargo test --lib export_transcript_vector -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn export_transcript_vector() {
+    use crate::provider::traits::DlogGroup;
+    use crate::traits::transcript::TranscriptEngineTrait;
+    use std::fs;
+    type E = T256HyraxEngine;
+
+    let mut t = <E as Engine>::TE::new(b"refimpl_vector");
+
+    // Absorb a single scalar.
+    let s1 = <E as Engine>::Scalar::from(2u64);
+    t.absorb(b"s1", &s1);
+    let c1: <E as Engine>::Scalar = t.squeeze(b"c1").unwrap();
+
+    // Absorb a group element (the generator) and a vector of scalars.
+    let g = <<E as Engine>::GE as DlogGroup>::generator();
+    t.absorb(b"g", &g);
+    let vs: Vec<<E as Engine>::Scalar> = vec![
+      <E as Engine>::Scalar::from(7u64),
+      <E as Engine>::Scalar::from(9u64),
+    ];
+    t.absorb(b"vs", &vs.as_slice());
+    let c2: <E as Engine>::Scalar = t.squeeze(b"c2").unwrap();
+
+    // Absorb the two previous challenges, then squeeze twice without absorbing.
+    t.absorb(b"c", &c1);
+    t.absorb(b"c", &c2);
+    let c3: <E as Engine>::Scalar = t.squeeze(b"c3").unwrap();
+    let c4: <E as Engine>::Scalar = t.squeeze(b"c4").unwrap();
+
+    let hexs = |s: <E as Engine>::Scalar| hex::encode(s.to_repr().as_ref());
+    let json = format!(
+      "{{\n  \"label\": \"refimpl_vector\",\n  \"c1\": \"{}\",\n  \"c2\": \"{}\",\n  \"c3\": \"{}\",\n  \"c4\": \"{}\"\n}}\n",
+      hexs(c1),
+      hexs(c2),
+      hexs(c3),
+      hexs(c4),
+    );
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("transcript_vector.json"), &json).unwrap();
+    eprintln!(
+      "transcript vector: c1={} c2={} c3={} c4={}",
+      hexs(c1),
+      hexs(c2),
+      hexs(c3),
+      hexs(c4)
+    );
+  }
+
+  // Exports byte-exact fixtures (verifier key, proof, digest) for the external
+  // reference implementation's cross-conformance harness. Run explicitly with:
+  //   cargo test --lib export_reference_fixtures -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn export_reference_fixtures() {
+    use std::fs;
+    type E = T256HyraxEngine;
+
+    let num_circuits = 2usize;
+    let len = 32usize;
+    let (pk, vk, circuits) = generate_sha_r1cs::<E>(num_circuits, len);
+
+    let ps = VegaMcZkSNARK::<E>::prep_prove(&pk, &circuits, &circuits[0], true).unwrap();
+    let (snark, _ps) = VegaMcZkSNARK::prove(&pk, &circuits, &circuits[0], ps, true).unwrap();
+
+    // Sanity: the exported proof must verify under the exported key.
+    let (pv_step, pv_core) = snark.verify(&vk, num_circuits).unwrap();
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures");
+    fs::create_dir_all(&dir).unwrap();
+
+    let proof_bytes = bincode::serialize(&snark).unwrap();
+    fs::write(dir.join("proof.bin"), &proof_bytes).unwrap();
+
+    let vk_bytes = bincode::serialize(&vk).unwrap();
+    fs::write(dir.join("vk.bin"), &vk_bytes).unwrap();
+
+    let digest = vk.digest().unwrap();
+    fs::write(dir.join("vk_digest.bin"), digest).unwrap();
+
+    // Public values recovered by verify, as a cross-check for the Python verifier.
+    let pv_step_hex: Vec<Vec<String>> = pv_step
+      .iter()
+      .map(|row| {
+        row
+          .iter()
+          .map(|s| hex::encode(s.to_repr().as_ref()))
+          .collect()
+      })
+      .collect();
+    let pv_core_hex: Vec<String> = pv_core
+      .iter()
+      .map(|s| hex::encode(s.to_repr().as_ref()))
+      .collect();
+
+    let meta = format!(
+      "{{\n  \"engine\": \"T256HyraxEngine\",\n  \"num_steps\": {},\n  \"preimage_len\": {},\n  \"proof_len\": {},\n  \"vk_len\": {},\n  \"public_values_step\": {:?},\n  \"public_values_core\": {:?}\n}}\n",
+      num_circuits,
+      len,
+      proof_bytes.len(),
+      vk_bytes.len(),
+      pv_step_hex,
+      pv_core_hex,
+    );
+    fs::write(dir.join("meta.json"), meta).unwrap();
+
+    eprintln!(
+      "exported reference fixtures to {}: proof={} B, vk={} B, digest=32 B",
+      dir.display(),
+      proof_bytes.len(),
+      vk_bytes.len(),
+    );
+  }
+
+  // Exports a tiny cubic (x^3+x+5=y) MC fixture used as a small oracle for the
+  // stand-alone Python reference implementation. Run explicitly with:
+  //   cargo test --lib export_cubic_fixtures -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn export_cubic_fixtures() {
+    use std::fs;
+    type E = T256HyraxEngine;
+
+    let num_circuits = 2usize;
+    let (pk, vk, circuits) = generate_cubic_r1cs::<E>(num_circuits);
+
+    let ps = VegaMcZkSNARK::<E>::prep_prove(&pk, &circuits, &circuits[0], true).unwrap();
+    let (snark, _ps) = VegaMcZkSNARK::prove(&pk, &circuits, &circuits[0], ps, true).unwrap();
+
+    let (pv_step, pv_core) = snark.verify(&vk, num_circuits).unwrap();
+
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures/cubic");
+    fs::create_dir_all(&dir).unwrap();
+
+    let proof_bytes = bincode::serialize(&snark).unwrap();
+    fs::write(dir.join("proof.bin"), &proof_bytes).unwrap();
+
+    let vk_bytes = bincode::serialize(&vk).unwrap();
+    fs::write(dir.join("vk.bin"), &vk_bytes).unwrap();
+
+    let digest = vk.digest().unwrap();
+    fs::write(dir.join("vk_digest.bin"), digest).unwrap();
+
+    let pv_step_hex: Vec<Vec<String>> = pv_step
+      .iter()
+      .map(|row| {
+        row
+          .iter()
+          .map(|s| hex::encode(s.to_repr().as_ref()))
+          .collect()
+      })
+      .collect();
+    let pv_core_hex: Vec<String> = pv_core
+      .iter()
+      .map(|s| hex::encode(s.to_repr().as_ref()))
+      .collect();
+
+    let meta = format!(
+      "{{\n  \"engine\": \"T256HyraxEngine\",\n  \"circuit\": \"cubic x^3+x+5=y\",\n  \"num_steps\": {},\n  \"proof_len\": {},\n  \"vk_len\": {},\n  \"public_values_step\": {:?},\n  \"public_values_core\": {:?}\n}}\n",
+      num_circuits,
+      proof_bytes.len(),
+      vk_bytes.len(),
+      pv_step_hex,
+      pv_core_hex,
+    );
+    fs::write(dir.join("meta.json"), meta).unwrap();
+
+    eprintln!(
+      "exported cubic fixtures to {}: proof={} B, vk={} B, digest=32 B",
+      dir.display(),
+      proof_bytes.len(),
+      vk_bytes.len(),
+    );
+  }
+
+  // Cross-conformance gate: verify a proof produced by the stand-alone Python
+  // reference prover (reference/pyvega). Reads the Rust-exported vk.bin and the
+  // Python-serialized python_proof.bin, deserializes both, and asserts the Rust
+  // verifier accepts. Run with:
+  //   cargo test --lib verify_python_proof -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn verify_python_proof() {
+    use std::fs;
+    type E = T256HyraxEngine;
+
+    let num_circuits = 2usize;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures/cubic");
+
+    let vk_bytes = fs::read(dir.join("vk.bin")).unwrap();
+    let vk: VegaMcVerifierKey<E> = bincode::deserialize(&vk_bytes).unwrap();
+
+    let proof_bytes = fs::read(dir.join("python_proof.bin")).unwrap();
+    let snark: VegaMcZkSNARK<E> = bincode::deserialize(&proof_bytes).unwrap();
+
+    let (pv_step, pv_core) = snark
+      .verify(&vk, num_circuits)
+      .expect("Rust verifier rejected the Python-produced proof");
+
+    eprintln!(
+      "PASS: Rust verifier accepted the Python proof ({} B): public_values_step={:?}, public_values_core={:?}",
+      proof_bytes.len(),
+      pv_step,
+      pv_core,
+    );
+  }
+
+  // Fully stand-alone cross-conformance gate: verify a proof produced by the
+  // Python reference implementation against a verifier key ALSO produced by the
+  // Python setup (Python key-gen + shapes, zero Rust runtime). Regenerate the
+  // inputs first with:
+  //   sage -python reference/tests/test_standalone.py
+  // then run:
+  //   cargo test --lib verify_python_standalone -- --ignored --nocapture
+  #[test]
+  #[ignore]
+  fn verify_python_standalone() {
+    use std::fs;
+    type E = T256HyraxEngine;
+
+    let num_circuits = 2usize;
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures/cubic");
+
+    let vk_bytes = fs::read(dir.join("python_vk.bin")).unwrap();
+    let vk: VegaMcVerifierKey<E> = bincode::deserialize(&vk_bytes).unwrap();
+
+    let proof_bytes = fs::read(dir.join("python_standalone_proof.bin")).unwrap();
+    let snark: VegaMcZkSNARK<E> = bincode::deserialize(&proof_bytes).unwrap();
+
+    let (pv_step, pv_core) = snark
+      .verify(&vk, num_circuits)
+      .expect("Rust verifier rejected the stand-alone Python proof");
+
+    eprintln!(
+      "PASS: Rust verifier accepted the stand-alone Python vk ({} B) + proof ({} B): public_values_step={:?}, public_values_core={:?}",
+      vk_bytes.len(),
+      proof_bytes.len(),
+      pv_step,
+      pv_core,
+    );
   }
 }
