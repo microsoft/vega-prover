@@ -1,6 +1,6 @@
 """M0 milestone: parse vk.bin byte-exactly and recompute its digest.
 
-Run:  sage -python reference/tests/test_vk_digest.py
+Run:  python3 reference/tests/test_vk_digest.py
 
 Passes iff (a) the parser consumes vk.bin with no trailing bytes, and (b) the
 recomputed SHA-256 digest equals the Rust-exported vk_digest.bin.

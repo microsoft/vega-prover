@@ -1,6 +1,6 @@
 """M2 foundations: the stand-alone prover's building blocks are correct.
 
-Run:  sage -python reference/tests/test_prover_foundations.py
+Run:  python3 reference/tests/test_prover_foundations.py
 
 Checks, all against ground truth:
   * the cubic app circuit's constructed matrices are byte-identical to the Rust
@@ -9,8 +9,6 @@ Checks, all against ground truth:
   * ``MLE.bind_top`` matches the naive multilinear evaluation;
   * a Hyrax commitment of the app witness has the right shape and is accepted by
     the verifier's ``split_validate`` / ``check_commitment`` path.
-
-The commitment checks need Sage (group arithmetic); run under ``sage -python``.
 """
 
 import os

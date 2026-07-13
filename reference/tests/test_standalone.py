@@ -1,7 +1,7 @@
 """Fully stand-alone cross-conformance: Python does setup + prove + verify with
 zero Rust runtime dependency, and the Rust verifier accepts the result.
 
-Run: sage -python reference/tests/test_standalone.py
+Run: python3 reference/tests/test_standalone.py
 Then the Rust gate: cargo test --test reference_conformance verify_python_standalone -- --ignored --nocapture
 """
 

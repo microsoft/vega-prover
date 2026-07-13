@@ -9,7 +9,7 @@ prose.
 
 ## The implementation is the specification
 
-The repository ships a small **Python/Sage reference implementation** under
+The repository ships a small **pure-Python reference implementation** under
 [`reference/pyvega`](https://github.com/Microsoft/vega-prover/tree/main/reference).
 It is deliberately simple: it omits every performance optimization present in the
 production library (delayed modular reduction, small-value integer arithmetic,

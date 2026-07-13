@@ -7,7 +7,7 @@ Validation is the heart of the conformance check: it re-derives every per-round
 Fiat--Shamir challenge from the transcript and asserts it equals the challenge the
 prover stored in the instance. A byte-exact transcript makes these match.
 
-Commitments stay as lists of :class:`~pyvega.curve.WirePoint` (or Sage points);
+Commitments stay as lists of :class:`~pyvega.curve.WirePoint` (or EccPoints);
 ``to_regular_instance`` concatenates them (``combine_commitments``), and folding
 uses group arithmetic via :mod:`pyvega.commitment`.
 """
@@ -26,7 +26,7 @@ DEFAULT_COMMITMENT_WIDTH = 2048
 class R1CSInstanceReg:
   """A regular R1CS instance: a witness commitment and its public IO vector."""
 
-  comm_W: list  # list of points (WirePoint or Sage)
+  comm_W: list  # list of points (WirePoint or EccPoint)
   X: List[int]
 
 

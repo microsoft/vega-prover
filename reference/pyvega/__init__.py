@@ -7,7 +7,7 @@ cross-conform against the Rust library: proofs it accepts are exactly the proofs
 the Rust verifier accepts, and vice versa.
 
 Layout:
-  params      T256 curve and field constants (Sage-backed)
+  params      T256 curve and field integer constants
   codec       bincode little-endian / fixint decoder
   field       scalar / base field byte encodings
   curve       33-byte compressed group-element (de)compression

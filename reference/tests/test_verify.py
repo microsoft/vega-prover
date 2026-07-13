@@ -1,6 +1,6 @@
 """M1 milestone: the Python verifier accepts a real Rust-generated proof.
 
-Run:  sage -python reference/tests/test_verify.py
+Run:  python3 reference/tests/test_verify.py
 
 Passes iff ``pyvega.verify.verify`` accepts ``proof.bin`` against ``vk.bin``:
 every per-instance and per-round challenge re-derivation matches, the 6 pinned

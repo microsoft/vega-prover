@@ -7,7 +7,7 @@ strong local oracle: any error in the NIFS fold, the outer/inner sum-check round
 polynomials, the Fiat--Shamir interleave, or the circuit witness fill makes at
 least one constraint fail.
 
-Run under Sage (curve/commit ops):  ``sage -python reference/tests/test_prover_core.py``
+Run:  ``python3 reference/tests/test_prover_core.py``
 """
 
 import os

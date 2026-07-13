@@ -1,15 +1,16 @@
-"""Group-element commitment operations backed by Sage curve arithmetic.
+"""Group-element commitment operations over the T256 curve.
 
 A Hyrax commitment is a list of group elements (one per matrix row). The verifier
 needs four operations on these lists:
 
-* :func:`to_points`   -- decompress a commitment to Sage points (transcript/MSM);
+* :func:`to_points`   -- decompress a commitment to curve points (transcript/MSM);
 * :func:`msm`         -- ``vartime_multiscalar_mul``: ``sum_i s_i * P_i``;
 * :func:`combine`     -- ``combine_commitments``: concatenate the point lists;
 * :func:`fold`        -- ``fold_commitments``: element-wise weighted sum.
 
 Inputs may mix :class:`~pyvega.curve.WirePoint` (compressed, lazily decompressed)
-and already-decompressed Sage points; :func:`_pt` normalizes either form.
+and already-decompressed :class:`~pyvega.curve.EccPoint`; :func:`_pt` normalizes
+either form.
 """
 
 from .params import Q
@@ -17,17 +18,17 @@ from .curve import curve, WirePoint
 
 
 def _pt(x):
-  """Return a Sage point from either a WirePoint or an already-Sage point."""
+  """Return a curve point from either a WirePoint or an already-decompressed point."""
   return x.point() if isinstance(x, WirePoint) else x
 
 
 def to_points(comm):
-  """Decompress a commitment (list of points) to Sage points."""
+  """Decompress a commitment (list of points) to curve points."""
   return [_pt(p) for p in comm]
 
 
 def to_point(x):
-  """Decompress a single point (WirePoint or already-Sage) to a Sage point."""
+  """Decompress a single point (WirePoint or already-decompressed) to a curve point."""
   return _pt(x)
 
 
@@ -57,7 +58,7 @@ def combine(comms):
 def fold(comms, weights):
   """``fold_commitments``: ``result[j] = sum_i weights[i] * comms[i][j]``.
 
-    All commitments must have the same length; the result is a list of Sage
+    All commitments must have the same length; the result is a list of curve
     points of that length.
     """
   if not comms or len(comms) != len(weights):

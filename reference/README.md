@@ -1,7 +1,8 @@
 # Vega reference implementation (`pyvega`)
 
-A small, dependency-light **Python/Sage** implementation of the Vega-MC proof
-system. It is the *authoritative reference* for the protocol: rather than
+A small, dependency-light **pure-Python** implementation of the Vega-MC proof
+system (the only third-party package is `pycryptodome`, for Keccak). It is the
+*authoritative reference* for the protocol: rather than
 restating the algorithm in prose, the book points here, and conformance is
 established by **mutual acceptance** with the shipped Rust prover/verifier.
 
@@ -20,9 +21,9 @@ structural feature of the protocol is exercised while staying checkable by hand.
 
 ```
 pyvega/
-  params.py            curve/field constants (pure ints; no Sage)
+  params.py            curve/field integer constants
   field.py  polys.py   scalar field arithmetic, MLE / eq / sparse polynomials
-  curve.py             group operations and point (de)compression (lazy Sage)
+  curve.py             base field, curve arithmetic, point (de)compression
   codec.py             bincode reader primitives
   transcript.py        Keccak Fiat-Shamir transcript
   proof.py  vk.py      proof / verifier-key parsers (wire -> structs)
@@ -39,23 +40,23 @@ pyvega/
 
 ## Running
 
-Point operations need Sage; pure-parsing tests run under plain `python3`. When in
-doubt use `sage -python`.
+Every test runs under stock `python3` (the implementation is pure Python).
+Install the one dependency once with `python3 -m pip install pycryptodome`.
 
 ```sh
 # deterministic core (byte-exact vs Rust fixtures)
-sage -python reference/tests/test_proof_parse.py
-sage -python reference/tests/test_transcript.py
-python3    reference/tests/test_vk_digest.py
+python3 reference/tests/test_proof_parse.py
+python3 reference/tests/test_transcript.py
+python3 reference/tests/test_vk_digest.py
 
 # Rust prover -> Python verifier accepts
-sage -python reference/tests/test_verify.py
+python3 reference/tests/test_verify.py
 
 # Python prover -> Python verifier accepts (self-check)
-sage -python reference/tests/test_prove_finish.py
+python3 reference/tests/test_prove_finish.py
 
 # fully stand-alone: Python setup + prove + verify, then write the fixtures
-sage -python reference/tests/test_standalone.py
+python3 reference/tests/test_standalone.py
 ```
 
 The two cross-conformance gates against the real Rust verifier are `#[ignore]`
@@ -82,8 +83,8 @@ randomized. Regenerate them with:
 | --- | --- |
 | `meta.json`, `proof.bin`, `vk.bin`, `vk_digest.bin` (SHA vectors) | `cargo test --lib export_reference_fixtures -- --ignored` |
 | `cubic/meta.json`, `cubic/proof.bin`, `cubic/vk.bin`, `cubic/vk_digest.bin` | `cargo test --lib export_cubic_fixtures -- --ignored` |
-| `cubic/python_proof.bin` (reference proof vs the Rust `vk.bin`) | `sage -python reference/tests/test_prove_finish.py` |
-| `cubic/python_vk.bin`, `cubic/python_standalone_proof.bin` (fully stand-alone) | `sage -python reference/tests/test_standalone.py` |
+| `cubic/python_proof.bin` (reference proof vs the Rust `vk.bin`) | `python3 reference/tests/test_prove_finish.py` |
+| `cubic/python_vk.bin`, `cubic/python_standalone_proof.bin` (fully stand-alone) | `python3 reference/tests/test_standalone.py` |
 
 The `verify_python_proof` gate needs `cubic/vk.bin` + `cubic/python_proof.bin`;
 the `verify_python_standalone` gate needs `cubic/python_vk.bin` +

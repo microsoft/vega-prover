@@ -6,10 +6,10 @@
 #     cargo test --lib export_reference_fixtures -- --ignored --nocapture
 #     cargo test --lib export_cubic_fixtures     -- --ignored --nocapture
 #   Reference-prover proof against the Rust vk (cubic/python_proof.bin):
-#     sage -python reference/tests/test_prove_finish.py
+#     python3 reference/tests/test_prove_finish.py
 #   Fully stand-alone Python setup + proof (cubic/python_vk.bin,
 #   cubic/python_standalone_proof.bin):
-#     sage -python reference/tests/test_standalone.py
+#     python3 reference/tests/test_standalone.py
 fixtures/*.bin
 fixtures/*/*.bin
 fixtures/meta.json

@@ -5,8 +5,8 @@ cubic statement and checks that the M1 Python verifier accepts the resulting
 proof.  This is the deterministic self-check gate before the Rust cross-
 conformance gate.
 
-Run under Sage (point decompression is needed):
-    sage -python reference/tests/test_prove_finish.py
+Run:
+    python3 reference/tests/test_prove_finish.py
 """
 
 import os

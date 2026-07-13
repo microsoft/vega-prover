@@ -27,7 +27,7 @@ def _scalar(v: int) -> bytes:
 
 
 def _point(p) -> bytes:
-  """A group element as 33 compressed bytes (accepts WirePoint or Sage point)."""
+  """A group element as 33 compressed bytes (accepts WirePoint or EccPoint)."""
   if isinstance(p, WirePoint):
     return p.to_wire()
   return point_to_wire(p)

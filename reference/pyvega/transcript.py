@@ -76,7 +76,7 @@ class Transcript:
     self.absorb_raw(label, buf)
 
   def absorb_point(self, label: bytes, P):
-    """Absorb a Sage curve point (must be non-identity)."""
+    """Absorb a curve point (must be non-identity)."""
     self.absorb_raw(label, point_to_transcript(P))
 
   def absorb_unipoly(self, label: bytes, compressed_coeffs):

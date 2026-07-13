@@ -74,16 +74,16 @@ Both recover the public value \\(15\\), closing the loop.
 
 ```sh
 # deterministic vectors (byte-exact)
-sage -python reference/tests/test_proof_parse.py
-sage -python reference/tests/test_transcript.py
-python3    reference/tests/test_vk_digest.py
+python3 reference/tests/test_proof_parse.py
+python3 reference/tests/test_transcript.py
+python3 reference/tests/test_vk_digest.py
 
 # Rust prover -> reference verifier
-sage -python reference/tests/test_verify.py
+python3 reference/tests/test_verify.py
 
 # reference prover self-check, and write the stand-alone fixtures
-sage -python reference/tests/test_prove_finish.py
-sage -python reference/tests/test_standalone.py
+python3 reference/tests/test_prove_finish.py
+python3 reference/tests/test_standalone.py
 
 # reference prover -> Rust verifier (both directions of acceptance)
 cargo test --test reference_conformance verify_python_proof      -- --ignored --nocapture
@@ -94,10 +94,12 @@ An independent prover conforms when its proofs pass the same acceptance gate: th
 production verifier, run on the prover's serialized proof and verifier key,
 returns success and the expected public values.
 
-## A note on Sage
+## Dependencies
 
-The reference uses [Sage](https://www.sagemath.org/) only for group arithmetic and
-point (de)compression, isolated behind `curve.py`; the field, polynomial,
-encoding, and transcript logic is plain Python. This boundary keeps the
-cryptographic core portable and lets the arithmetic be reimplemented against any
-curve backend without touching the protocol logic.
+The reference implementation is pure Python and runs under a stock `python3`
+interpreter. Its only third-party dependency is
+[`pycryptodome`](https://pypi.org/project/pycryptodome/), used for Keccak-256 in
+the transcript; the field, curve, polynomial, encoding, and protocol logic are
+implemented directly with Python integers. The base field and the T256 curve live
+in `curve.py`, so the arithmetic can be reimplemented against any curve backend
+without touching the protocol logic.

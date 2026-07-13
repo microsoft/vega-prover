@@ -43,7 +43,7 @@ class BlindSource:
 
 
 def pedersen_row(ck, h, chunk: List[int], blind: int):
-  """Commit one row: ``<chunk, ck[0:len(chunk)]> + blind * h`` (a Sage point)."""
+  """Commit one row: ``<chunk, ck[0:len(chunk)]> + blind * h`` (a curve point)."""
   acc = msm(chunk, ck[: len(chunk)])
   b = int(blind) % Q
   if b != 0:
@@ -54,7 +54,7 @@ def pedersen_row(ck, h, chunk: List[int], blind: int):
 def hyrax_commit(ck, h, vector: List[int], width: int, blinds: List[int]):
   """Commit a full vector as ``ceil(len/width)`` Pedersen rows.
 
-    Returns the list of row commitments (Sage points). ``blinds`` must have one
+    Returns the list of row commitments (curve points). ``blinds`` must have one
     entry per row; the caller keeps them to open/fold the commitment later.
     """
   n = len(vector)

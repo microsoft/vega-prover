@@ -48,7 +48,7 @@ IPA_PROTOCOL_NAME = b"inner product argument (linear)"
 # --- small relaxed instance/witness containers -------------------------------
 @dataclass
 class _RelaxedInstance:
-  comm_W: list  # list of Sage points
+  comm_W: list  # list of curve points
   comm_E: list
   u: int
   X: List[int]

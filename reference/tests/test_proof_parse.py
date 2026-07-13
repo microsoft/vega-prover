@@ -1,6 +1,6 @@
 """M0 milestone: parse the real Rust-exported proof with exact byte consumption.
 
-Run with:  sage -python reference/tests/test_proof_parse.py
+Run with:  python3 reference/tests/test_proof_parse.py
 """
 
 import os
@@ -65,7 +65,7 @@ def main():
   sample += list(proof.nifs.comm_T)
   on_curve = 0
   for wp in sample:
-    P = wp.point()  # decompress via Sage; raises if not on curve
+    P = wp.point()  # decompress; raises if not on curve
     if not P.is_zero():
       on_curve += 1
   print(f"  decompressed on-curve : {on_curve}/{len(sample)} (rest identity)")

@@ -1,4 +1,4 @@
-"""Compressed group-element (point) encoding for the canonical engine.
+"""Compressed group-element (point) encoding and the T256 curve arithmetic.
 
 A group element serializes to **33 bytes**: a 1-byte flag followed by the
 32-byte ``x`` coordinate in **big-endian**. The flag uses halo2curves'
@@ -12,46 +12,200 @@ Decompression solves ``y^2 = x^3 - 3x + b`` for ``y`` and selects the root whose
 parity matches the sign bit.
 
 Points are parsed lazily as :class:`WirePoint` (raw bytes, no field work) so that
-structural parsing stays cheap; call :meth:`WirePoint.point` to decompress to a
-Sage curve point when the algebra is actually needed.
+structural parsing stays cheap; call :meth:`WirePoint.point` to decompress to an
+:class:`EccPoint` when the algebra is actually needed.
 
-**Sage is imported lazily.** Structural parsing (digest, proof/VK layout) touches
-no group algebra, so it never pays the multi-second Sage import; only the group
-operations below (decompression, MSM, transcript encoding) trigger it.
+**Pure Python, no external CAS.** The base field ``F_p`` and the short-Weierstrass
+curve are implemented here with plain integer arithmetic (Python's built-in
+big-ints). Because ``p ≡ 3 (mod 4)`` the field square root is the closed form
+``a^((p+1)/4) mod p``. This module is the only place group algebra lives; the rest
+of the reference implementation (field codecs, polynomials, sum-check) is already
+integer-only.
 """
 
 from .params import P, A, B, GX, GY, SCALAR_BYTES, FLAG_SIGN, FLAG_IDENTITY
 
-# Sage-backed base field and curve, built on first use. This module is the *only*
-# place Sage is used; the arithmetic core (field.py, polys.py) is Sage-free.
-_SAGE = {}
+# Precomputed exponents for the base field F_p (p ≡ 3 mod 4).
+_SQRT_EXP = (P + 1) // 4  # square root:      a^((p+1)/4)
+_LEGENDRE_EXP = (P - 1) // 2  # Legendre symbol:  a^((p-1)/2)
 
 
-def _ctx():
-  """Return (Fp, E, G), constructing the Sage objects on first call."""
-  if not _SAGE:
-    from sage.all import GF, EllipticCurve
+class Fp:
+  """An element of the base field ``F_p`` (coordinates live here).
 
-    Fp = GF(P)
-    E = EllipticCurve(Fp, [Fp(A), Fp(B)])
-    G = E(Fp(GX), Fp(GY))
-    _SAGE["Fp"], _SAGE["E"], _SAGE["G"] = Fp, E, G
-  return _SAGE["Fp"], _SAGE["E"], _SAGE["G"]
+    A thin wrapper over ``int`` supporting exactly the operations the reference
+    prover's hash-to-curve and decompression need: ``+ - * **``, negation,
+    ``is_square``, ``sqrt``, and ``int()`` for parity / serialization.
+    """
+
+  __slots__ = ("v",)
+
+  def __init__(self, v):
+    self.v = int(v) % P
+
+  def __int__(self):
+    return self.v
+
+  def __index__(self):
+    return self.v
+
+  def __eq__(self, other):
+    return self.v == (other.v if isinstance(other, Fp) else int(other) % P)
+
+  def __hash__(self):
+    return hash(self.v)
+
+  def __add__(self, other):
+    return Fp(self.v + int(other))
+
+  __radd__ = __add__
+
+  def __sub__(self, other):
+    return Fp(self.v - int(other))
+
+  def __rsub__(self, other):
+    return Fp(int(other) - self.v)
+
+  def __mul__(self, other):
+    return Fp(self.v * int(other))
+
+  __rmul__ = __mul__
+
+  def __neg__(self):
+    return Fp(-self.v)
+
+  def __pow__(self, exp):
+    return Fp(pow(self.v, int(exp), P))
+
+  def is_square(self) -> bool:
+    """Euler's criterion: ``a`` is a QR iff ``a^((p-1)/2) != -1`` (0 counts)."""
+    return self.v == 0 or pow(self.v, _LEGENDRE_EXP, P) == 1
+
+  def sqrt(self) -> "Fp":
+    """A square root of ``a`` (p ≡ 3 mod 4 closed form); raises if non-square."""
+    r = pow(self.v, _SQRT_EXP, P)
+    if (r * r) % P != self.v:
+      raise ValueError("element is not a square")
+    return Fp(r)
+
+  def __repr__(self):
+    return f"Fp(0x{self.v:x})"
+
+
+class EccPoint:
+  """An affine point on ``E : y^2 = x^3 + A x + B`` over ``F_p`` (or the identity).
+
+    Supports the group operations the Hyrax MSM needs: point addition (``+``),
+    negation, and scalar multiplication (``k * P`` / ``P * k``) via double-and-add.
+    ``EccPoint(inf=True)`` is the point at infinity (the group identity).
+    """
+
+  __slots__ = ("x", "y", "inf")
+
+  def __init__(self, x=None, y=None, inf: bool = False):
+    if inf:
+      self.x = None
+      self.y = None
+      self.inf = True
+    else:
+      self.x = int(x) % P
+      self.y = int(y) % P
+      self.inf = False
+
+  def is_zero(self) -> bool:
+    return self.inf
+
+  def __eq__(self, other):
+    if not isinstance(other, EccPoint):
+      return NotImplemented
+    if self.inf or other.inf:
+      return self.inf and other.inf
+    return self.x == other.x and self.y == other.y
+
+  def __hash__(self):
+    return hash((self.x, self.y, self.inf))
+
+  def __getitem__(self, i: int):
+    """Coordinate access: ``pt[0]`` -> x, ``pt[1]`` -> y."""
+    if self.inf:
+      raise ValueError("the identity has no affine coordinates")
+    return self.x if i == 0 else self.y
+
+  def __neg__(self) -> "EccPoint":
+    if self.inf:
+      return self
+    return EccPoint(self.x, (-self.y) % P)
+
+  def __add__(self, other: "EccPoint") -> "EccPoint":
+    if self.inf:
+      return other
+    if other.inf:
+      return self
+    if self.x == other.x:
+      if (self.y + other.y) % P == 0:
+        return EccPoint(inf=True)  # P + (-P) = O
+      # Doubling: lambda = (3 x^2 + A) / (2 y).
+      lam = (3 * self.x * self.x + A) * pow(2 * self.y % P, -1, P) % P
+    else:
+      # Chord: lambda = (y2 - y1) / (x2 - x1).
+      lam = (other.y - self.y) * pow((other.x - self.x) % P, -1, P) % P
+    xr = (lam * lam - self.x - other.x) % P
+    yr = (lam * (self.x - xr) - self.y) % P
+    return EccPoint(xr, yr)
+
+  def __mul__(self, k: int) -> "EccPoint":
+    k = int(k)
+    if k < 0:
+      return (-self).__mul__(-k)
+    result = EccPoint(inf=True)
+    addend = self
+    while k:
+      if k & 1:
+        result = result + addend
+      addend = addend + addend
+      k >>= 1
+    return result
+
+  __rmul__ = __mul__
+
+  def __repr__(self):
+    if self.inf:
+      return "EccPoint(identity)"
+    return f"EccPoint(x=0x{self.x:x}, y=0x{self.y:x})"
+
+
+class _Curve:
+  """Callable curve object exposing an ``E(...)`` factory.
+
+    ``E(0)`` returns the identity and ``E(x, y)`` builds an affine point, matching
+    the constructor style the consumer code uses.
+    """
+
+  def __call__(self, x, y=None) -> EccPoint:
+    if y is None:
+      if int(x) != 0:
+        raise ValueError("E(k) only accepts k == 0 (the identity)")
+      return EccPoint(inf=True)
+    return EccPoint(int(x), int(y))
+
+
+_CURVE = _Curve()
+_GENERATOR = EccPoint(GX, GY)
 
 
 def base_field():
-  """The Sage base field ``F_p`` (constructs Sage on first call)."""
-  return _ctx()[0]
+  """The base field ``F_p`` constructor (``Fp(int) -> Fp``)."""
+  return Fp
 
 
-def curve():
-  """The Sage curve ``E`` (constructs Sage on first call)."""
-  return _ctx()[1]
+def curve() -> _Curve:
+  """The curve ``E`` (callable: ``E(0)`` identity, ``E(x, y)`` affine point)."""
+  return _CURVE
 
 
-def generator():
-  """The Sage generator ``G`` (constructs Sage on first call)."""
-  return _ctx()[2]
+def generator() -> EccPoint:
+  """The canonical generator ``G``."""
+  return _GENERATOR
 
 
 class WirePoint:
@@ -91,25 +245,26 @@ class WirePoint:
     """The encoded sign bit (1 = y odd), meaningless for the identity."""
     return 1 if (self.flag & FLAG_SIGN) else 0
 
-  def point(self):
-    """Decompress to a Sage point on the T256 curve (cached)."""
+  def point(self) -> EccPoint:
+    """Decompress to an :class:`EccPoint` on the T256 curve (cached)."""
     if self._point is None:
       self._point = self._decompress()
     return self._point
 
-  def _decompress(self):
-    Fp, E, _ = _ctx()
+  def _decompress(self) -> EccPoint:
     if self.is_identity:
-      return E(0)  # point at infinity
-    x = Fp(int.from_bytes(self.x_bytes, "big"))
-    rhs = x**3 + Fp(A) * x + Fp(B)
-    if not rhs.is_square():
+      return EccPoint(inf=True)
+    x = int.from_bytes(self.x_bytes, "big") % P
+    rhs = (x * x % P * x + A * x + B) % P
+    if rhs != 0 and pow(rhs, _LEGENDRE_EXP, P) != 1:
       raise ValueError("x is not on the curve (rhs is a non-residue)")
-    y = rhs.sqrt()
+    y = pow(rhs, _SQRT_EXP, P)
+    if (y * y) % P != rhs:
+      raise ValueError("x is not on the curve")
     # Select the root whose parity matches the encoded sign bit.
-    if (int(y) & 1) != self.sign:
-      y = -y
-    return E(x, y)
+    if (y & 1) != self.sign:
+      y = (-y) % P
+    return EccPoint(x, y)
 
   def to_wire(self) -> bytes:
     return bytes([self.flag]) + self.x_bytes
@@ -125,7 +280,7 @@ def read_point(reader) -> WirePoint:
 
 
 def point_to_wire(pt) -> bytes:
-  """Compress a Sage curve point to its 33-byte wire form (prover side)."""
+  """Compress a curve point to its 33-byte wire form (prover side)."""
   if pt.is_zero():
     return bytes([FLAG_IDENTITY]) + b"\x00" * SCALAR_BYTES
   x = int(pt[0])

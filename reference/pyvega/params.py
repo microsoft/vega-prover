@@ -14,10 +14,9 @@ Source of truth (verified against code):
   * curve a = p-3, b     halo2curves-0.10.0/src/t256/curve.rs:57-70
   * generator (3, GY)    halo2curves-0.10.0/src/t256/curve.rs:42-54
 
-This module holds **pure integer constants only** — no Sage. All Sage-backed
-objects (the base field, the curve, the generator) live in :mod:`pyvega.curve`,
-so the arithmetic core (:mod:`pyvega.field`, :mod:`pyvega.polys`) stays Sage-free
-and loads instantly. This is the isolation boundary for the eventual de-Sage.
+This module holds the field/curve integer constants. The base field, the curve,
+and the generator are implemented in pure Python in :mod:`pyvega.curve`; the
+arithmetic core (:mod:`pyvega.field`, :mod:`pyvega.polys`) is integer-only.
 """
 
 # Base field F_p — the field of point coordinates.
