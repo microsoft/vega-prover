@@ -24,7 +24,7 @@ class Reader:
     self.data = data
     self.pos = 0
 
-    # --- primitives -----------------------------------------------------
+    # primitives
   def take(self, n: int) -> bytes:
     if self.pos + n > len(self.data):
       raise EOFError(
@@ -56,7 +56,7 @@ class Reader:
       raise ValueError(f"invalid bool byte 0x{b:02x} at offset {self.pos - 1}")
     return b == 1
 
-    # --- combinators ----------------------------------------------------
+    # combinators
   def vec(self, elem):
     """Decode ``Vec<T>``: 8-byte LE length prefix, then ``elem`` that many times."""
     n = self.usize()
@@ -78,7 +78,7 @@ class Reader:
   def tuple(self, *elems):
     return tuple(elem(self) for elem in elems)
 
-    # --- position helpers ----------------------------------------------
+    # position helpers
   @property
   def remaining(self) -> int:
     return len(self.data) - self.pos

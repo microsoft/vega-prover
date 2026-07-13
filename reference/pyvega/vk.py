@@ -41,7 +41,7 @@ def _le64(x: int) -> bytes:
   return x.to_bytes(8, "little")
 
 
-  # --- Hyrax commitment / verifier key -----------------------------------------
+  # Hyrax commitment / verifier key
 @dataclass
 class HyraxKey:
   """A HyraxCommitmentKey / HyraxVerifierKey: generators plus a hiding base.
@@ -63,7 +63,7 @@ def _parse_hyrax_key(r: Reader) -> HyraxKey:
   return HyraxKey(num_cols=num_cols, ck=ck, h=h)
 
 
-  # --- Sparse (CSR) matrix ------------------------------------------------------
+  # Sparse (CSR) matrix
 @dataclass
 class SparseMatrixRaw:
   """A CSR matrix captured as byte blobs, decoded to ints on demand.
@@ -121,7 +121,7 @@ def parse_sparse_matrix(r: Reader) -> SparseMatrixRaw:
   )
 
 
-  # --- Split R1CS shape (S_step / S_core) --------------------------------------
+  # Split R1CS shape (S_step / S_core)
   # dims order: num_cons, num_cons_unpadded, num_shared_unpadded,
   # num_precommitted_unpadded, num_rest_unpadded, num_shared, num_precommitted,
   # num_rest, num_public, num_challenges
@@ -174,7 +174,7 @@ def _parse_split_shape(r: Reader) -> SplitShape:
   return SplitShape(dims, A, B, C)
 
 
-  # --- Multi-round split shape (vc_shape) --------------------------------------
+  # Multi-round split shape (vc_shape)
 @dataclass
 class MultiRoundShape:
   num_cons: int
@@ -217,7 +217,7 @@ def _parse_multiround_shape(r: Reader) -> MultiRoundShape:
   )
 
 
-  # --- Regular R1CS shape (vc_shape_regular) -----------------------------------
+  # Regular R1CS shape (vc_shape_regular)
 @dataclass
 class R1CSShape:
   num_cons: int
@@ -238,7 +238,7 @@ def _parse_r1cs_shape(r: Reader) -> R1CSShape:
   return R1CSShape(num_cons, num_vars, num_io, A, B, C)
 
 
-  # --- The verifier key ---------------------------------------------------------
+  # The verifier key
 @dataclass
 class VerifierKey:
 # Decoded structures consumed by verify()

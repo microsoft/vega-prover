@@ -27,7 +27,7 @@ from typing import Dict, List
 from .params import Q
 
 
-# --- configuration -----------------------------------------------------------
+# configuration
 @dataclass
 class VcConfig:
   num_rounds_b: int
@@ -85,7 +85,7 @@ class VcConfig:
     return self.idx_commit_w_step + 1
 
 
-# --- values fed to the circuit ----------------------------------------------
+# values fed to the circuit
 @dataclass
 class VcValues:
   """All prover-side values the verifier circuit consumes, in native ints mod Q."""
@@ -141,14 +141,14 @@ def zero_values(cfg: VcConfig) -> VcValues:
   )
 
 
-# --- a variable handle -------------------------------------------------------
+# a variable handle
 @dataclass
 class Var:
   col: int
   val: int
 
 
-# --- the emitter -------------------------------------------------------------
+# the emitter
 class VerifierCircuit:
   """Mirrors zk.rs allocation/enforcement order to emit (A,B,C, W, X)."""
 
@@ -167,7 +167,7 @@ class VerifierCircuit:
     self._chal_ptr = 0
     self._challenges: List[int] = []
 
-  # -- primitive allocation --------------------------------------------------
+  # primitive allocation
   def one(self) -> Var:
     return Var(self.one_col, 1)
 
@@ -200,7 +200,7 @@ class VerifierCircuit:
     self._chal_ptr += 1
     return v
 
-  # -- gadgets (mirror zk.rs) ------------------------------------------------
+  # gadgets (mirror zk.rs)
   def g_alloc_zero(self) -> Var:
     z = self.alloc(0)
     self.enforce([(z, 1)], [(self.one(), 1)], [])

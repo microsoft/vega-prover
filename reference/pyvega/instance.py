@@ -68,7 +68,7 @@ def weights_from_r(r_bs: List[int], n: int) -> List[int]:
   return w
 
 
-  # --- SplitR1CSInstance --------------------------------------------------------
+  # SplitR1CSInstance
 def split_validate(u, S, transcript):
   """``SplitR1CSInstance::validate`` -- re-derive and check per-circuit challenges."""
   if len(u.public_values) != S.num_public:
@@ -114,7 +114,7 @@ def split_to_regular(u) -> R1CSInstanceReg:
   return R1CSInstanceReg(comm_W=comm_W, X=X)
 
 
-  # --- SplitMultiRoundR1CSInstance ---------------------------------------------
+  # SplitMultiRoundR1CSInstance
 def multiround_validate(u, s, transcript):
   """``SplitMultiRoundR1CSInstance::validate`` -- per-round challenge re-derivation."""
   if len(u.public_values) != s.num_public:
@@ -153,7 +153,7 @@ def multiround_to_regular(u) -> R1CSInstanceReg:
   return R1CSInstanceReg(comm_W=comm_W, X=X)
 
 
-  # --- Folding a batch of regular instances ------------------------------------
+  # Folding a batch of regular instances
 def fold_multiple(r_bs: List[int], Us: List[R1CSInstanceReg]) -> R1CSInstanceReg:
   """``R1CSInstance::fold_multiple`` -- eq-weighted sum over the instance batch."""
   n = len(Us)

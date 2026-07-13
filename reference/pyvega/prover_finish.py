@@ -45,7 +45,7 @@ from .proof import (
 IPA_PROTOCOL_NAME = b"inner product argument (linear)"
 
 
-# --- small relaxed instance/witness containers -------------------------------
+# small relaxed instance/witness containers
 @dataclass
 class _RelaxedInstance:
   comm_W: list  # list of curve points
@@ -62,7 +62,7 @@ class _RelaxedWitness:
   r_E: List[int]
 
 
-# --- matrix helpers ----------------------------------------------------------
+# matrix helpers
 def multiply_vec(S, z: List[int]):
   """``(Az, Bz, Cz)`` for an :class:`R1CSShape` (CSR matrices)."""
   return _matvec(S.A, z), _matvec(S.B, z), _matvec(S.C, z)
@@ -82,7 +82,7 @@ def _bind_matrix_row_vars(M, rx: List[int], num_cols: int) -> List[int]:
   return evals
 
 
-# --- plaintext sum-check provers ---------------------------------------------
+# plaintext sum-check provers
 def _compress(coeffs: List[int]) -> List[int]:
   """``UniPoly::compress`` -- drop the linear (index-1) coefficient."""
   return [coeffs[0]] + list(coeffs[2:])
@@ -152,7 +152,7 @@ def _sc_quad(claim: int, num_rounds: int, A, B, tr):
   return polys, r, (A[0], B[0])
 
 
-# --- Hyrax direct opening ----------------------------------------------------
+# Hyrax direct opening
 def _prove_direct(vc_ck, poly: List[int], blind_rows: List[int], point: List[int]):
   """``HyraxPCS::prove_direct`` -- RLC of Hyrax rows.  Returns ``(v, combined_blind)``."""
   num_cols = vc_ck.num_cols
@@ -178,7 +178,7 @@ def _prove_direct(vc_ck, poly: List[int], blind_rows: List[int], point: List[int
   return v, cb
 
 
-# --- Nova fold (fresh random mask) -------------------------------------------
+# Nova fold (fresh random mask)
 def sample_random_instance_witness(vk, rng: BlindSource):
   """Deterministically sample a satisfying relaxed instance/witness (ZK mask)."""
   S = vk.vc_shape_regular
@@ -243,7 +243,7 @@ def nova_nifs_prove(vk, U1, W1, U2_reg, W2, r_W2, tr, rng: BlindSource):
   return NovaNIFS(comm_T=comm_T), folded, folded_u, folded_X, r
 
 
-# --- relaxed R1CS Spartan (non-ZK, direct openings) --------------------------
+# relaxed R1CS Spartan (non-ZK, direct openings)
 def relaxed_spartan_prove(vk, folded_u: int, folded_X: List[int], W, tr):
   """``RelaxedR1CSSpartanProof::prove`` on the folded verifier-circuit instance."""
   S = vk.vc_shape_regular
@@ -304,7 +304,7 @@ def relaxed_spartan_prove(vk, folded_u: int, folded_X: List[int], W, tr):
   )
 
 
-# --- ZK linear inner-product argument ----------------------------------------
+# ZK linear inner-product argument
 def _ipa_prove(ck, h, ck_c, h_c, comm_a_vec, b_vec, comm_c, a_vec, r_a, r_c, tr, rng):
   """``InnerProductArgumentLinear::prove`` (linear sigma protocol)."""
   tr.dom_sep(IPA_PROTOCOL_NAME)
@@ -333,7 +333,7 @@ def _ipa_prove(ck, h, ck_c, h_c, comm_a_vec, b_vec, comm_c, a_vec, r_a, r_c, tr,
   )
 
 
-# --- orchestrator ------------------------------------------------------------
+# orchestrator
 def prove_finish(vk, core, seed: bytes = b"pyvega-reference-finish") -> VegaMcZkSNARK:
   """Complete the proof from a :class:`ProverCoreResult`; return a VegaMcZkSNARK."""
   rng = BlindSource(seed)

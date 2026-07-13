@@ -17,7 +17,7 @@ def _bit_len_pow2(n: int) -> int:
   return (n - 1).bit_length()
 
 
-  # --- EqPolynomial -------------------------------------------------------------
+  # EqPolynomial
 def eq_evals(r):
   """``EqPolynomial::evals_from_points`` — the 2^|r| eq-table, sequential path.
 
@@ -45,7 +45,7 @@ def eq_evaluate(r, rx):
   return acc
 
 
-  # --- PowPolynomial ------------------------------------------------------------
+  # PowPolynomial
 def pow_evaluate(t, ell, r):
   """``PowPolynomial::new(t, ell).evaluate(r)``.
 
@@ -64,7 +64,7 @@ def pow_evaluate(t, ell, r):
   return acc
 
 
-  # --- SparsePolynomial ---------------------------------------------------------
+  # SparsePolynomial
 def sparse_poly_evaluate(num_vars, Z, r):
   """``SparsePolynomial::new(num_vars, Z).evaluate(r)`` — verbatim port.
 
@@ -85,7 +85,7 @@ def sparse_poly_evaluate(num_vars, Z, r):
   return (common * eval_partial) % Q
 
 
-  # --- CompressedUniPoly / UniPoly ---------------------------------------------
+  # CompressedUniPoly / UniPoly
 def unipoly_decompress(coeffs_except_linear, hint):
   """``CompressedUniPoly::decompress`` -> full coeff list [c0, linear, c1, c2, ..].
 

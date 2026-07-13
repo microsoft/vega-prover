@@ -54,7 +54,7 @@ from .polys import eq_evals, sparse_poly_evaluate
 PROVE_LABEL = b"neutronnova_prove"
 
 
-# --- small polynomial / table helpers ---------------------------------------
+# small polynomial / table helpers
 def eval_uni(coeffs: List[int], x: int) -> int:
   """Evaluate a univariate poly (coeffs ascending: ``[c0, c1, ...]``) at ``x``."""
   acc = 0
@@ -146,7 +146,7 @@ def _build_z(W: List[int], X: List[int], num_vars: int) -> List[int]:
   return v
 
 
-# --- result bundle -----------------------------------------------------------
+# result bundle
 @dataclass
 class ProverCoreResult:
   cfg: VcConfig
@@ -170,7 +170,7 @@ class ProverCoreResult:
   challenges: List[int]
 
 
-# --- the prover core ---------------------------------------------------------
+# the prover core
 def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover") -> ProverCoreResult:
   """Run NIFS + outer + inner sum-checks; assemble and return ``W_verifier``.
 
@@ -183,7 +183,7 @@ def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover")
   S_step, S_core = vk.S_step, vk.S_core
   num_vars = S_step.num_vars
 
-  # (0) build the app instances (all cubic, distinct blinds) -----------------
+  # (0) build the app instances (all cubic, distinct blinds)
   cw = app_circuit.cubic_witness()
   w_vec = list(cw.W)  # witness segment, length num_vars
   z_app = app_circuit.z_vector(cw)
@@ -212,7 +212,7 @@ def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover")
   step_reg = [split_to_regular(u) for u in step_instances]
   core_reg = split_to_regular(core_instance)
 
-  # (config) -----------------------------------------------------------------
+  # (config)
   n_padded = mathutil.next_power_of_two(num_steps)
   num_rounds_b = mathutil.log2(n_padded)
   num_rounds_x = mathutil.log2(S_step.num_cons)
@@ -222,7 +222,7 @@ def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover")
   if num_rounds_b != 1:
     raise NotImplementedError("prover core currently supports a single NIFS round")
 
-  # (Phase B) main transcript ------------------------------------------------
+  # (Phase B) main transcript
   tr = Transcript(PROVE_LABEL)
   tr.absorb_raw(b"vk", digest)
   tr.absorb_r1cs_instance(
@@ -240,7 +240,7 @@ def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover")
   tau = tr.squeeze(b"tau")
   rhos = [tr.squeeze(b"rho") for _ in range(num_rounds_b)]
 
-  # NIFS layers (Az/Bz/Cz per padded step instance) --------------------------
+  # NIFS layers (Az/Bz/Cz per padded step instance)
   step_W = [w_vec for _ in range(n_padded)]  # all identical for cubic
   layers = []  # (Az, Bz, Cz) per instance
   for b in range(n_padded):
@@ -248,7 +248,7 @@ def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover")
     layers.append(app_circuit.multiply_vec(S_step, z_b))
   pow_full = [pow(tau, k, Q) for k in range(S_step.num_cons)]
 
-  # (main interleaved loop) --------------------------------------------------
+  # (main interleaved loop)
   c = VerifierCircuit(cfg)
   c._challenges = []
   prior: List = [None] * cfg.num_rounds
@@ -396,7 +396,7 @@ def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover")
     c._challenges.extend(chals)
     _route(ri, chals)
 
-  # (assembly) ---------------------------------------------------------------
+  # (assembly)
   num_challenges = cfg.num_challenges
   challenges = c.io_vals[:num_challenges]
   public_values = c.io_vals[num_challenges:]

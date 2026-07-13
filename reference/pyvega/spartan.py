@@ -84,7 +84,7 @@ def spartan_verify(proof, S, vk, U, transcript):
   num_vars_padded = mathutil.next_power_of_two(num_vars)
   num_rounds_y = mathutil.log2(num_vars_padded) + 1
 
-  # --- Outer sum-check ---
+  # Outer sum-check
   tau = [transcript.squeeze(b"t") for _ in range(num_rounds_x)]
   claim_outer_final, r_x = sumcheck_verify(
     proof.sc_proof_outer, 0, num_rounds_x, 3, transcript
@@ -98,7 +98,7 @@ def spartan_verify(proof, S, vk, U, transcript):
 
   transcript.absorb_scalars(b"claims_outer", [claim_Az, claim_Bz, claim_uCzE])
 
-  # --- Inner sum-check ---
+  # Inner sum-check
   r = transcript.squeeze(b"r")
   r_sq = (r * r) % Q
 

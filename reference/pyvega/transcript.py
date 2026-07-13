@@ -63,7 +63,7 @@ class Transcript:
     self.state = updated_state(b"", PERSONA_TAG + label)
     self.acc = b""
 
-    # --- absorbing --------------------------------------------------------
+    # absorbing
   def absorb_raw(self, label: bytes, repr_bytes: bytes):
     self.acc += label + repr_bytes
 
@@ -116,7 +116,7 @@ class Transcript:
   def dom_sep(self, tag: bytes):
     self.acc += DOM_SEP_TAG + tag
 
-    # --- squeezing --------------------------------------------------------
+    # squeezing
   def squeeze(self, label: bytes) -> int:
     if self.round >= 1 << 16:
       raise OverflowError("transcript round counter overflow (u16)")

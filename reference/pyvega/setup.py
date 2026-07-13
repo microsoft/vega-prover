@@ -30,7 +30,7 @@ def _u64(n: int) -> bytes:
   return int(n).to_bytes(8, "little")
 
 
-# --- hash-to-curve key generation -------------------------------------------
+# hash-to-curve key generation
 def _hash_to_curve(seed: bytes):
   """Deterministic valid curve point via try-and-increment over F_p."""
   Fp = base_field()
@@ -54,7 +54,7 @@ def keygen(label: bytes, num_cols: int):
   return pts[:num_cols], pts[num_cols]
 
 
-# --- sparse-matrix / shape serialization -------------------------------------
+# sparse-matrix / shape serialization
 def _csr(rows: List[Dict[int, int]], num_rows: int, cols: int) -> SparseMatrixRaw:
   """Build a :class:`SparseMatrixRaw` (CSR) from per-row ``{col: coeff}`` dicts,
   padding to ``num_rows`` with empty rows."""
@@ -96,7 +96,7 @@ def _split_shape_bytes(shape: SplitShape) -> bytes:
   return out + _matrix_bytes(shape.A) + _matrix_bytes(shape.B) + _matrix_bytes(shape.C)
 
 
-# --- verifier-circuit shapes -------------------------------------------------
+# verifier-circuit shapes
 def _vc_config(num_steps: int, num_cons_app: int, num_vars_app: int) -> VcConfig:
   num_rounds_b = mathutil.log2(mathutil.next_power_of_two(num_steps))
   num_rounds_x = mathutil.log2(num_cons_app)
@@ -148,7 +148,7 @@ def _r1cs_shape_bytes(A, B, C, num_cons, num_vars, num_io) -> bytes:
   return out + _matrix_bytes(A) + _matrix_bytes(B) + _matrix_bytes(C)
 
 
-# --- Hyrax key serialization -------------------------------------------------
+# Hyrax key serialization
 def _hyrax_key_bytes(pts, h) -> bytes:
   out = _u64(len(pts)) + _u64(len(pts))  # num_cols, then Vec length
   for p in pts:
@@ -156,7 +156,7 @@ def _hyrax_key_bytes(pts, h) -> bytes:
   return out + point_to_wire(h)
 
 
-# --- top-level ----------------------------------------------------------------
+# top-level
 def serialize_vk(num_steps: int = 2, seed: bytes = b"vega-python-setup") -> bytes:
   """Build and serialize a stand-alone verifier key for the cubic circuit."""
   num_vars_app = app_circuit.DEFAULT_NUM_REST
