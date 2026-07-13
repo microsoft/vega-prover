@@ -52,6 +52,37 @@ jobs:
       - name: Run tests
         run: cargo test --release --verbose
 
+  reference-conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust (stable)
+        uses: dtolnay/rust-toolchain@v1
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Python dependencies
+        run: python3 -m pip install pycryptodome
+      - name: Export Rust fixtures
+        run: |
+          cargo test --release --lib export_reference_fixtures -- --ignored --nocapture
+          cargo test --release --lib export_cubic_fixtures -- --ignored --nocapture
+      - name: Run the pure-Python reference suite
+        run: |
+          set -e
+          for t in test_transcript test_proof_parse test_vk_digest test_verify \
+                   test_prover_foundations test_prover_core test_prove_finish test_standalone; do
+            echo "::group::$t"
+            python3 reference/tests/$t.py
+            echo "::endgroup::"
+          done
+      - name: Rust verifier accepts the Python proofs (cross-conformance)
+        run: cargo test --release --test reference_conformance -- --ignored --nocapture
+
   fmt:
     runs-on: ubuntu-latest
     steps:

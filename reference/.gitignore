@@ -1,0 +1,20 @@
+# The only committed fixture is fixtures/transcript_vector.json (a frozen Keccak
+# transcript known-answer vector). Every other fixture -- keys, proofs, digests,
+# and the meta.json metadata -- is git-ignored and regenerable on demand, because
+# the keys are large and the proofs are randomized. Regenerate with:
+#   Rust exports (proof.bin, vk.bin, vk_digest.bin, meta.json, and cubic/ copies):
+#     cargo test --lib export_reference_fixtures -- --ignored --nocapture
+#     cargo test --lib export_cubic_fixtures     -- --ignored --nocapture
+#   Reference-prover proof against the Rust vk (cubic/python_proof.bin):
+#     python3 reference/tests/test_prove_finish.py
+#   Fully stand-alone Python setup + proof (cubic/python_vk.bin,
+#   cubic/python_standalone_proof.bin):
+#     python3 reference/tests/test_standalone.py
+fixtures/*.bin
+fixtures/*/*.bin
+fixtures/meta.json
+fixtures/cubic/meta.json
+
+# Python bytecode
+__pycache__/
+*.pyc
