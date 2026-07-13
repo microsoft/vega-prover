@@ -1,4 +1,4 @@
-# The Fiat–Shamir transcript
+# The Fiat--Shamir transcript
 
 The Vega transcript is the byte-level mechanism that turns prover messages into Fiat--Shamir challenges. For the canonical engine described in [Fields, groups, and the engine](./fields-and-groups.md), the transcript is based on Keccak256 and produces challenges in the scalar field \\(\mathbb{F}\\).
 

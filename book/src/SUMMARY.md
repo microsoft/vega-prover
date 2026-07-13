@@ -13,7 +13,7 @@
 
 - [Fields, groups, and the engine](building-blocks/fields-and-groups.md)
 - [Byte encodings and serialization](building-blocks/encodings.md)
-- [The Fiat–Shamir transcript](building-blocks/transcript.md)
+- [The Fiat--Shamir transcript](building-blocks/transcript.md)
 - [Multilinear polynomials](building-blocks/multilinear.md)
 - [The sum-check protocol](building-blocks/sumcheck.md)
 - [R1CS and its variants](building-blocks/r1cs.md)

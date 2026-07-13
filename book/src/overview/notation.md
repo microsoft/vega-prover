@@ -9,7 +9,7 @@ the mathematical objects defined here.
 
 Vega operates over a prime-order elliptic-curve group \\(\mathbb{G}\\) with scalar field
 \\(\mathbb{F}\\). Unless stated otherwise, *all* arithmetic of the proof system — witnesses,
-constraints, sum-check messages, and Fiat–Shamir challenges — happens in \\(\mathbb{F}\\).
+constraints, sum-check messages, and Fiat--Shamir challenges — happens in \\(\mathbb{F}\\).
 
 - \\(\mathbb{F}\\): the scalar field of \\(\mathbb{G}\\), a prime field of order roughly
   \\(2^{256}\\). Field elements are written with lowercase italic letters, e.g.
@@ -96,7 +96,7 @@ The commitment key, the reshaping of long vectors, and the opening argument are 
 
 ## The transcript and challenges
 
-Interactive protocols are made non-interactive with the Fiat–Shamir transform against a single
+Interactive protocols are made non-interactive with the Fiat--Shamir transform against a single
 running *transcript*. Two operations act on it:
 
 - `absorb(label, value)` folds labeled data into the transcript;

@@ -10,13 +10,13 @@ the procedure in prose, it points at a working implementation.
 
 The repository ships a small **pure-Python reference implementation** under
 [`reference/pyvega`](https://github.com/Microsoft/vega-prover/tree/main/reference).
-It omits the performance optimizations in the production library — delayed modular
+It omits the performance optimizations in the shipped Rust library — delayed modular
 reduction, small-value integer arithmetic, multi-scalar-multiplication caches, and
 parallelism — and computes each value in the most direct way. It is slower than
-the shipped prover, but its control flow follows the protocol step by step.
+the shipped Rust prover, but its control flow follows the protocol step by step.
 
 A written algorithm can drift from the code it describes; a reference prover
-cannot, because it is executed and checked against the real verifier. The prose in
+cannot, because it is executed and checked against the shipped Rust verifier. The prose in
 this book explains the design and the wire format; the reference prover is the
 procedure of record.
 
@@ -46,7 +46,7 @@ can read a working counterpart to each specification chapter:
 | --- | --- | --- |
 | Field and group arithmetic | [Fields, groups, and the engine](../building-blocks/fields-and-groups.md) | `field.py`, `curve.py`, `params.py` |
 | Byte encodings | [Serialization](serialization.md) | `codec.py`, `field.py`, `curve.py` |
-| Fiat–Shamir transcript | [Transcript schedule](transcript-schedule.md) | `transcript.py` |
+| Fiat--Shamir transcript | [Transcript schedule](transcript-schedule.md) | `transcript.py` |
 | Multilinear / eq / sparse polynomials | [Multilinear polynomials](../building-blocks/multilinear.md) | `polys.py` |
 | Sum-check | [Sum-check](../building-blocks/sumcheck.md) | `sumcheck.py` |
 | R1CS and its instances | [R1CS](../building-blocks/r1cs.md) | `instance.py` |
@@ -63,14 +63,15 @@ can read a working counterpart to each specification chapter:
 
 To stay self-contained and hand-checkable, the reference proves the tiny cubic
 relation \\(y = x^3 + x + 5\\) with \\(x = 2\\), \\(y = 15\\) — the same
-`CubicCircuit` the production test-suite uses. Its R1CS has four constraints, yet
-proving it drives the *full* protocol: the in-circuit verifier, both folding
+`CubicCircuit` the Rust test suite uses. Its R1CS has four constraints, yet
+proving it drives every phase of the protocol: the in-circuit verifier, both folding
 schemes, both sum-checks, relaxed Spartan, and the zero-knowledge opening. An
-implementer who reproduces acceptance on this example has therefore exercised the
-whole protocol.
+implementer who reproduces acceptance on this example has therefore exercised every
+protocol phase, though only at this fixture's dimensions — two step instances and
+single-row witness commitments — not for arbitrary circuits.
 
 Because setup is also implemented in Python (`setup.py` generates the Hyrax
 generators by hash-to-curve and serializes the verifier key), the reference runs
-with no dependency on the production library at all: it performs setup, proving,
+with no dependency on the shipped Rust library at all: it performs setup, proving,
 and verification itself, and the shipped Rust verifier independently accepts the
 result.
