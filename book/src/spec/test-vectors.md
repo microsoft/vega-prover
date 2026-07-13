@@ -59,8 +59,8 @@ produce.
 
 **Reference prover → Rust verifier.** The reference prover emits a proof that the
 *production* verifier accepts. Two `#[ignore]` harnesses in the Rust test-suite
-(`src/vega_mc_zkp.rs`) deserialize the Python-produced artifacts and call the real
-`verify`:
+(`tests/reference_conformance.rs`) deserialize the Python-produced artifacts and
+call the real `verify`:
 
 - `verify_python_proof` — the reference proof against the Rust-exported verifier
   key; and
@@ -86,8 +86,8 @@ sage -python reference/tests/test_prove_finish.py
 sage -python reference/tests/test_standalone.py
 
 # reference prover -> Rust verifier (both directions of acceptance)
-cargo test --lib verify_python_proof      -- --ignored --nocapture
-cargo test --lib verify_python_standalone -- --ignored --nocapture
+cargo test --test reference_conformance verify_python_proof      -- --ignored --nocapture
+cargo test --test reference_conformance verify_python_standalone -- --ignored --nocapture
 ```
 
 An independent prover conforms when its proofs pass the same acceptance gate: the

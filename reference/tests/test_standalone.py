@@ -2,7 +2,7 @@
 zero Rust runtime dependency, and the Rust verifier accepts the result.
 
 Run: sage -python reference/tests/test_standalone.py
-Then the Rust gate: cargo test --lib verify_python_standalone -- --ignored --nocapture
+Then the Rust gate: cargo test --test reference_conformance verify_python_standalone -- --ignored --nocapture
 """
 
 import os

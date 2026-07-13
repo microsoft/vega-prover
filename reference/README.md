@@ -59,14 +59,14 @@ sage -python reference/tests/test_standalone.py
 ```
 
 The two cross-conformance gates against the real Rust verifier are `#[ignore]`
-tests in `src/vega_mc_zkp.rs`:
+tests in `tests/reference_conformance.rs`:
 
 ```sh
 # Python proof against the Rust-exported verifier key
-cargo test --lib verify_python_proof -- --ignored --nocapture
+cargo test --test reference_conformance verify_python_proof -- --ignored --nocapture
 
 # Python proof against a Python-generated verifier key (zero Rust setup)
-cargo test --lib verify_python_standalone -- --ignored --nocapture
+cargo test --test reference_conformance verify_python_standalone -- --ignored --nocapture
 ```
 
 ## Fixtures
