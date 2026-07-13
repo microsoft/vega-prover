@@ -3,11 +3,10 @@
 The shipped library proves a large SHA-256 circuit; for a small, self-contained
 reference we prove the tiny cubic relation ``y = x^3 + x + 5`` (``x = 2``,
 ``y = 15``) — the same ``CubicCircuit`` the Rust test-suite uses. Its R1CS has
-four constraints, so it exercises every structural feature of the protocol while
-staying trivially checkable by hand.
+four constraints, yet proving it drives the whole protocol, and it stays easy to
+check by hand.
 
-The variable layout mirrors what the Rust bellpepper synthesizer emits (verified
-byte-for-byte against ``reference/fixtures/cubic``):
+The variable layout matches what the Rust bellpepper synthesizer emits:
 
   rest witness   z[0..num_rest)      unpadded = [x, x_sq, x_cu, y_computed]
   constant ONE   z[num_rest]

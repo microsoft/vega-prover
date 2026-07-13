@@ -8,7 +8,7 @@ of the in-circuit verifier witness ``W_verifier`` and its multi-round instance
 relaxed-R1CS Spartan, and the ZK linear-IPA opening) are layered on top in
 :mod:`pyvega.prover_finish`.
 
-Design (all validated against the Rust source + empirical probes):
+Design notes:
 
 * The sum-check round polynomials are the *unique honest* polynomials, so a naive
   full-table computation reproduces the optimized prover's committed coefficients

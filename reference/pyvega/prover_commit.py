@@ -1,6 +1,6 @@
 """Prover-side commitment helpers: Pedersen/Hyrax commit and ``process_round``.
 
-The verifier (M1) only ever *decompresses* commitments; the prover must *create*
+The verifier only ever *decompresses* commitments; the prover must *create*
 them. A Hyrax commitment of a length-``n`` vector with row width ``w`` is the list
 
     [ <chunk_j, ck[0:len_j]> + blind_j * h   for each width-``w`` chunk j ]

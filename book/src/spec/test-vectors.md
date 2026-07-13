@@ -1,9 +1,8 @@
 # Conformance and test vectors
 
 This chapter describes how an independent implementation demonstrates conformance:
-the fixtures it can check against, and the executable gates that establish
-mutual acceptance with the shipped prover and verifier. It closes the
-specification by making "the verifier accepts" concrete and reproducible.
+the fixtures it can check against, and the executable gates that establish mutual
+acceptance with the shipped prover and verifier.
 
 ## What conformance means here
 
@@ -68,7 +67,7 @@ call the real `verify`:
   Python `setup.py` itself generated, so the production library plays no part in
   setup, proving, *or* key generation. Only verification is Rust.
 
-Both recover the public value \\(15\\), closing the loop.
+Both recover the public value \\(15\\).
 
 ## Reproducing the gates
 

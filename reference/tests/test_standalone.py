@@ -41,7 +41,7 @@ def main():
   load_proof(proof_bytes)  # asserts exact consumption
   print(f"      python proof: {len(proof_bytes)} bytes")
 
-  print("[5/5] Python M1 verifier self-check")
+  print("[5/5] Python verifier self-check")
   reparsed = load_proof(proof_bytes)
   verify_mod.verify(reparsed, vk, NUM_STEPS)
   print("      PASS: Python verifier accepts the stand-alone Python proof")

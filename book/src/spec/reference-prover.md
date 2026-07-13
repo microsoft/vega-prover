@@ -3,26 +3,22 @@
 The preceding specification chapters pin every byte the verifier consumes: the
 [encodings](serialization.md), the [transcript schedule](transcript-schedule.md),
 the [verifier key](verifier-key.md), and the [proof object](proof-object.md). This
-chapter supplies the last piece an independent implementer needs — a complete,
-runnable prover — and does so by *pointing at one* rather than restating it in
-prose.
+chapter supplies the last piece: a complete, runnable prover. Rather than restate
+the procedure in prose, it points at a working implementation.
 
 ## The implementation is the specification
 
 The repository ships a small **pure-Python reference implementation** under
 [`reference/pyvega`](https://github.com/Microsoft/vega-prover/tree/main/reference).
-It is deliberately simple: it omits every performance optimization present in the
-production library (delayed modular reduction, small-value integer arithmetic,
-multi-scalar-multiplication caches, parallelism) and instead computes each value
-in the most direct way. It is therefore slower than the shipped prover, but its
-control flow reads like the specification it embodies.
+It omits the performance optimizations in the production library — delayed modular
+reduction, small-value integer arithmetic, multi-scalar-multiplication caches, and
+parallelism — and computes each value in the most direct way. It is slower than
+the shipped prover, but its control flow follows the protocol step by step.
 
-Treating the implementation as the authoritative artifact avoids a class of
-errors that plague prose specifications of byte-exact protocols: a written
-algorithm can silently disagree with the code, whereas a reference prover is
-*executed* and *checked* against the real verifier. The prose in this book
-explains the design and the wire format; the reference prover is the ground-truth
-procedure.
+A written algorithm can drift from the code it describes; a reference prover
+cannot, because it is executed and checked against the real verifier. The prose in
+this book explains the design and the wire format; the reference prover is the
+procedure of record.
 
 ## Conformance is mutual acceptance, not byte identity
 
@@ -70,8 +66,8 @@ relation \\(y = x^3 + x + 5\\) with \\(x = 2\\), \\(y = 15\\) — the same
 `CubicCircuit` the production test-suite uses. Its R1CS has four constraints, yet
 proving it drives the *full* protocol: the in-circuit verifier, both folding
 schemes, both sum-checks, relaxed Spartan, and the zero-knowledge opening. An
-implementer who reproduces acceptance on this example has exercised every moving
-part of \\(\mathrm{Vega}\_{\mathrm{MC}}\\).
+implementer who reproduces acceptance on this example has therefore exercised the
+whole protocol.
 
 Because setup is also implemented in Python (`setup.py` generates the Hyrax
 generators by hash-to-curve and serializes the verifier key), the reference runs

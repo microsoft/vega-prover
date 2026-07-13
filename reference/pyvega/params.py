@@ -9,7 +9,7 @@ whose group order equals the scalar-field prime q (cofactor 1). Point coordinate
 live in ``F_p`` (the *base* field); witnesses / challenges / exponents live in
 ``F_q`` (the *scalar* field).
 
-Source of truth (verified against code):
+Sources in the shipped library:
   * moduli               src/provider/pt256.rs (t256 impl_traits: scalar arg4, base arg5)
   * curve a = p-3, b     halo2curves-0.10.0/src/t256/curve.rs:57-70
   * generator (3, GY)    halo2curves-0.10.0/src/t256/curve.rs:42-54

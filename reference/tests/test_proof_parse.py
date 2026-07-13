@@ -1,4 +1,4 @@
-"""M0 milestone: parse the real Rust-exported proof with exact byte consumption.
+"""Parse the Rust-exported proof with exact byte consumption.
 
 Run with:  python3 reference/tests/test_proof_parse.py
 """

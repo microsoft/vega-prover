@@ -1,6 +1,6 @@
 """pyvega -- an executable reference specification of the Vega-MC proof system.
 
-This package is a deliberately simple (unoptimized) second implementation of the
+This package is a small, unoptimized second implementation of the
 Vega-MC prover and verifier for the canonical engine (T256 curve, Keccak-256
 transcript, Hyrax PCS). It exists to *define* the protocol precisely and to
 cross-conform against the Rust library: proofs it accepts are exactly the proofs

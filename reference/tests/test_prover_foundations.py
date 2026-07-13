@@ -1,8 +1,8 @@
-"""M2 foundations: the stand-alone prover's building blocks are correct.
+"""The stand-alone prover's building blocks are correct.
 
 Run:  python3 reference/tests/test_prover_foundations.py
 
-Checks, all against ground truth:
+Checks:
   * the cubic app circuit's constructed matrices are byte-identical to the Rust
     fixture and its witness satisfies (A z) o (B z) = C z;
   * univariate ``from_evals`` interpolation round-trips (deg 2/3/general);

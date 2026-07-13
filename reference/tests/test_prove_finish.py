@@ -1,9 +1,8 @@
-"""End-to-end self-verify: Python prover -> Python (M1) verifier accepts.
+"""End-to-end self-verify: the Python prover's proof is accepted by the Python verifier.
 
 Runs the full stand-alone prover (``prove_core`` + ``prove_finish``) on the fixed
-cubic statement and checks that the M1 Python verifier accepts the resulting
-proof.  This is the deterministic self-check gate before the Rust cross-
-conformance gate.
+cubic statement and checks that the Python verifier accepts the resulting proof.
+This is the deterministic self-check before the Rust cross-conformance gate.
 
 Run:
     python3 reference/tests/test_prove_finish.py

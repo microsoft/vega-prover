@@ -1,4 +1,4 @@
-"""M0 milestone: parse vk.bin byte-exactly and recompute its digest.
+"""Parse vk.bin byte-exactly and recompute its digest.
 
 Run:  python3 reference/tests/test_vk_digest.py
 

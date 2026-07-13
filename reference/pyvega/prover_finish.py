@@ -19,7 +19,7 @@ witness is finalized:
 
 The blinds/masks are drawn from a deterministic :class:`BlindSource`; the proof
 is zero-knowledge, so any consistent randomness yields a proof the verifier
-accepts.  The assembled :class:`VegaMcZkSNARK` is accepted by the M1 Python
+accepts.  The assembled :class:`VegaMcZkSNARK` is accepted by the Python
 verifier and (after serialization) by the Rust verifier.
 """
 

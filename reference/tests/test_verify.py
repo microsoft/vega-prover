@@ -1,4 +1,4 @@
-"""M1 milestone: the Python verifier accepts a real Rust-generated proof.
+"""The Python verifier accepts a real Rust-generated proof.
 
 Run:  python3 reference/tests/test_verify.py
 
