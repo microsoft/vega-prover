@@ -2,24 +2,27 @@
 serialization to the Rust bincode wire format.
 
 This makes the reference implementation fully self-contained: Python generates
-its own Hyrax commitment keys (via try-and-increment hash-to-curve), builds the
-cubic application shape (:mod:`pyvega.app_circuit`) and the fixed
-verifier-circuit shapes (:mod:`pyvega.verifier_circuit`), and serializes a
-``VerifierKey`` that the real Rust verifier deserializes and accepts. No Rust
-runtime is involved in producing the key.
+its own Hyrax commitment keys, builds the cubic application shape
+(:mod:`pyvega.app_circuit`) and the fixed verifier-circuit shapes
+(:mod:`pyvega.verifier_circuit`), and serializes a ``VerifierKey`` byte-for-byte
+identical to the one the shipped library produces. No Rust runtime is involved.
 
-The generators are *nothing-up-my-sleeve* points derived deterministically from a
-domain-separated label; the Rust verifier accepts any valid group elements in the
-key (it only ever uses them for multi-scalar multiplication). ``ck`` and ``vk_ee``
-share generators, as do ``vc_ck`` and ``vc_vk`` (matching Rust's shared setup).
+The verifier key is a root of trust: a verifier must be instantiated with the
+canonical key, not an arbitrary prover-supplied one. Its generators are
+*nothing-up-my-sleeve* points, derived deterministically by hashing fixed
+domain-separated labels to the curve (:mod:`pyvega.hash_to_curve`, reproducing
+the library's ``from_label``: SHAKE256 XOF then RFC 9380 SSWU), so no one knows a
+discrete-log relation between them. Reproducing that derivation exactly is what
+lets an independent implementation arrive at the *same* trusted key. ``ck`` and
+``vk_ee`` share generators, as do ``vc_ck`` and ``vc_vk``, matching the library.
 """
 
-import hashlib
 from typing import Dict, List
 
-from .params import P, A, B, Q
+from .params import Q
 from .field import scalar_to_repr
-from .curve import base_field, curve, point_to_wire
+from .curve import point_to_wire
+from .hash_to_curve import from_label
 from . import mathutil
 from .vk import SparseMatrixRaw, SplitShape
 from . import app_circuit
@@ -31,26 +34,12 @@ def _u64(n: int) -> bytes:
 
 
 # hash-to-curve key generation
-def _hash_to_curve(seed: bytes):
-  """Deterministic valid curve point via try-and-increment over F_p."""
-  Fp = base_field()
-  E = curve()
-  ctr = 0
-  while True:
-    h = hashlib.sha256(seed + ctr.to_bytes(4, "little")).digest()
-    x = Fp(int.from_bytes(h, "big") % P)
-    rhs = x**3 + Fp(A) * x + Fp(B)
-    if rhs.is_square():
-      y = rhs.sqrt()
-      if int(y) & 1:  # canonicalize to the even root
-        y = -y
-      return E(x, y)
-    ctr += 1
-
-
 def keygen(label: bytes, num_cols: int):
-  """Generate ``num_cols`` column generators plus a hiding base ``h``."""
-  pts = [_hash_to_curve(label + _u64(i)) for i in range(num_cols + 1)]
+  """Generate ``num_cols`` column generators plus a hiding base ``h``.
+
+  The generators reproduce the shipped library's ``from_label`` exactly, so the
+  serialized key is byte-identical to the Rust verifier key."""
+  pts = from_label(label, num_cols + 1)
   return pts[:num_cols], pts[num_cols]
 
 
@@ -64,7 +53,9 @@ def _csr(rows: List[Dict[int, int]], num_rows: int, cols: int) -> SparseMatrixRa
   count = 0
   for r in range(num_rows):
     row = rows[r] if r < len(rows) else {}
-    for col, val in row.items():
+    # bellpepper stores each constraint's terms sorted by column (aux indices
+    # first, then inputs at idx + num_vars), so emit entries in that order.
+    for col, val in sorted(row.items()):
       data += scalar_to_repr(val % Q)
       indices += _u64(col)
       count += 1
@@ -157,13 +148,17 @@ def _hyrax_key_bytes(pts, h) -> bytes:
 
 
 # top-level
-def serialize_vk(num_steps: int = 2, seed: bytes = b"vega-python-setup") -> bytes:
-  """Build and serialize a stand-alone verifier key for the cubic circuit."""
+def serialize_vk(num_steps: int = 2) -> bytes:
+  """Build and serialize the stand-alone verifier key for the cubic circuit.
+
+  Both commitment keys derive from the single label ``b"ck"`` — the label the
+  shipped library uses — so ``vc_ck`` is the length-33 prefix of ``ck`` and the
+  whole key is byte-identical to the Rust verifier key."""
   num_vars_app = app_circuit.DEFAULT_NUM_REST
   num_cons_app = 4
 
-  ck_pts, ck_h = keygen(seed + b"/ck", num_vars_app)
-  vc_ck_pts, vc_ck_h = keygen(seed + b"/vc_ck", 32)
+  ck_pts, ck_h = keygen(b"ck", num_vars_app)
+  vc_ck_pts, vc_ck_h = keygen(b"ck", 32)
 
   app_shape = app_circuit.cubic_shape(num_vars_app)
   cfg = _vc_config(num_steps, num_cons_app, num_vars_app)
