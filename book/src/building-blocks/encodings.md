@@ -10,7 +10,7 @@ Every value that can be absorbed into the transcript has a canonical byte string
 
 There is no length prefix, domain separator, or delimiter between the label and the value bytes. There is also no delimiter between successive absorbed values. Unambiguous transcript construction therefore comes from the fixed protocol schedule and fixed-width primitive encodings, not from self-describing byte strings.
 
-This chapter specifies the primitive encodings: scalar-field elements, base-field elements, group elements, and slices of these. Aggregate objects — such as polynomials, commitments, and R1CS instances — implement their own `to_transcript_bytes` in terms of these primitives, and some add internal structure. For example, a Hyrax commitment brackets its point bytes with the literal marker strings `poly_commitment_begin` and `poly_commitment_end`, and a univariate polynomial is absorbed in a compressed form that omits its linear coefficient and uses the field backend's native byte order. Those composite encodings are specified alongside the objects that define them: the Hyrax commitment and univariate polynomial encodings with [Polynomial commitments](./pcs.md), and the R1CS instance encodings in the next section. They are transcript encodings, distinct from the proof wire format in [Serialization and encodings](../spec/serialization.md), which serializes some of the same structs in a different field order.
+This chapter specifies the primitive encodings: scalar-field elements, base-field elements, group elements, and slices of these. Aggregate objects — such as polynomials, commitments, and R1CS instances — implement their own `to_transcript_bytes` in terms of these primitives, and some add internal structure. For example, a Hyrax commitment brackets its point bytes with the literal marker strings `poly_commitment_begin` and `poly_commitment_end`, and a univariate polynomial is absorbed in a compressed form that omits its linear coefficient and uses the field backend's native byte order. Those composite encodings are given below: the Hyrax commitment and round-polynomial encodings, then the R1CS instance encodings. They are transcript encodings, distinct from the proof wire format in [Serialization and encodings](../spec/serialization.md), which serializes some of the same structs in a different field order.
 
 ## Fixed-width primitive encodings
 
@@ -72,6 +72,26 @@ enc_slice([v0, v1, ..., v(n-1)]) =
 There is no length prefix and no separator between elements. A vector of \\(n\\) scalars therefore encodes to exactly `32 * n` bytes. A vector of \\(n\\) group elements encodes to exactly `64 * n` bytes.
 
 As with individual absorbs, the protocol schedule supplies the expected lengths and types. These slice encodings are not self-delimiting.
+
+## Commitments and round polynomials
+
+A Hyrax commitment is absorbed as its point bytes bracketed by two literal ASCII marker strings:
+
+```text
+enc(commitment) = "poly_commitment_begin"              (21 ASCII bytes)
+               || enc(P_0) || enc(P_1) || ... || enc(P_{k-1})
+               || "poly_commitment_end"                (19 ASCII bytes)
+```
+
+The markers are the raw ASCII bytes of those strings, absorbed inline with no length prefix. Each `P_i` is one row of the commitment, encoded as a 64-byte uncompressed point (the `point in G` primitive above).
+
+A round polynomial produced by a [sum-check](./sumcheck.md) is absorbed in **compressed** form. Compression drops the degree-1 (linear) coefficient — the verifier reconstructs it from the running claim — and encodes each remaining coefficient in **little-endian** byte order, the field backend's canonical representation, rather than the big-endian form used for a standalone scalar. A degree-\\(d\\) round polynomial contributes \\(d\\) coefficients:
+
+```text
+enc(round poly, degree d) = le(c_0) || le(c_2) || le(c_3) || ... || le(c_d)
+```
+
+Here `le(c)` is the 32-byte little-endian representation of coefficient `c`, and the degree-1 coefficient `c_1` is omitted. A quadratic round polynomial contributes `le(c_0) || le(c_2)`; a cubic one contributes `le(c_0) || le(c_2) || le(c_3)`. This is the one place a composite transcript encoding departs from the big-endian scalar convention.
 
 ## R1CS instances
 
