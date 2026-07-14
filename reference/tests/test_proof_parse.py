@@ -15,7 +15,7 @@ from pyvega.curve import WirePoint  # noqa: E402
 
 
 def main():
-  path = os.path.join(REF, "fixtures", "proof.bin")
+  path = os.path.join(REF, "fixtures", "cubic", "proof.bin")
   with open(path, "rb") as f:
     data = f.read()
 
@@ -32,8 +32,8 @@ def main():
   print(f"  inner sumcheck polys  : {len(proof.relaxed_snark.sc_proof_inner)}")
 
   # The shared witness commitment is hoisted to the top level; every instance's
-  # own comm_W_shared is therefore always None on the wire. In the canonical
-  # (SHA) configuration no witness is shared, so the top-level field is None too.
+  # own comm_W_shared is therefore always None on the wire. The cubic
+  # (x^3 + x + 5) circuit shares no witness, so the top-level field is None too.
   print(f"  top-level comm_W_shared: {'Some' if proof.comm_W_shared else 'None'}")
   for i, u in enumerate(proof.step_instances):
     assert u.comm_W_shared is None, f"step_instances[{i}].comm_W_shared != None"

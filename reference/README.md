@@ -72,7 +72,7 @@ cargo test --test reference_conformance verify_python_standalone -- --ignored --
 
 ## Fixtures
 
-`reference/fixtures/transcript_vector.json` (a frozen Keccak transcript
+`reference/fixtures/cubic/transcript_vector.json` (a frozen Keccak transcript
 known-answer vector consumed by `test_transcript.py`) is the only committed
 fixture. Every other fixture -- verifier keys, proofs, digests, and the
 `meta.json` metadata (circuit info and expected public values) -- is git-ignored
@@ -81,8 +81,8 @@ randomized. Regenerate them with:
 
 | Fixture | Regenerate with |
 | --- | --- |
-| `meta.json`, `proof.bin`, `vk.bin`, `vk_digest.bin` (SHA vectors) | `cargo test --lib export_reference_fixtures -- --ignored` |
 | `cubic/meta.json`, `cubic/proof.bin`, `cubic/vk.bin`, `cubic/vk_digest.bin` | `cargo test --lib export_cubic_fixtures -- --ignored` |
+| `cubic/transcript_vector.json` (Keccak transcript known-answer vector) | `cargo test --lib export_transcript_vector -- --ignored` |
 | `cubic/python_proof.bin` (reference proof vs the Rust `vk.bin`) | `python3 reference/tests/test_prove_finish.py` |
 | `cubic/python_vk.bin`, `cubic/python_standalone_proof.bin` (fully stand-alone) | `python3 reference/tests/test_standalone.py` |
 

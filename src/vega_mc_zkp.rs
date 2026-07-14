@@ -2648,7 +2648,7 @@ mod tests {
   // Emits a deterministic Keccak-transcript conformance vector for the external
   // reference implementation. It exercises new/absorb(scalar,scalars,point)/squeeze
   // exactly as the protocol does, then writes the squeezed challenges to
-  // reference/fixtures/transcript_vector.json. Run explicitly with:
+  // reference/fixtures/cubic/transcript_vector.json. Run explicitly with:
   //   cargo test --lib export_transcript_vector -- --ignored --nocapture
   #[test]
   #[ignore]
@@ -2689,7 +2689,7 @@ mod tests {
       hexs(c3),
       hexs(c4),
     );
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures/cubic");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("transcript_vector.json"), &json).unwrap();
     eprintln!(
@@ -2698,71 +2698,6 @@ mod tests {
       hexs(c2),
       hexs(c3),
       hexs(c4)
-    );
-  }
-
-  // Exports byte-exact fixtures (verifier key, proof, digest) for the external
-  // reference implementation's cross-conformance harness. Run explicitly with:
-  //   cargo test --lib export_reference_fixtures -- --ignored --nocapture
-  #[test]
-  #[ignore]
-  fn export_reference_fixtures() {
-    use std::fs;
-    type E = T256HyraxEngine;
-
-    let num_circuits = 2usize;
-    let len = 32usize;
-    let (pk, vk, circuits) = generate_sha_r1cs::<E>(num_circuits, len);
-
-    let ps = VegaMcZkSNARK::<E>::prep_prove(&pk, &circuits, &circuits[0], true).unwrap();
-    let (snark, _ps) = VegaMcZkSNARK::prove(&pk, &circuits, &circuits[0], ps, true).unwrap();
-
-    // Sanity: the exported proof must verify under the exported key.
-    let (pv_step, pv_core) = snark.verify(&vk, num_circuits).unwrap();
-
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("reference/fixtures");
-    fs::create_dir_all(&dir).unwrap();
-
-    let proof_bytes = bincode::serialize(&snark).unwrap();
-    fs::write(dir.join("proof.bin"), &proof_bytes).unwrap();
-
-    let vk_bytes = bincode::serialize(&vk).unwrap();
-    fs::write(dir.join("vk.bin"), &vk_bytes).unwrap();
-
-    let digest = vk.digest().unwrap();
-    fs::write(dir.join("vk_digest.bin"), digest).unwrap();
-
-    // Public values recovered by verify, as a cross-check for the Python verifier.
-    let pv_step_hex: Vec<Vec<String>> = pv_step
-      .iter()
-      .map(|row| {
-        row
-          .iter()
-          .map(|s| hex::encode(s.to_repr().as_ref()))
-          .collect()
-      })
-      .collect();
-    let pv_core_hex: Vec<String> = pv_core
-      .iter()
-      .map(|s| hex::encode(s.to_repr().as_ref()))
-      .collect();
-
-    let meta = format!(
-      "{{\n  \"engine\": \"T256HyraxEngine\",\n  \"num_steps\": {},\n  \"preimage_len\": {},\n  \"proof_len\": {},\n  \"vk_len\": {},\n  \"public_values_step\": {:?},\n  \"public_values_core\": {:?}\n}}\n",
-      num_circuits,
-      len,
-      proof_bytes.len(),
-      vk_bytes.len(),
-      pv_step_hex,
-      pv_core_hex,
-    );
-    fs::write(dir.join("meta.json"), meta).unwrap();
-
-    eprintln!(
-      "exported reference fixtures to {}: proof={} B, vk={} B, digest=32 B",
-      dir.display(),
-      proof_bytes.len(),
-      vk_bytes.len(),
     );
   }
 

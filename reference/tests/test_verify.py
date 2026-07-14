@@ -22,7 +22,7 @@ from pyvega.proof import load_proof  # noqa: E402
 from pyvega.verify import verify  # noqa: E402
 from pyvega.field import scalar_to_repr  # noqa: E402
 
-FIX = os.path.join(ROOT, "reference", "fixtures")
+FIX = os.path.join(ROOT, "reference", "fixtures", "cubic")
 
 
 def main():
