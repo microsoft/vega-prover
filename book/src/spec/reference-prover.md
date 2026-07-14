@@ -46,7 +46,7 @@ can read a working counterpart to each specification chapter:
 | --- | --- | --- |
 | Field and group arithmetic | [Fields, groups, and the engine](../building-blocks/fields-and-groups.md) | `field.py`, `curve.py`, `params.py` |
 | Byte encodings | [Serialization](serialization.md) | `codec.py`, `field.py`, `curve.py` |
-| Fiat--Shamir transcript | [Transcript schedule](transcript-schedule.md) | `transcript.py` |
+| Fiat--Shamir transcript primitive | [The Fiat--Shamir transcript](../building-blocks/transcript.md) | `transcript.py` |
 | Multilinear / eq / sparse polynomials | [Multilinear polynomials](../building-blocks/multilinear.md) | `polys.py` |
 | Sum-check | [Sum-check](../building-blocks/sumcheck.md) | `sumcheck.py` |
 | R1CS and its instances | [R1CS](../building-blocks/r1cs.md) | `instance.py` |

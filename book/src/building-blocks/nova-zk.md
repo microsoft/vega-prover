@@ -16,9 +16,9 @@ The sampled relaxed pair is satisfying by construction. The sampler chooses a fu
 
 This makes the relaxed equation true for the sampled pair. The sampler also commits to the random witness and to the computed error vector, so the sampled instance has the same public shape as any other relaxed instance used by [Relaxed Spartan](relaxed-spartan.md).
 
-## The NovaNIFS step
+## The Nova NIFS fold
 
-NovaNIFS folds the random satisfying relaxed instance with the real verifier-circuit R1CS instance. Let the random relaxed pair be \\((U\_1,W\_1)\\), and let the real verifier-circuit pair be \\((U\_2,W\_2)\\). The prover computes the cross-term vector \\(T\\), commits to it as `comm_T`, absorbs \\(U\_1\\), \\(U\_2\\), and `comm_T` into the transcript, and squeezes the folding challenge \\(r\\).
+Nova NIFS folds the random satisfying relaxed instance with the real verifier-circuit R1CS instance. Let the random relaxed pair be \\((U\_1,W\_1)\\), and let the real verifier-circuit pair be \\((U\_2,W\_2)\\). The prover computes the cross-term vector \\(T\\), commits to it as `comm_T`, absorbs \\(U\_1\\), \\(U\_2\\), and `comm_T` into the transcript, and squeezes the folding challenge \\(r\\).
 
 The folded witness is
 

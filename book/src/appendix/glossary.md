@@ -24,7 +24,7 @@ Terms as they are used in this book.
 
 **Fiat--Shamir transcript.** The Keccak-based state machine that turns protocol messages into deterministic verifier challenges. The mechanism defines `new`, `absorb`, `squeeze`, and `dom_sep`; the MC protocol's exact operation order is fixed separately by the transcript schedule. (see [The Fiat--Shamir transcript](../building-blocks/transcript.md))
 
-**Folding / NIFS.** A non-interactive folding step that replaces two or more instances by one linearly combined instance under transcript-derived challenges. In this book, NeutronNova folding accumulates step instances, while NovaNIFS folds a random relaxed instance with the real verifier-circuit instance.
+**Folding / NIFS.** A non-interactive folding step that replaces two or more instances by one linearly combined instance under transcript-derived challenges. In this book, NeutronNova folding accumulates step instances, while Nova NIFS folds a random relaxed instance with the real verifier-circuit instance.
 
 **Group \\(\mathbb{G}\\).** The prime-order elliptic-curve group used additively for commitments. Scalars from \\(\mathbb{F}\\) multiply group generators in Hyrax commitments and multi-scalar multiplications. (see [Fields, groups, and the engine](../building-blocks/fields-and-groups.md))
 

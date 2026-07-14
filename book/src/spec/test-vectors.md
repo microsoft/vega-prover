@@ -40,7 +40,9 @@ The reference implementation checks each deterministic layer against these:
   cursor consumes every byte, confirming the [proof object](proof-object.md)
   layout.
 - **Transcript** — `test_transcript.py` reproduces the recorded challenges
-  byte-for-byte, confirming the [transcript schedule](transcript-schedule.md).
+  byte-for-byte from a fixed known-answer vector, confirming the transcript
+  primitive and value encodings. The full [transcript schedule](transcript-schedule.md)
+  is exercised end-to-end by the acceptance gates below.
 - **Verifier-key digest** — `test_vk_digest.py` recomputes
   \\(\mathrm{SHA\text{-}256}(D)\\) over the digest stream and matches
   `vk_digest.bin`, confirming the [verifier-key](verifier-key.md) encoding.
