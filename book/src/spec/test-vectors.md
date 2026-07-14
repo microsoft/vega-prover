@@ -103,6 +103,7 @@ The reference implementation is pure Python and runs under a stock `python3`
 interpreter. Its only third-party dependency is
 [`pycryptodome`](https://pypi.org/project/pycryptodome/), used for Keccak-256 in
 the transcript; the field, curve, polynomial, encoding, and protocol logic are
-implemented directly with Python integers. The base field and the T256 curve live
-in `curve.py`, so the arithmetic can be reimplemented against any curve backend
-without touching the protocol logic.
+implemented directly with Python integers. The base field and the T256 curve
+arithmetic live in `curve.py`, with the curve constants in `params.py`, so the
+arithmetic can be reimplemented against any curve backend without touching the
+protocol logic.
