@@ -10,7 +10,7 @@ Every value that can be absorbed into the transcript has a canonical byte string
 
 There is no length prefix, domain separator, or delimiter between the label and the value bytes. There is also no delimiter between successive absorbed values. Unambiguous transcript construction therefore comes from the fixed protocol schedule and fixed-width primitive encodings, not from self-describing byte strings.
 
-This chapter specifies the primitive encodings: scalar-field elements, base-field elements, group elements, and slices of these. Aggregate objects — such as polynomials, commitments, and R1CS instances — implement their own `to_transcript_bytes` in terms of these primitives, and some add internal structure. For example, a Hyrax commitment brackets its point bytes with the literal marker strings `poly_commitment_begin` and `poly_commitment_end`, and a univariate polynomial is absorbed in a compressed form that omits its linear coefficient and uses the field backend's native byte order. Those composite encodings are specified alongside the objects that define them and in [Serialization and encodings](../spec/serialization.md).
+This chapter specifies the primitive encodings: scalar-field elements, base-field elements, group elements, and slices of these. Aggregate objects — such as polynomials, commitments, and R1CS instances — implement their own `to_transcript_bytes` in terms of these primitives, and some add internal structure. For example, a Hyrax commitment brackets its point bytes with the literal marker strings `poly_commitment_begin` and `poly_commitment_end`, and a univariate polynomial is absorbed in a compressed form that omits its linear coefficient and uses the field backend's native byte order. Those composite encodings are specified alongside the objects that define them: the Hyrax commitment and univariate polynomial encodings with [Polynomial commitments](./pcs.md), and the R1CS instance encodings in the next section. They are transcript encodings, distinct from the proof wire format in [Serialization and encodings](../spec/serialization.md), which serializes some of the same structs in a different field order.
 
 ## Fixed-width primitive encodings
 
@@ -72,6 +72,24 @@ enc_slice([v0, v1, ..., v(n-1)]) =
 There is no length prefix and no separator between elements. A vector of \\(n\\) scalars therefore encodes to exactly `32 * n` bytes. A vector of \\(n\\) group elements encodes to exactly `64 * n` bytes.
 
 As with individual absorbs, the protocol schedule supplies the expected lengths and types. These slice encodings are not self-delimiting.
+
+## R1CS instances
+
+The [transcript schedule](../spec/transcript-schedule.md) absorbs two composite instance types. A plain `R1CSInstance` — the core instance and each step instance in Phase B, and the real verifier instance `U2` in Phase D — concatenates its witness commitment and its public-input slice:
+
+```text
+enc(R1CSInstance) = enc(comm_W) || enc_slice(X)
+```
+
+A `RelaxedR1CSInstance` — the random mask `U1` in Phase D — adds the error-vector commitment and the relaxation scalar:
+
+```text
+enc(RelaxedR1CSInstance) = enc(comm_W) || enc(comm_E) || enc_scalar(u) || enc_slice(X)
+```
+
+Here `enc(comm_W)` and `enc(comm_E)` are the Hyrax commitment transcript encodings (bracketed point bytes; see [Polynomial commitments](./pcs.md)), `X` is the public-input scalar slice, and `u` is a single scalar.
+
+The relaxed instance absorbs `u` **before** `X`. This is deliberately not the proof wire order, where the same struct serializes as `comm_W || comm_E || X || u` (see [The proof object](../spec/proof-object.md#relaxedr1csinstance)). A prover that reuses the wire field order to build the transcript bytes absorbs `u` and `X` in the wrong order, squeezes the wrong folding challenge in Phase D, and is rejected.
 
 ## Challenge decoding from transcript output
 
