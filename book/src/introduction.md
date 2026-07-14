@@ -7,9 +7,18 @@ Vega is a zero-knowledge proof system for proving statements about existing sign
 This book has two purposes.
 
 1. It explains the design of Vega and the building blocks used by \\(\mathrm{Vega}\_{\mathrm{MC}}\\), the multi-circuit prover: fields and groups, R1CS, Fiat--Shamir transcripts, sum-check, folding, polynomial commitments, and the verifier circuit.
-2. It gives a specification precise enough for an independent team to build a prover whose proof bytes are accepted by the reference Vega verifier.
+2. It gives a specification precise enough for an independent team to build a prover whose proof bytes are accepted by the Vega verifier.
 
 The focus is the multi-circuit, or MC, variant of the prover. The single-circuit variants exist in the repository, but they are outside the main line of this book.
+
+## Two implementations
+
+The repository contains two implementations of \\(\mathrm{Vega}\_{\mathrm{MC}}\\), and this book describes both.
+
+- The **Rust implementation** is the production system: the optimized, low-latency prover and verifier that applications run, and the deployed verifier a proof must satisfy.
+- The **Python implementation**, under [`reference/`](https://github.com/Microsoft/vega-prover/tree/main/reference), is a simpler, unoptimized companion. It computes each value in the most direct way — favoring clarity over speed — and currently proves only the small worked example used throughout the book. It serves as an executable specification and is validated by mutual acceptance with the Rust implementation.
+
+The two agree on every byte the verifier consumes, so either verifier accepts the other prover's proofs. To keep the distinction crisp, this book calls the Python code the **reference** implementation (or reference prover) and the optimized code the **Rust** implementation (or shipped prover/verifier).
 
 ## The problem Vega addresses
 

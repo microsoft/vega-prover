@@ -6,6 +6,12 @@ system (the only third-party package is `pycryptodome`, for Keccak). It is the
 restating the algorithm in prose, the book points here, and conformance is
 established by **mutual acceptance** with the shipped Rust prover/verifier.
 
+> **Status: preliminary** — an executable specification optimized for clarity,
+> limited to the fixed cubic circuit, and cross-conformance tested against the
+> Rust implementation in both directions. It has not been independently
+> security-audited and its internals may change; treat it as a spec and teaching
+> aid, not a production prover.
+
 Because the proof is randomized (zero-knowledge), conformance is *not* byte
 identity of proofs. Instead it is verifier acceptance in **both directions**:
 

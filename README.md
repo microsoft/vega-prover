@@ -1,10 +1,8 @@
 # vega-prover: Low-latency client-side ZK proving over signed data
 
-This repository implements the ZK provers of [Vega](https://eprint.iacr.org/2025/2094). They are used for client-side ZK proving of statements over signed data. We focus on optimizing low ZK proving latency, and on settings where statements are proven repeatedly over the same signed data.
+This repository implements the ZK provers of [Vega](https://eprint.iacr.org/2025/2094) in Rust. They are used for client-side ZK proving of statements over signed data. We focus on optimizing low ZK proving latency, and on settings where statements are proven repeatedly over the same signed data.
 
 This [blog post](https://www.microsoft.com/en-us/research/blog/vega-zero-knowledge-proofs-for-digital-identity-in-the-age-of-ai/) describes the typical application this library targets.
-
-## Documentation
 
 The [Vega Prover Book](https://microsoft.github.io/vega-prover/) documents how the proof system is designed, walks through its building blocks, and develops an implementable specification of the multi-circuit prover.
 
@@ -29,6 +27,13 @@ Override thread counts with `BENCH_THREADS` (comma-separated):
 ```bash
 BENCH_THREADS=1,8 RUSTFLAGS="-C target-cpu=native" cargo bench --bench sha256_vega_sc
 ```
+
+## Python reference implementation
+
+A small pure-Python reference implementation of the multi-circuit (MC) prover lives in [`reference/`](reference/), mirroring the book's specification with readable, unoptimized code and cross-conformance tested against this Rust implementation in both directions.
+
+> [!NOTE]
+> The reference implementation is **preliminary**: it currently proves only the fixed cubic example, is optimized for clarity rather than performance or coverage, and has not been independently security-audited. Its internals may change.
 
 ## References
 
