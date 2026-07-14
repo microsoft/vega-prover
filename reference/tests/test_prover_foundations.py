@@ -127,7 +127,7 @@ def test_commit():
   vk = parse_vk(open(vkpath, "rb").read())
   S = ac.cubic_shape()
   w = ac.cubic_witness()
-  blinds = BlindSource(b"test").next_vec(1)
+  blinds = BlindSource().next_vec(1)
   comm = hyrax_commit(vk.ck.ck, vk.ck.h, w.W, DEFAULT_COMMITMENT_WIDTH, blinds)
   check_commitment(comm, S.num_rest, DEFAULT_COMMITMENT_WIDTH)
   u = SplitR1CSInstance(None, None, comm, w.public_values, [])

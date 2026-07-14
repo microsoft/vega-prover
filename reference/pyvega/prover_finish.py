@@ -17,8 +17,8 @@ witness is finalized:
    open the folded application witness at ``r_y[1..]`` via the linear inner-product
    argument.
 
-The blinds/masks are drawn from a deterministic :class:`BlindSource`; the proof
-is zero-knowledge, so any consistent randomness yields a proof the verifier
+The blinds/masks are drawn from a cryptographically secure :class:`BlindSource`;
+the proof is zero-knowledge, so any secure randomness yields a proof the verifier
 accepts.  The assembled :class:`VegaMcZkSNARK` is accepted by the Python
 verifier and (after serialization) by the Rust verifier.
 """
@@ -334,9 +334,9 @@ def _ipa_prove(ck, h, ck_c, h_c, comm_a_vec, b_vec, comm_c, a_vec, r_a, r_c, tr,
 
 
 # orchestrator
-def prove_finish(vk, core, seed: bytes = b"pyvega-reference-finish") -> VegaMcZkSNARK:
+def prove_finish(vk, core) -> VegaMcZkSNARK:
   """Complete the proof from a :class:`ProverCoreResult`; return a VegaMcZkSNARK."""
-  rng = BlindSource(seed)
+  rng = BlindSource()
   tr = core.transcript
 
   # (1) Nova fold: fresh random mask, then fold in the verifier-circuit instance.
