@@ -18,9 +18,9 @@ The row width is a parameter of each commitment key rather than a global constan
 
 A length-\\(n\\) vector \\(\mathbf{v}\\) is reshaped row-wise into
 \\[
-\left\lceil \frac{n}{2048}\right\rceil
+\left\lceil \frac{n}{w}\right\rceil
 \\]
-rows. Each row uses the same generator vector. For row \\(i\\), with entries \\(v\_{i,0},\dots,v\_{i,m\_i-1}\\) and blind \\(\rho\_i\\), the row commitment is
+rows, where \\(w\\) is that key's row width (\\(2048\\) for the application key, \\(32\\) for `vc_ck`). Each row uses the same generator vector. For row \\(i\\), with entries \\(v\_{i,0},\dots,v\_{i,m\_i-1}\\) and blind \\(\rho\_i\\), the row commitment is
 \\[
 C\_i = \sum\_{j=0}^{m\_i-1} v\_{i,j}G\_j + \rho\_i H.
 \\]

@@ -24,12 +24,12 @@ num_vars         = S_step.num_shared + S_step.num_precommitted + S_step.num_rest
 num_rounds_x     = log2(S_step.num_cons)
 num_rounds_y     = log2(num_vars) + 1
 outer_rounds     = log2(vc_shape_regular.num_cons)
-inner_rounds     = log2(vc_shape_regular.num_vars) + 1
+inner_rounds     = log2(next_pow2(vc_shape_regular.num_vars)) + 1
 ```
 
 The verifier-instance challenges are concatenated as `r_b | r_x | r | r_y`, with lengths `num_rounds_b`, `num_rounds_x`, `1`, and `num_rounds_y`.
 
-Every R1CS shape is padded during setup so that its constraint count and its variable count are powers of two. Each `log2` above is therefore an exact base-two logarithm, and every round count is a fixed non-negative integer determined by the shapes rather than by the witness. (The shipped relaxed-Spartan verifier writes the inner count as `log2(next_pow2(vc_shape_regular.num_vars)) + 1`; because `num_vars` is already a power of two, `next_pow2` is the identity and the value equals the formula above.)
+During setup every R1CS shape has its constraint count padded to a power of two, and the step and core shapes `S_step` and `S_core` also have their variable counts padded to a power of two. So `num_rounds_x`, `num_rounds_y`, and `outer_rounds` are exact base-two logarithms. The one exception is `vc_shape_regular.num_vars`: it is the sum of the verifier circuit's per-round witness widths and is not itself padded to a power of two — it is `640` in the cubic fixture — so `inner_rounds` rounds it up with `next_pow2`, exactly as the shipped relaxed-Spartan verifier does. Every round count is a fixed non-negative integer determined by the shapes rather than by the witness.
 
 ## Phases at a glance
 

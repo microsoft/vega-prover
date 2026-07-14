@@ -10,7 +10,7 @@ All proof-system arithmetic is over the scalar field \\(\mathbb{F}\\) of the can
 
 ## Verifier acceptance is the ground truth
 
-The verifier's decision procedure is the acceptance predicate. A proof is valid exactly when `verify` accepts it for the verifier key and public values supplied to verification. A prover conforms at the acceptance level when every proof it emits for a satisfied statement is accepted by that verifier.
+The verifier's decision procedure is the acceptance predicate. A proof is valid exactly when `verify` accepts it under the verifier key. `verify` takes the verifier key and the number of instances; it does not take the public values as an argument. Instead it recomputes them from the proof and returns them, and the application compares the returned values against the statement it intended to prove. A prover conforms at the acceptance level when every proof it emits for a satisfied statement is accepted by that verifier.
 
 This chapter does not restate verification. [Verification](../mc/verify.md) gives the verifier procedure, and the following specification chapters pin every input the verifier consumes.
 

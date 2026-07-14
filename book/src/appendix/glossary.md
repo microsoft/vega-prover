@@ -4,7 +4,7 @@ Terms as they are used in this book.
 
 **Absorb / squeeze.** `absorb(label, value)` appends labeled encoded data to the running Fiat--Shamir transcript. `squeeze(label)` derives the next scalar challenge in \\(\mathbb{F}\\), updates the transcript state, and resets the running absorb buffer. (see [The Fiat--Shamir transcript](../building-blocks/transcript.md))
 
-**Accept-conforming prover.** A prover that emits proofs accepted by `verify` for the verifier key and public values supplied to verification. It need not reproduce the reference prover's exact proof bytes. (see [Scope and the conformance contract](../spec/scope.md))
+**Accept-conforming prover.** A prover that emits proofs accepted by `verify` under the verifier key. (`verify` returns the public values it recomputes; the application checks them against the intended statement.) It need not reproduce the reference prover's exact proof bytes. (see [Scope and the conformance contract](../spec/scope.md))
 
 **Base field.** The field in which coordinates of \\(\mathbb{G}\\) live. In the canonical engine it is distinct from the scalar field used for proof-system arithmetic. (see [Fields, groups, and the engine](../building-blocks/fields-and-groups.md))
 
@@ -24,7 +24,7 @@ Terms as they are used in this book.
 
 **Fiat--Shamir transcript.** The Keccak-based state machine that turns protocol messages into deterministic verifier challenges. The mechanism defines `new`, `absorb`, `squeeze`, and `dom_sep`; the MC protocol's exact operation order is fixed separately by the transcript schedule. (see [The Fiat--Shamir transcript](../building-blocks/transcript.md))
 
-**Folding / NIFS.** A non-interactive folding step that replaces two or more instances by one linearly combined instance under transcript-derived challenges. In this book, NeutronNova folding accumulates step instances, while NovaNIFS folds a random relaxed instance with the real verifier-circuit instance.
+**Folding / NIFS.** A non-interactive folding step that replaces two or more instances by one linearly combined instance under transcript-derived challenges. In this book, NeutronNova folding accumulates step instances, while Nova NIFS folds a random relaxed instance with the real verifier-circuit instance.
 
 **Group \\(\mathbb{G}\\).** The prime-order elliptic-curve group used additively for commitments. Scalars from \\(\mathbb{F}\\) multiply group generators in Hyrax commitments and multi-scalar multiplications. (see [Fields, groups, and the engine](../building-blocks/fields-and-groups.md))
 

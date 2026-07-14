@@ -40,6 +40,21 @@ p\_{\mathrm{base}} = \mathtt{0xffffffff0000000100000000000000017e72b42b30e731779
 
 Thus \\(\mathbb{F} = \mathbb{F}\_{p\_{\mathrm{scal}}}\\) for the canonical engine. Field elements are roughly 256 bits; the exact byte representation is specified in [Serialization and encodings](../spec/serialization.md), not in this chapter.
 
+The curve equation is \\(y^2 = x^3 + Ax + B\\) over \\(\mathbb{F}\_{p\_{\mathrm{base}}}\\), with
+
+\\[
+A = p\_{\mathrm{base}} - 3, \qquad
+B = \mathtt{0xb441071b12f4a0366fb552f8e21ed4ac36b06aceeb354224863e60f20219fc56},
+\\]
+
+and cofactor one, so \\(|\mathbb{G}| = p\_{\mathrm{scal}}\\). Its standard base point is
+
+\\[
+G = \big(\,3,\ \mathtt{0x5a6dd32df58708e64e97345cbe66600decd9d538a351bb3c30b4954925b1f02d}\,\big).
+\\]
+
+The commitment generators the prover uses are not this base point; they are derived by hashing, as [Setup](../mc/setup.md) describes.
+
 ## Relationship to P256
 
 The scalar field of T256 coincides with the base field of the standard P256 curve:

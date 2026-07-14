@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.join(ROOT, "reference"))
 
 from pyvega.vk import parse_vk  # noqa: E402
 
-FIX = os.path.join(ROOT, "reference", "fixtures")
+FIX = os.path.join(ROOT, "reference", "fixtures", "cubic")
 
 
 def main():

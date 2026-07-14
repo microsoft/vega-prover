@@ -69,7 +69,6 @@ jobs:
         run: python3 -m pip install pycryptodome
       - name: Export Rust fixtures
         run: |
-          cargo test --release --lib export_reference_fixtures -- --ignored --nocapture
           cargo test --release --lib export_cubic_fixtures -- --ignored --nocapture
       - name: Run the pure-Python reference suite
         run: |

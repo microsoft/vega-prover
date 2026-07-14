@@ -21,11 +21,12 @@ acceptance. Two layers of test make this precise:
 
 The directory
 [`reference/fixtures/cubic`](https://github.com/Microsoft/vega-prover/tree/main/reference/fixtures/cubic)
-holds vectors for the canonical cubic circuit. No fixture in this directory is
-committed; every fixture -- including `meta.json` -- is git-ignored and
+holds vectors for the canonical cubic circuit. The single committed fixture is
+`transcript_vector.json`, a frozen Keccak transcript known-answer vector; every
+other fixture -- keys, proofs, digests, and `meta.json` -- is git-ignored and
 regenerated on demand, because the keys are large and the proofs are randomized
-(zero-knowledge). Regenerate the fixtures with the commands below before running
-the tests on a fresh checkout.
+(zero-knowledge). Regenerate them with the commands below before running the
+tests on a fresh checkout.
 
 | File | Contents | Regenerate with |
 | --- | --- | --- |
@@ -33,6 +34,7 @@ the tests on a fresh checkout.
 | `proof.bin` | a real Rust-produced proof (bincode) | `cargo test --lib export_cubic_fixtures -- --ignored` |
 | `vk_digest.bin` | the 32-byte verifier-key digest | `cargo test --lib export_cubic_fixtures -- --ignored` |
 | `vk.bin` | the Rust verifier key (large) | `cargo test --lib export_cubic_fixtures -- --ignored` |
+| `transcript_vector.json` | Keccak transcript known-answer vector (committed) | `cargo test --lib export_transcript_vector -- --ignored` |
 
 The reference implementation checks each deterministic layer against these:
 
@@ -40,7 +42,9 @@ The reference implementation checks each deterministic layer against these:
   cursor consumes every byte, confirming the [proof object](proof-object.md)
   layout.
 - **Transcript** — `test_transcript.py` reproduces the recorded challenges
-  byte-for-byte, confirming the [transcript schedule](transcript-schedule.md).
+  byte-for-byte from the committed `transcript_vector.json`, confirming the
+  transcript primitive and value encodings. The full [transcript schedule](transcript-schedule.md)
+  is exercised end-to-end by the acceptance gates below.
 - **Verifier-key digest** — `test_vk_digest.py` recomputes
   \\(\mathrm{SHA\text{-}256}(D)\\) over the digest stream and matches
   `vk_digest.bin`, confirming the [verifier-key](verifier-key.md) encoding.
@@ -99,6 +103,7 @@ The reference implementation is pure Python and runs under a stock `python3`
 interpreter. Its only third-party dependency is
 [`pycryptodome`](https://pypi.org/project/pycryptodome/), used for Keccak-256 in
 the transcript; the field, curve, polynomial, encoding, and protocol logic are
-implemented directly with Python integers. The base field and the T256 curve live
-in `curve.py`, so the arithmetic can be reimplemented against any curve backend
-without touching the protocol logic.
+implemented directly with Python integers. The base field and the T256 curve
+arithmetic live in `curve.py`, with the curve constants in `params.py`, so the
+arithmetic can be reimplemented against any curve backend without touching the
+protocol logic.
