@@ -171,14 +171,14 @@ class ProverCoreResult:
 
 
 # the prover core
-def prove_core(vk, num_steps: int = 2, seed: bytes = b"pyvega-reference-prover") -> ProverCoreResult:
+def prove_core(vk, num_steps: int = 2) -> ProverCoreResult:
   """Run NIFS + outer + inner sum-checks; assemble and return ``W_verifier``.
 
   The application statement is the fixed cubic ``x^3 + x + 5 = y`` with ``x = 2``.
   ``num_steps`` identical step instances (distinct blinds) plus one core instance
-  are folded.  Blinds come from a deterministic :class:`BlindSource` (``seed``).
+  are folded.  Blinds come from a cryptographically secure :class:`BlindSource`.
   """
-  blinds = BlindSource(seed)
+  blinds = BlindSource()
   digest = vk.digest()
   S_step, S_core = vk.S_step, vk.S_core
   num_vars = S_step.num_vars

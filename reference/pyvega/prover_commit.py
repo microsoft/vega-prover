@@ -10,13 +10,13 @@ one group element per ``ceil(n/w)`` row, each hidden by an independent blind.
 witness is committed through: commit this round's (padded) witness, absorb the
 commitment, and squeeze the round's Fiat-Shamir challenges.
 
-Blinds are drawn from a :class:`BlindSource`. For reproducible cross-conformance
-runs it defaults to a deterministic SHA-256 stream; a production prover would use
-a cryptographically secure source (the verifier accepts either — the proof is
-zero-knowledge, so the blinds never leave the prover except inside commitments).
+Blinds are drawn from a :class:`BlindSource`, a cryptographically secure scalar
+source — a real zero-knowledge prover must sample blinds this way. The blinds
+never leave the prover except inside commitments, so any secure randomness yields
+a proof the verifier accepts.
 """
 
-import hashlib
+import secrets
 from typing import List
 
 from .params import Q
@@ -25,18 +25,11 @@ from .commitment import msm, to_point
 
 
 class BlindSource:
-  """A deterministic scalar stream in ``[0, Q)`` (seedable for reproducibility)."""
-
-  def __init__(self, seed: bytes = b"pyvega-reference-prover"):
-    self._seed = seed
-    self._counter = 0
+  """A cryptographically secure scalar stream in ``[0, Q)`` for blinds and masks."""
 
   def next(self) -> int:
-    ctr = self._counter.to_bytes(8, "little")
-    self._counter += 1
-    digest = hashlib.sha256(self._seed + ctr).digest()
-    # 32 bytes reduced mod Q gives a well-distributed scalar in [0, Q).
-    return int.from_bytes(digest, "little") % Q
+    # Cryptographically secure, unbiased scalar in [0, Q).
+    return secrets.randbelow(Q)
 
   def next_vec(self, n: int) -> List[int]:
     return [self.next() for _ in range(n)]

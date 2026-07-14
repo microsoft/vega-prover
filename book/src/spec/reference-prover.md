@@ -6,6 +6,12 @@ the [verifier key](verifier-key.md), and the [proof object](proof-object.md). Th
 chapter supplies the last piece: a complete, runnable prover. Rather than restate
 the procedure in prose, it points at a working implementation.
 
+> **Status — preliminary.** This reference is an executable specification and
+> teaching aid, not a production prover. It currently proves only the fixed cubic
+> circuit below, favors clarity over speed, and is validated by mutual acceptance
+> with the shipped Rust prover and verifier — but it has not had an independent
+> security audit, and its internals may still change.
+
 ## The implementation is the specification
 
 The repository ships a small **pure-Python reference implementation** under
