@@ -20,7 +20,7 @@ The verifier key is a structure with nine serialized fields, in this declaration
 
 A tenth field caches the digest once computed; it is marked non-serialized and never contributes bytes.
 
-The contents of these fields are fixed by setup: the same step circuit, core circuit, `num_steps`, and canonical curve produce the same verifier key. This chapter does not respecify setup; it specifies how the digest is computed from an existing verifier key.
+The contents of these fields are fixed by setup and fully reproducible: the same step circuit, core circuit, `num_steps`, and canonical curve produce the same verifier key, down to the byte. That determinism is a security property rather than a convenience. The verifier key is the protocol's root of trust — `verify` must be run against the one canonical key for a statement, not an arbitrary key handed over with a proof — and its commitment generators are nothing-up-my-sleeve points obtained by hashing fixed labels to the curve (see [Setup](../mc/setup.md#commitment-material)), so no party knows a discrete-logarithm relation among them. Because the derivation is fully determined, an independent implementation can regenerate this key and check it rather than take it on trust; the reference prover does exactly that. This chapter does not respecify setup; it specifies how the digest is computed from an existing verifier key.
 
 ## The digest
 
