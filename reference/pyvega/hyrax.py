@@ -76,9 +76,9 @@ def pcs_verify(vk, ck_eval, transcript, comm, point, comm_eval, arg):
   num_rows = mathutil.div_ceil(n, num_cols)
   num_vars_rows = mathutil.log2(num_rows)
 
-  if len(comm) < num_rows:
+  if len(comm) != num_rows:
     raise ValueError(
-      f"Hyrax verify: commitment has {len(comm)} rows, fewer than {num_rows} required"
+      f"Hyrax verify: commitment has {len(comm)} rows, expected exactly {num_rows}"
     )
   if len(comm_eval) == 0:
     raise ValueError("Hyrax verify: evaluation commitment is empty")

@@ -28,6 +28,9 @@ def sumcheck_verify(compressed_polys, claim, num_rounds, degree_bound, transcrip
       raise ValueError(
         f"InvalidSumcheckProof: round {i} degree {len(cp)} != {degree_bound}"
       )
+    # decompress reads the first stored coefficient; a degree-0 round has none.
+    if degree_bound == 0:
+      raise ValueError("InvalidSumcheckProof: degree_bound must be >= 1")
     coeffs = unipoly_decompress(cp, e)
     transcript.absorb_unipoly(b"p", cp)
     r_i = transcript.squeeze(b"c")
