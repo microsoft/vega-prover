@@ -145,8 +145,9 @@ which equals \\(C\_2\\), so the verifier accepts.
 
 A round polynomial can be transmitted by coefficients or by enough evaluations
 to interpolate it. For a degree-\\(d\\) polynomial, \\(d+1\\) field elements are
-sufficient. Implementations may compress the message further when the verifier's
-consistency check determines one coefficient from the previous claim.
+sufficient. Implementations may compress the message further: the consistency
+check \\(g\_i(0)+g\_i(1)=C\_{i-1}\\) already constrains the polynomial, so one of the
+\\(d+1\\) values is redundant and only \\(d\\) need to be sent.
 
 The interactive verifier's random challenges can be made non-interactive with
 Fiat--Shamir: the prover absorbs each round polynomial into the transcript, then

@@ -22,7 +22,7 @@ The conceptual assignment is partitioned into public input/output \\(\mathbf{x}\
 \\[
 \mathbf{z} \\;=\\; (\mathbf{w}, 1, \mathbf{x}).
 \\]
-The standard instance carries the public vector \\(\mathbf{x}\\) and a commitment to \\(\mathbf{w}\\); the witness carries \\(\mathbf{w}\\) and the blind opening that commitment.
+The standard instance carries the public vector \\(\mathbf{x}\\) and a commitment to \\(\mathbf{w}\\); the witness carries \\(\mathbf{w}\\) and the blind that opens that commitment.
 
 The matrices are stored sparsely. A sparse matrix records the nonzero entries in `data`, their column positions in `indices`, row boundaries in `indptr`, and the total column count in `cols`. This is enough to compute each row of \\(A\mathbf{z}\\), \\(B\mathbf{z}\\), and \\(C\mathbf{z}\\) without materializing dense matrices. Byte-level encodings of verifier keys and proofs are specified in [Verifier key](../spec/verifier-key.md) and [Proof object](../spec/proof-object.md), not in this chapter.
 

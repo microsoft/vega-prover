@@ -12,7 +12,7 @@ squeeze(label) -> challenge
 dom_sep(bytes)
 ```
 
-The `label` argument is a fixed ASCII byte string. The `value` argument is encoded as specified by [Byte encodings and serialization](../building-blocks/encodings.md). A `squeeze` consumes the transcript state produced by all preceding operations, including everything absorbed since the previous `squeeze`. Ordering disambiguates reused labels: `b"r"`, `b"challenge"`, and `b"p"`/`b"c"` appear in more than one place.
+The `label` argument is a fixed ASCII byte string. The `value` argument is encoded as specified by [Byte encodings and serialization](../building-blocks/encodings.md). A count written `Scalar(n)` — for example `Scalar(num_steps)` — denotes the integer `n` reduced into \\(\mathbb{F}\\) and absorbed with the scalar transcript encoding, not as a machine word. A `squeeze` consumes the transcript state produced by all preceding operations, including everything absorbed since the previous `squeeze`. Ordering disambiguates reused labels: `b"r"`, `b"challenge"`, and `b"p"`/`b"c"` appear in more than one place.
 
 Symbolic counts are used here. Concrete verifier-key dimensions and proof-object field shapes are pinned by [The verifier key](./verifier-key.md) and [The proof object](./proof-object.md).
 

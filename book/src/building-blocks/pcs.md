@@ -14,6 +14,8 @@ G\_0, G\_1, \dots, G\_{2047}\in\mathbb{G}
 \\]
 and a hiding generator \\(H\in\mathbb{G}\\).
 
+The row width is a parameter of each commitment key rather than a global constant. The application commitment key uses the monolithic width above; the in-circuit verifier's key `vc_ck` fixes the width to 32, so its bases are \\(G\_0,\dots,G\_{31}\\) with \\(H\\) in the same hiding role. The reshaping and opening described below apply to either width.
+
 A length-\\(n\\) vector \\(\mathbf{v}\\) is reshaped row-wise into
 \\[
 \left\lceil \frac{n}{2048}\right\rceil

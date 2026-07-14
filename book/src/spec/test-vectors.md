@@ -2,7 +2,7 @@
 
 This chapter describes how an independent implementation demonstrates conformance:
 the fixtures it can check against, and the executable gates that establish mutual
-acceptance with the shipped prover and verifier.
+acceptance with the shipped Rust prover and verifier.
 
 ## What conformance means here
 
@@ -12,7 +12,7 @@ acceptance. Two layers of test make this precise:
 
 1. **Deterministic vectors.** Some artifacts *are* fixed functions of their
    inputs and can be checked byte-for-byte: the parse of a given proof, the
-   Fiat–Shamir challenges derived from a fixed transcript, and the verifier-key
+   Fiat--Shamir challenges derived from a fixed transcript, and the verifier-key
    digest. An implementation that disagrees on any of these is non-conformant.
 2. **Acceptance gates.** The proof as a whole is checked by running the *other*
    side's verifier and asserting it accepts.
@@ -57,14 +57,14 @@ values, and the final commitment opening — against bytes the reference did not
 produce.
 
 **Reference prover → Rust verifier.** The reference prover emits a proof that the
-*production* verifier accepts. Two `#[ignore]` harnesses in the Rust test-suite
+shipped Rust verifier accepts. Two `#[ignore]` harnesses in the Rust test-suite
 (`tests/reference_conformance.rs`) deserialize the Python-produced artifacts and
 call the real `verify`:
 
 - `verify_python_proof` — the reference proof against the Rust-exported verifier
   key; and
 - `verify_python_standalone` — the reference proof against a verifier key that the
-  Python `setup.py` itself generated, so the production library plays no part in
+  Python `setup.py` itself generated, so the shipped Rust library plays no part in
   setup, proving, *or* key generation. Only verification is Rust.
 
 Both recover the public value \\(15\\).
@@ -90,7 +90,7 @@ cargo test --test reference_conformance verify_python_standalone -- --ignored --
 ```
 
 An independent prover conforms when its proofs pass the same acceptance gate: the
-production verifier, run on the prover's serialized proof and verifier key,
+shipped Rust verifier, run on the prover's serialized proof and verifier key,
 returns success and the expected public values.
 
 ## Dependencies

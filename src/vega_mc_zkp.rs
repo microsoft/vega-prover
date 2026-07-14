@@ -2472,7 +2472,9 @@ mod tests {
 
   // A tiny example circuit `x^3 + x + 5 = y` (x = 2, y = 15), used as a small
   // oracle for the stand-alone reference implementation. Same public/shared/
-  // precommitted/challenge structure as the SHA circuit but only 3 constraints.
+  // precommitted/challenge structure as the SHA circuit but only four
+  // constraints (two multiplications, the cubic relation, and the output
+  // inputization).
   #[derive(Clone, Debug, Default)]
   struct CubicCircuit {}
 
@@ -2529,7 +2531,7 @@ mod tests {
         |lc| lc + y.get_variable(),
       );
 
-      let _ = y.inputize(cs.namespace(|| "output"));
+      y.inputize(cs.namespace(|| "output"))?;
 
       Ok(())
     }

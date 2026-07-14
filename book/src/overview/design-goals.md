@@ -28,7 +28,7 @@ A proof should reveal only that the public statement is true. Vega combines hidi
 
 ### What the proof establishes
 
-At a high level, completeness means an honest prover with satisfying witnesses for the step circuits and the core circuit produces a proof accepted by the verifier. Soundness means a prover cannot convince the verifier unless the folded R1CS claims, the in-circuit verifier checks, and the committed witness openings are mutually consistent for the public statement encoded by the circuits.
+Completeness means an honest prover with satisfying witnesses for the step circuits and the core circuit produces a proof accepted by the verifier. Soundness means a prover cannot convince the verifier unless the folded R1CS claims, the in-circuit verifier checks, and the committed witness openings are mutually consistent for the public statement encoded by the circuits.
 
 The verifier learns the public input/output values returned by verification. For \\(\mathrm{Vega}\_{\mathrm{MC}}\\), these include per-step public values and core public values.
 

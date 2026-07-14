@@ -20,6 +20,10 @@ Setup builds one shared commitment key `ck` sized for both split shapes and deri
 
 The reference implementation sets `DEFAULT_COMMITMENT_WIDTH` to 2048. This width is the commitment-row width used when split witness segments are padded and when the shared commitment key is generated.
 
+The generators are derived by hashing rather than sampled. A commitment key of width \\(n\\) comes from a fixed byte label: setup reads a `SHAKE256(label)` extendable-output stream as \\(n+1\\) consecutive 32-byte messages and maps each message to a group element with the RFC 9380 random-oracle `hash_to_curve` for T256. That map is the suite `T256_XMD:SHA-256_SSWU_RO_` — `expand_message_xmd` over SHA-256 producing two field elements per point, the simplified SWU map applied directly to T256 with non-square \\(Z = -2\\), and cofactor one — run under the domain-separation string `from_uniform_bytes` concatenated with the suite name. The first \\(n\\) points become the column generators \\(G\_0,\dots,G\_{n-1}\\); the last is the hiding base \\(h\\).
+
+Both `ck` and the verifier-circuit key `vc_ck` are derived from the single label `ck`, so the shorter `vc_ck` point sequence is a prefix of the `ck` sequence, and `vk_ee` and `vc_vk` reuse the generators of `ck` and `vc_ck`. Because every point comes from a public hash with no sampled randomness, no one knows a discrete-logarithm relation among the generators — the assumption Hyrax binding rests on — and any implementation that repeats this derivation obtains byte-identical generators. This is what lets the verifier key serve as a reproducible root of trust: it is not a value the verifier accepts on faith, but one an independent party can regenerate and check.
+
 ## Verifier circuit
 
 Setup also constructs the verifier circuit used later inside the proof. Its shape depends on the public setup data:
