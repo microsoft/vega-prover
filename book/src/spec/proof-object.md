@@ -30,7 +30,7 @@ The proof has eight fields in this declaration order:
 | `eval_arg` | `HyraxEvaluationArgument` | Hyrax batch evaluation argument. |
 | `U_verifier` | `SplitMultiRoundR1CSInstance` | R1CS instance for the in-circuit verifier. |
 | `nifs` | `NovaNIFS` | Non-interactive folding proof (a single commitment). |
-| `random_U` | `RelaxedR1CSInstance` | Relaxed R1CS instance after folding. |
+| `random_U` | `RelaxedR1CSInstance` | Fresh random relaxed-R1CS mask, sampled once per proof; the first input (`U1`) to the Nova NIFS fold, not the folded result. |
 | `relaxed_snark` | `RelaxedR1CSSpartanProof` | Relaxed Spartan proof over the folded instance. |
 
 ```text

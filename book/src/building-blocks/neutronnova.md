@@ -38,6 +38,10 @@ This constraint prevents the prover from choosing an arbitrary folded error afte
 
 ## Folding the committed step instance
 
-The same \\(r\_b\\)-derived weights used by the polynomial fold also combine the concrete step witnesses and instances. `fold_multiple` forms linear combinations of witness entries, public inputs, witness commitments, and commitment blinds under those shared weights. The result is one ordinary step witness/instance pair with the same dimensions as a single step instance.
+The same \\(r\_b\\)-derived weights used by the polynomial fold also combine the concrete step witnesses and instances. For padded step index \\(i\in\{0,\dots,2^{\ell\_b}-1\}\\), the weight is the equality polynomial evaluated at \\(r\_b\\),
+\\[
+w\_i = \prod\_{t=0}^{\ell\_b-1}\big((1-r\_b[t])\ \text{if bit } t \text{ of } i \text{ is } 0,\ \text{else } r\_b[t]\big),
+\\]
+with \\(t=0\\) the least significant bit of \\(i\\). `fold_multiple` forms linear combinations of witness entries, public inputs, witness commitments, and commitment blinds under these weights. The result is one ordinary step witness/instance pair with the same dimensions as a single step instance.
 
 That folded step instance is then batched with the core branch and proved by [The Spartan argument](spartan.md). The overall \\(\mathrm{Vega}\_{\mathrm{MC}}\\) proving flow is described in [Proving](../mc/prove.md). This chapter only describes the first fold; the second fold, which masks the verifier-circuit instance for zero knowledge, is described in [Nova folding for zero-knowledge](nova-zk.md).
