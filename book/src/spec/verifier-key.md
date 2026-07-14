@@ -45,7 +45,7 @@ This order is fixed by the verifier key's digest routine, which writes the field
 - `bincode(v)` is the little-endian fixint encoding of [Serialization](serialization.md), applied recursively to the value's type. `bincode(num_steps)` is therefore an 8-byte little-endian `u64`. This is the raw number of step instances passed to setup; it is **not** rounded up to a power of two. The power-of-two padding used elsewhere in the protocol affects only the number of folding rounds, never this stored count.
 - `shape_raw` is a compact hand-written encoding used only for the two circuit shapes. It is **not** bincode: it exists so the large constraint-system matrices hash quickly, and it is the reason the digest is a mix of two encodings rather than one uniform bincode call.
 
-The nested layouts of the bincode-encoded fields (`ck`, `vk_ee`, `vc_shape`, `vc_shape_regular`, `vc_ck`, `vc_vk`) follow the [serialization](serialization.md) rules applied recursively to each type's fields, using the same primitive, sequence, field, and point encodings given there.
+The nested layouts of the bincode-encoded fields (`ck`, `vk_ee`, `vc_shape`, `vc_shape_regular`, `vc_ck`, `vc_vk`) are pinned field by field in [Bincode object layouts](#bincode-object-layouts) below, using the primitive, sequence, field, and point encodings from [Serialization](serialization.md).
 
 ## Shape and matrix raw encoding
 
@@ -82,6 +82,61 @@ matrix_raw(M) =
 ```
 
 The `data` values are scalar-field elements written with the same little-endian 32-byte encoding as a scalar on the wire ([Serialization](serialization.md#scalar-field-elements)); `to_repr` for the scalar field is little-endian. The `indices` and `indptr` entries are machine-word indices written as 8-byte little-endian `u64` values. All four length and count headers are 8-byte little-endian `u64` values, even though the underlying values are register-sized.
+
+## Bincode object layouts
+
+The six bincode-encoded fields of the digest — `ck`, `vk_ee`, `vc_shape`, `vc_shape_regular`, `vc_ck`, and `vc_vk` — expand by the recursive [serialization](serialization.md) rules. This section pins each type's field order so the expansion is unambiguous. Throughout, a `usize` is an 8-byte little-endian `u64`, a `Vec<T>` is an 8-byte little-endian length followed by its elements, a group element is a 33-byte compressed point, and a scalar is 32 little-endian bytes.
+
+### Commitment and verifier keys
+
+`ck` and `vc_ck` are commitment keys; `vk_ee` and `vc_vk` are the matching PCS verifier keys. Both types encode the same three fields, in this order:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `num_cols` | `usize` | row width |
+| `ck` | `Vec<point>` | column generators \\(G\_0, G\_1, \dots\\) |
+| `h` | point | hiding base \\(H\\) |
+
+A commitment key additionally holds two precomputed fixed-base tables; both are `#[serde(skip)]` and emit no bytes, so a commitment key and a verifier key of the same width serialize identically. Because `vk_ee` reuses `ck`'s generators and `vc_vk` reuses `vc_ck`'s, `bincode(vk_ee)` equals `bincode(ck)` and `bincode(vc_vk)` equals `bincode(vc_ck)`, byte for byte.
+
+### Verifier-circuit shapes
+
+`vc_shape` is a split multi-round shape; `vc_shape_regular` is the same constraint system viewed as a single-round R1CS shape. Their fields serialize in these orders:
+
+| `vc_shape` field | Type |
+| --- | --- |
+| `num_cons` | `usize` |
+| `num_cons_unpadded` | `usize` |
+| `num_rounds` | `usize` |
+| `num_vars_per_round_unpadded` | `Vec<usize>` |
+| `num_vars_per_round` | `Vec<usize>` |
+| `num_challenges_per_round` | `Vec<usize>` |
+| `num_public` | `usize` |
+| `commitment_width` | `usize` |
+| `A`, then `B`, then `C` | `SparseMatrix` |
+
+| `vc_shape_regular` field | Type |
+| --- | --- |
+| `num_cons` | `usize` |
+| `num_vars` | `usize` |
+| `num_io` | `usize` |
+| `A`, then `B`, then `C` | `SparseMatrix` |
+
+Both types also carry a `#[serde(skip)]` cached digest that emits no bytes.
+
+### Bincode sparse matrix
+
+Inside the two verifier-circuit shapes, each matrix is bincode-encoded, which is **not** the `matrix_raw` layout used for `S_step` and `S_core`. The bincode form length-prefixes each array inline and places `cols` last:
+
+```text
+bincode(M) =
+     u64_le(len(M.data))    || for d in M.data:    le32(d)
+  || u64_le(len(M.indices)) || for i in M.indices: u64_le(i)
+  || u64_le(len(M.indptr))  || for p in M.indptr:  u64_le(p)
+  || u64_le(M.cols)
+```
+
+The `matrix_raw` form above instead groups all four counts first and then the three arrays. Both carry the same numbers; `S_step`/`S_core` use `matrix_raw` in the digest, while `vc_shape`/`vc_shape_regular` use this bincode form.
 
 ## The digest in the transcript
 
