@@ -1204,12 +1204,11 @@ where
     let _ =
       SatisfyingAssignment::<E>::process_round(vc_state, vc_shape, vc_ck, vc, ell_b, transcript)?;
 
-    // Truncate witness W vectors to skip zero rest portion before folding.
-    // The rest portion (indices effective_len..) is all zero for step circuits,
-    // so the folded result there is also zero. We resize back after folding.
-    // Only apply when shared+precommitted > 0 (otherwise truncation would zero everything).
+    // Fast path: when the rest witness is pure padding (num_rest_unpadded == 0) and the
+    // shared+precommitted prefix is nonempty, fold only that prefix and rebuild the zero
+    // rest rows from the folded blind. Otherwise fold the full witness and commitment.
     let effective_len = S.num_shared + S.num_precommitted;
-    let use_truncated_fold = effective_len > 0;
+    let use_truncated_fold = effective_len > 0 && S.num_rest_unpadded == 0;
     if use_truncated_fold {
       for w in Ws.iter_mut() {
         w.W.truncate(effective_len);
