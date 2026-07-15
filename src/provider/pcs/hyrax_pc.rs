@@ -498,12 +498,12 @@ where
 
     let (num_vars_rows, _num_vars_cols) = (num_rows.log_2(), num_cols.log_2());
 
-    // The commitment must have enough rows to open at this point, and the
-    // evaluation commitment must be non-empty.
-    if comm.comm.len() < num_rows {
+    // The commitment must have exactly the number of rows implied by the opening
+    // point, and the evaluation commitment must be non-empty.
+    if comm.comm.len() != num_rows {
       return Err(VegaError::InvalidCommitmentLength {
         reason: format!(
-          "Hyrax verify: commitment has {} rows, fewer than the {} required",
+          "Hyrax verify: commitment has {} rows, expected exactly {}",
           comm.comm.len(),
           num_rows
         ),

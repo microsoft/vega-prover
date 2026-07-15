@@ -88,6 +88,11 @@ impl<E: Engine> SumcheckProof<E> {
         return Err(VegaError::InvalidSumcheckProof);
       }
 
+      // decompress reads the first stored coefficient; a degree-0 round has none.
+      if degree_bound == 0 {
+        return Err(VegaError::InvalidSumcheckProof);
+      }
+
       let poly = self.compressed_polys[i].decompress(&e);
 
       // we do not need to check if poly(0) + poly(1) = e, as
