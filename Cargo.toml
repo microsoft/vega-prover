@@ -69,6 +69,3 @@ harness = false
 name = "sha256_vega_mc_zkp"
 harness = false
 
-[profile.release]
-debug = 1
-lto = "fat"
